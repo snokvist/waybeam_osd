@@ -12,8 +12,8 @@
 #include "mi_sys.h"
 #include "mi_rgn.h"
 
-#define OSD_WIDTH 800
-#define OSD_HEIGHT 600
+#define OSD_WIDTH 1920
+#define OSD_HEIGHT 1080
 #define BUF_ROWS 60  // partial buffer height
 
 // 2 LVGL buffers - now for ARGB8888 (32-bit per pixel)
@@ -26,6 +26,10 @@ static MI_RGN_HANDLE hRgnHandle;
 static MI_RGN_ChnPort_t stVpeChnPort;
 static MI_RGN_Attr_t stRgnAttr;
 static MI_RGN_ChnPortParam_t stRgnChnAttr;
+
+// Animation variables
+static int child_x = 100, child_y = 100;
+static int child_dx = 3, child_dy = 2;
 
 // -------------------------
 // LVGL tick function
@@ -133,6 +137,46 @@ void init_lvgl(void)
     lv_display_set_flush_cb(disp, my_flush_cb);
 }
 
+
+// Animation callback function
+void bounce_callback(lv_timer_t *timer) {
+    lv_obj_t *main_child = lv_obj_get_child(lv_scr_act(), 0);
+    
+    // Update position
+    child_x += child_dx;
+    child_y += child_dy;
+    
+    // Get current child size
+    int current_width = lv_obj_get_width(main_child);
+    int current_height = lv_obj_get_height(main_child);
+    
+    // Get screen dimensions
+    int screen_width = lv_disp_get_hor_res(NULL);
+    int screen_height = lv_disp_get_ver_res(NULL);
+    
+    // Bounce off screen edges
+    if (child_x <= 0) {
+        child_x = 0;
+        child_dx = -child_dx;
+    } else if (child_x + current_width >= screen_width) {
+        child_x = screen_width - current_width;
+        child_dx = -child_dx;
+    }
+    
+    if (child_y <= 0) {
+        child_y = 0;
+        child_dy = -child_dy;
+    } else if (child_y + current_height >= screen_height) {
+        child_y = screen_height - current_height;
+        child_dy = -child_dy;
+    }
+    
+    // Update position
+    lv_obj_set_pos(main_child, child_x, child_y);
+}
+
+
+
 // -------------------------
 // Main
 // -------------------------
@@ -146,37 +190,31 @@ int main(void)
 
 
     printf("Running LVGL demo...\n");
-    // lv_demo_widgets();  // run default LVGL demo
-    // lv_demo_music();  // run default LVGL music demo
 
-    //lv_obj_set_style_bg_color(lv_scr_act(), lv_color_hex(0x0000), LV_PART_MAIN);
-    
+    lv_demo_render(LV_DEMO_RENDER_SCENE_FILL, LV_OPA_COVER);
+    lv_obj_set_style_bg_opa(lv_scr_act(), LV_OPA_TRANSP, LV_PART_MAIN);  // 50% opacity
 
-    lv_demo_render(LV_DEMO_RENDER_SCENE_FILL, LV_OPA_50);
-    lv_obj_set_style_bg_opa(lv_scr_act(), LV_OPA_50, LV_PART_MAIN);  // 50% opacity
-    lv_obj_set_style_bg_opa(lv_obj_get_child(lv_scr_act(),0), LV_OPA_50, LV_PART_MAIN);  // 50% opacity
+    // Get the first child of the screen (main child from demo)
+    lv_obj_t *main_child = lv_obj_get_child(lv_scr_act(), 0);
+    lv_obj_set_style_bg_opa(main_child, LV_OPA_TRANSP, LV_PART_MAIN);
 
-    // // Set semi-transparent background
-    // lv_obj_set_style_bg_color(lv_scr_act(), lv_color_hex(0x0000), LV_PART_MAIN);
-    // lv_obj_set_style_bg_opa(lv_scr_act(), LV_OPA_50, LV_PART_MAIN);  // 50% opacity
+    // Animation variables for main_child
+    static int child_x = 100, child_y = 100;
+    static int child_dx = 3, child_dy = 2;
 
-    // // Create a semi-transparent button
-    // lv_obj_t *button = lv_button_create(lv_screen_active());
-    // lv_obj_set_pos(button, 200, 200);
-    // lv_obj_set_size(button, 100, 50);
-    // lv_obj_set_style_bg_opa(button, LV_OPA_70, LV_PART_MAIN);  // 70% opacity
-    
-    // // Add a label with some transparency
-    // lv_obj_t *label = lv_label_create(button);
-    // lv_label_set_text(label, "Alpha Test");
-    // lv_obj_set_style_text_opa(label, LV_OPA_80, LV_PART_MAIN);  // 80% opacity
-    // lv_obj_center(label);
+    // Set initial position
+    lv_obj_set_pos(main_child, child_x, child_y);
+
+    // Create animation timer
+    lv_timer_t *bounce_timer = lv_timer_create(bounce_callback, 16, NULL);
 
     // Main loop
     while (1) {
         lv_timer_handler();
         usleep(5000);
     }
+
+    lv_timer_del(bounce_timer);
 
     return 0;
 }
