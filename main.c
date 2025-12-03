@@ -1,29 +1,83 @@
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
 #include <string.h>
 #include <sys/time.h>
 #include <signal.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <fcntl.h>
+#include <ctype.h>
+#include <time.h>
 
 #include "lvgl/lvgl.h"
-/*
- * git clone -b ARGB4444 --recurse-submodules https://github.com/henkwiedig/lvgltest.git
-#include "lvgl/demos/widgets/lv_demo_widgets.h"
-#include "lvgl/demos/music/lv_demo_music.h"
-#include "lvgl/demos/render/lv_demo_render.h"
-*/
 #include "mi_sys.h"
 #include "mi_rgn.h"
+#include "mi_vpe.h"
 
-#define SCREEN_WIDTH 1280   // Set to your panel resolution
-#define SCREEN_HEIGHT 720
-#define OSD_WIDTH SCREEN_WIDTH
-#define OSD_HEIGHT SCREEN_HEIGHT
+#define DEFAULT_SCREEN_WIDTH 1280   // fallback resolution if config is absent
+#define DEFAULT_SCREEN_HEIGHT 720
 #define BUF_ROWS 60  // partial buffer height
+#define CONFIG_PATH "config.json"
+#define UDP_PORT 7777
+#define UDP_MAX_PACKET 512
 
-// 2 LVGL buffers - now for ARGB8888 (32-bit per pixel)
-static lv_color_t buf1[OSD_WIDTH * BUF_ROWS];
-static lv_color_t buf2[OSD_WIDTH * BUF_ROWS];
+// LVGL buffers - allocated at runtime for ARGB8888 (32-bit per pixel)
+static lv_color_t *buf1 = NULL;
+static lv_color_t *buf2 = NULL;
+
+typedef struct {
+    int width;
+    int height;
+    int show_stats;
+    int refresh_ms;
+    int udp_stats;
+} app_config_t;
+
+typedef enum {
+    ASSET_BAR = 0,
+    ASSET_BAR2,
+    ASSET_SCALE10,
+} asset_type_t;
+
+typedef struct {
+    asset_type_t type;
+    int value_index;
+    int x;
+    int y;
+    int width;
+    int height;
+    float min;
+    float max;
+    uint32_t color;
+    char label[64];
+    int text_index;
+} asset_cfg_t;
+
+typedef struct {
+    asset_cfg_t cfg;
+    lv_obj_t *obj;
+    lv_obj_t *label_obj;
+    struct {
+        lv_obj_t *needle_line;
+        lv_obj_t *hr_value_label;
+        lv_obj_t *bpm_label;
+        lv_obj_t *scale_obj;
+        lv_style_t items[5];
+        lv_style_t ind[5];
+        lv_style_t main[5];
+        float range_min;
+        float range_max;
+    } scale;
+} asset_t;
+
+static app_config_t g_cfg;
+static int osd_width = DEFAULT_SCREEN_WIDTH;
+static int osd_height = DEFAULT_SCREEN_HEIGHT;
+static asset_t assets[8];
+static int asset_count = 0;
 
 // Sigmastar RGN
 static MI_RGN_PaletteTable_t g_stPaletteTable = {};
@@ -32,29 +86,423 @@ static MI_RGN_ChnPort_t stVpeChnPort;
 static MI_RGN_Attr_t stRgnAttr;
 static MI_RGN_ChnPortParam_t stRgnChnAttr;
 
-// Animation variables
-static int child_x = 100, child_y = 100;
-static int child_dx = 3, child_dy = 2;
-static lv_obj_t *animated_obj = NULL;
-
-// Stats/OSD label
+// UI
 static lv_obj_t *stats_label = NULL;
-static uint32_t frame_counter = 0;
-static uint32_t last_fps_time = 0;
 static uint32_t last_frame_ms = 0;
+static uint32_t last_loop_ms = 0;
 static uint32_t fps_value = 0;
+static uint64_t fps_start_ms = 0;
+static uint32_t fps_frames = 0;
+static int refresh_ms_applied = 100;
 static volatile sig_atomic_t stop_requested = 0;
-static lv_timer_t *bounce_timer = NULL;
 static lv_timer_t *stats_timer = NULL;
+static int udp_sock = -1;
+static double udp_values[8] = {0};
+static char udp_texts[8][17] = {{0}};
+
+// -------------------------
+// Utility helpers
+// -------------------------
+static int clamp_int(int v, int lo, int hi) {
+    if (v < lo) return lo;
+    if (v > hi) return hi;
+    return v;
+}
+
+static float clamp_float(float v, float lo, float hi) {
+    if (v < lo) return lo;
+    if (v > hi) return hi;
+    return v;
+}
+
+static int read_file(const char *path, char **out_buf, size_t *out_len)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f) return -1;
+    if (fseek(f, 0, SEEK_END) != 0) {
+        fclose(f);
+        return -1;
+    }
+    long len = ftell(f);
+    if (len < 0) {
+        fclose(f);
+        return -1;
+    }
+    rewind(f);
+    char *buf = (char *)malloc((size_t)len + 1);
+    if (!buf) {
+        fclose(f);
+        return -1;
+    }
+    size_t r = fread(buf, 1, (size_t)len, f);
+    fclose(f);
+    buf[r] = '\0';
+    *out_buf = buf;
+    if (out_len) *out_len = r;
+    return 0;
+}
+
+static const char *find_key(const char *json, const char *key)
+{
+    static char pattern[64];
+    snprintf(pattern, sizeof(pattern), "\"%s\"", key);
+    return strstr(json, pattern);
+}
+
+static const char *find_key_range(const char *start, const char *end, const char *key)
+{
+    static char pattern[64];
+    snprintf(pattern, sizeof(pattern), "\"%s\"", key);
+#if defined(_GNU_SOURCE)
+    return memmem(start, (size_t)(end - start), pattern, strlen(pattern));
+#else
+    const char *p = start;
+    size_t plen = strlen(pattern);
+    while (p && p + plen <= end) {
+        const char *hit = strstr(p, pattern);
+        if (!hit || hit >= end) return NULL;
+        return hit;
+    }
+    return NULL;
+#endif
+}
+
+static int json_get_int(const char *json, const char *key, int *out)
+{
+    const char *p = find_key(json, key);
+    if (!p) return -1;
+    p = strchr(p, ':');
+    if (!p) return -1;
+    p++;
+    while (*p && isspace((unsigned char)*p)) p++;
+    if (!*p) return -1;
+    *out = (int)strtol(p, NULL, 0);
+    return 0;
+}
+
+static int json_get_float(const char *json, const char *key, float *out)
+{
+    const char *p = find_key(json, key);
+    if (!p) return -1;
+    p = strchr(p, ':');
+    if (!p) return -1;
+    p++;
+    while (*p && isspace((unsigned char)*p)) p++;
+    if (!*p) return -1;
+    *out = (float)strtod(p, NULL);
+    return 0;
+}
+
+static int json_get_bool(const char *json, const char *key, int *out)
+{
+    const char *p = find_key(json, key);
+    if (!p) return -1;
+    p = strchr(p, ':');
+    if (!p) return -1;
+    p++;
+    while (*p && isspace((unsigned char)*p)) p++;
+    if (!strncmp(p, "true", 4)) {
+        *out = 1;
+        return 0;
+    }
+    if (!strncmp(p, "false", 5)) {
+        *out = 0;
+        return 0;
+    }
+    return -1;
+}
+
+static int json_get_int_range(const char *start, const char *end, const char *key, int *out)
+{
+    const char *p = find_key_range(start, end, key);
+    if (!p) return -1;
+    p = strchr(p, ':');
+    if (!p || p >= end) return -1;
+    p++;
+    while (p < end && isspace((unsigned char)*p)) p++;
+    if (p >= end) return -1;
+    *out = (int)strtol(p, NULL, 0);
+    return 0;
+}
+
+static int json_get_float_range(const char *start, const char *end, const char *key, float *out)
+{
+    const char *p = find_key_range(start, end, key);
+    if (!p) return -1;
+    p = strchr(p, ':');
+    if (!p || p >= end) return -1;
+    p++;
+    while (p < end && isspace((unsigned char)*p)) p++;
+    if (p >= end) return -1;
+    *out = (float)strtod(p, NULL);
+    return 0;
+}
+
+static int json_get_string_range(const char *start, const char *end, const char *key, char *buf, size_t buf_sz)
+{
+    const char *p = find_key_range(start, end, key);
+    if (!p) return -1;
+    p = strchr(p, ':');
+    if (!p || p >= end) return -1;
+    p++;
+    while (p < end && isspace((unsigned char)*p)) p++;
+    if (p >= end || *p != '\"') return -1;
+    p++; // skip opening quote
+    const char *q = p;
+    while (q < end && *q && *q != '\"') q++;
+    size_t len = (size_t)(q - p);
+    if (q >= end || len + 1 > buf_sz) return -1;
+    memcpy(buf, p, len);
+    buf[len] = '\0';
+    return 0;
+}
+
+static void set_defaults(void)
+{
+    g_cfg.width = DEFAULT_SCREEN_WIDTH;
+    g_cfg.height = DEFAULT_SCREEN_HEIGHT;
+    g_cfg.show_stats = 1;
+    g_cfg.refresh_ms = 100;
+    g_cfg.udp_stats = 1;
+
+    asset_count = 1;
+    memset(assets, 0, sizeof(assets));
+    assets[0].cfg.type = ASSET_BAR;
+    assets[0].cfg.value_index = 0;
+    assets[0].cfg.text_index = -1;
+    assets[0].cfg.x = 40;
+    assets[0].cfg.y = 200;
+    assets[0].cfg.width = 320;
+    assets[0].cfg.height = 32;
+    assets[0].cfg.min = 0.0f;
+    assets[0].cfg.max = 1.0f;
+    assets[0].cfg.color = 0x2266CC;
+}
+
+static void parse_assets_array(const char *json)
+{
+    const char *p = strstr(json, "\"assets\"");
+    if (!p) return;
+    const char *arr = strchr(p, '[');
+    if (!arr) return;
+    p = arr + 1;
+    asset_count = 0;
+
+    while (*p && asset_count < 8) {
+        while (*p && *p != '{' && *p != ']') p++;
+        if (*p == ']') break;
+        const char *obj_start = p;
+        int depth = 1;
+        p++;
+        while (*p && depth > 0) {
+            if (*p == '{') depth++;
+            else if (*p == '}') depth--;
+            p++;
+        }
+        const char *obj_end = p;
+        if (depth != 0) break;
+
+        asset_t a = {0};
+        a.cfg.type = ASSET_BAR;
+        a.cfg.value_index = asset_count;
+        a.cfg.x = 40;
+        a.cfg.y = 60 + asset_count * 60;
+        a.cfg.width = 320;
+        a.cfg.height = 32;
+        a.cfg.min = 0.0f;
+        a.cfg.max = 1.0f;
+        a.cfg.color = 0x2266CC;
+        a.cfg.text_index = -1;
+        a.cfg.label[0] = '\0';
+
+        char type_buf[32];
+        if (json_get_string_range(obj_start, obj_end, "type", type_buf, sizeof(type_buf)) == 0) {
+            if (strcmp(type_buf, "example_bar_2") == 0 || strcmp(type_buf, "example_bar2") == 0) {
+                a.cfg.type = ASSET_BAR2;
+            } else if (strcmp(type_buf, "example_scale_10") == 0 || strcmp(type_buf, "example_scale10") == 0) {
+                a.cfg.type = ASSET_SCALE10;
+            } else {
+                a.cfg.type = ASSET_BAR;
+            }
+        }
+
+        int v = 0;
+        float fv = 0.0f;
+        if (json_get_int_range(obj_start, obj_end, "value_index", &v) == 0) a.cfg.value_index = clamp_int(v, 0, 7);
+        if (json_get_int_range(obj_start, obj_end, "x", &v) == 0) a.cfg.x = v;
+        if (json_get_int_range(obj_start, obj_end, "y", &v) == 0) a.cfg.y = v;
+        if (json_get_int_range(obj_start, obj_end, "width", &v) == 0) a.cfg.width = v;
+        if (json_get_int_range(obj_start, obj_end, "height", &v) == 0) a.cfg.height = v;
+        if (json_get_float_range(obj_start, obj_end, "min", &fv) == 0) a.cfg.min = fv;
+        if (json_get_float_range(obj_start, obj_end, "max", &fv) == 0) a.cfg.max = fv;
+        if (json_get_int_range(obj_start, obj_end, "color", &v) == 0) a.cfg.color = (uint32_t)v;
+        if (json_get_int_range(obj_start, obj_end, "text_index", &v) == 0) a.cfg.text_index = clamp_int(v, -1, 7);
+        json_get_string_range(obj_start, obj_end, "label", a.cfg.label, sizeof(a.cfg.label));
+
+        assets[asset_count++] = a;
+    }
+
+    if (asset_count == 0) {
+        memset(assets, 0, sizeof(assets));
+        asset_count = 1;
+        assets[0].cfg.type = ASSET_BAR;
+        assets[0].cfg.value_index = 0;
+        assets[0].cfg.text_index = -1;
+        assets[0].cfg.x = 40;
+        assets[0].cfg.y = 200;
+        assets[0].cfg.width = 320;
+        assets[0].cfg.height = 32;
+        assets[0].cfg.min = 0.0f;
+        assets[0].cfg.max = 1.0f;
+        assets[0].cfg.color = 0x2266CC;
+    }
+}
+
+static void load_config(void)
+{
+    set_defaults();
+
+    char *json = NULL;
+    if (read_file(CONFIG_PATH, &json, NULL) != 0) {
+        return;
+    }
+
+    int v = 0;
+    float fv = 0.0f;
+    if (json_get_int(json, "width", &v) == 0) g_cfg.width = v;
+    if (json_get_int(json, "height", &v) == 0) g_cfg.height = v;
+    if (json_get_bool(json, "show_stats", &v) == 0) g_cfg.show_stats = v;
+    if (json_get_bool(json, "udp_stats", &v) == 0) g_cfg.udp_stats = v;
+    if (json_get_int(json, "refresh_ms", &v) == 0) g_cfg.refresh_ms = clamp_int(v, 10, 1000);
+
+    // Backwards-compatible single bar fields (used only if no assets array)
+    if (json_get_int(json, "bar_x", &v) == 0) assets[0].cfg.x = v;
+    if (json_get_int(json, "bar_y", &v) == 0) assets[0].cfg.y = v;
+    if (json_get_int(json, "bar_width", &v) == 0) assets[0].cfg.width = v;
+    if (json_get_int(json, "bar_height", &v) == 0) assets[0].cfg.height = v;
+    if (json_get_float(json, "bar_min", &fv) == 0) assets[0].cfg.min = fv;
+    if (json_get_float(json, "bar_max", &fv) == 0) assets[0].cfg.max = fv;
+    if (json_get_int(json, "bar_color", &v) == 0) assets[0].cfg.color = (uint32_t)v;
+
+    // Preferred structured assets list
+    parse_assets_array(json);
+
+    free(json);
+}
+
+static int setup_udp_socket(void)
+{
+    int fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0) return -1;
+
+    struct sockaddr_in addr = {
+        .sin_family = AF_INET,
+        .sin_port = htons(UDP_PORT),
+        .sin_addr.s_addr = htonl(INADDR_ANY),
+    };
+    if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        close(fd);
+        return -1;
+    }
+
+    int flags = fcntl(fd, F_GETFL, 0);
+    if (flags >= 0) {
+        fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+    }
+    return fd;
+}
+
+static void parse_udp_values(const char *buf)
+{
+    const char *p = strstr(buf, "\"values\"");
+    if (!p) return;
+    p = strchr(p, '[');
+    if (!p) return;
+    p++;
+    for (int i = 0; i < 8; i++) {
+        while (*p && isspace((unsigned char)*p)) p++;
+        if (!*p) break;
+        char *endptr = NULL;
+        double val = strtod(p, &endptr);
+        if (p == endptr) break;
+        udp_values[i] = val;
+        p = endptr;
+        const char *comma = strchr(p, ',');
+        if (!comma) break;
+        p = comma + 1;
+    }
+}
+
+static void parse_udp_texts(const char *buf)
+{
+    const char *p = strstr(buf, "\"texts\"");
+    if (!p) return;
+    p = strchr(p, '[');
+    if (!p) return;
+    p++;
+    for (int i = 0; i < 8; i++) {
+        while (*p && isspace((unsigned char)*p)) p++;
+        if (!*p) break;
+        if (*p != '\"') break;
+        p++; // skip quote
+        const char *start = p;
+        while (*p && *p != '\"') p++;
+        size_t len = (size_t)(p - start);
+        if (len > 16) len = 16;
+        memcpy(udp_texts[i], start, len);
+        udp_texts[i][len] = '\0';
+        if (*p != '\"') break;
+        p++; // skip closing quote
+        const char *comma = strchr(p, ',');
+        if (!comma) break;
+        p = comma + 1;
+    }
+}
+
+static const char *get_asset_text(const asset_t *asset)
+{
+    if (asset->cfg.text_index >= 0 && asset->cfg.text_index < 8) {
+        const char *t = udp_texts[asset->cfg.text_index];
+        if (t[0] != '\0') return t;
+        if (asset->cfg.label[0] != '\0') return asset->cfg.label;
+        return "";
+    }
+    if (asset->cfg.label[0] != '\0') return asset->cfg.label;
+    return "";
+}
+
+static void poll_udp(void)
+{
+    if (udp_sock < 0) return;
+    char buf[UDP_MAX_PACKET];
+    ssize_t r = 0;
+    ssize_t last_r = -1;
+    // Drain the socket to keep only the freshest payload
+    while ((r = recvfrom(udp_sock, buf, sizeof(buf) - 1, 0, NULL, NULL)) > 0) {
+        last_r = r;
+    }
+    if (last_r > 0) {
+        buf[last_r] = '\0';
+        parse_udp_values(buf);
+        parse_udp_texts(buf);
+    }
+}
 
 // -------------------------
 // LVGL tick function
 // -------------------------
 uint32_t my_get_milliseconds(void)
 {
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-    return (uint32_t)(tv.tv_sec * 1000 + tv.tv_usec / 1000);
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint32_t)(((uint64_t)ts.tv_sec * 1000ULL) + (uint64_t)(ts.tv_nsec / 1000000ULL));
+}
+
+static uint64_t monotonic_ms64(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ((uint64_t)ts.tv_sec * 1000ULL) + (uint64_t)(ts.tv_nsec / 1000000ULL);
 }
 
 // -------------------------
@@ -117,8 +565,8 @@ void mi_region_init(void)
     memset(&stRgnAttr, 0, sizeof(MI_RGN_Attr_t));
     stRgnAttr.eType = E_MI_RGN_TYPE_OSD;
     stRgnAttr.stOsdInitParam.ePixelFmt = E_MI_RGN_PIXEL_FORMAT_ARGB4444;  // Changed to ARGB4444
-    stRgnAttr.stOsdInitParam.stSize.u32Width = OSD_WIDTH;
-    stRgnAttr.stOsdInitParam.stSize.u32Height = OSD_HEIGHT;
+    stRgnAttr.stOsdInitParam.stSize.u32Width = osd_width;
+    stRgnAttr.stOsdInitParam.stSize.u32Height = osd_height;
 
     MI_RGN_Create(hRgnHandle, &stRgnAttr);
 
@@ -147,50 +595,264 @@ void init_lvgl(void)
     // Set LVGL tick callback
     lv_tick_set_cb(my_get_milliseconds);
 
-    lv_display_t * disp = lv_display_create(OSD_WIDTH, OSD_HEIGHT);
-    lv_display_set_color_format(disp, LV_COLOR_FORMAT_ARGB8888);  // Changed to LV_COLOR_FORMAT_ARGB8888
-    lv_display_set_buffers(disp, buf1, buf2, sizeof(buf1), LV_DISPLAY_RENDER_MODE_PARTIAL);
+    size_t buf_size = (size_t)osd_width * BUF_ROWS * sizeof(lv_color_t);
+    buf1 = (lv_color_t *)malloc(buf_size);
+    buf2 = (lv_color_t *)malloc(buf_size);
+
+    lv_display_t * disp = lv_display_create(osd_width, osd_height);
+    lv_display_set_color_format(disp, LV_COLOR_FORMAT_ARGB8888);
+    lv_display_set_buffers(disp, buf1, buf2, buf_size, LV_DISPLAY_RENDER_MODE_PARTIAL);
     lv_display_set_flush_cb(disp, my_flush_cb);
 }
 
 
-// Animation callback function
-void bounce_callback(lv_timer_t *timer) {
-    if (!animated_obj) {
-        return;
+static lv_obj_t *create_simple_bar(const asset_cfg_t *cfg)
+{
+    lv_obj_t *bar = lv_bar_create(lv_scr_act());
+    lv_obj_set_size(bar, cfg->width, cfg->height);
+    lv_obj_align(bar, LV_ALIGN_TOP_LEFT, cfg->x, cfg->y);
+    lv_obj_set_style_bg_color(bar, lv_color_hex(0x222222), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(bar, LV_OPA_40, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(bar, lv_color_hex(cfg->color), LV_PART_INDICATOR);
+    lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, LV_PART_INDICATOR);
+    lv_bar_set_range(bar, 0, 100);
+    return bar;
+}
+
+static lv_obj_t *create_example_bar2(const asset_cfg_t *cfg)
+{
+    static lv_style_t style_bg;
+    static lv_style_t style_indic;
+    static int styles_init = 0;
+
+    if (!styles_init) {
+        lv_style_init(&style_bg);
+        lv_style_set_border_color(&style_bg, lv_palette_main(LV_PALETTE_BLUE));
+        lv_style_set_border_width(&style_bg, 2);
+        lv_style_set_pad_all(&style_bg, 6);
+        lv_style_set_radius(&style_bg, 6);
+        lv_style_set_anim_duration(&style_bg, 1000);
+
+        lv_style_init(&style_indic);
+        lv_style_set_bg_opa(&style_indic, LV_OPA_COVER);
+        lv_style_set_bg_color(&style_indic, lv_palette_main(LV_PALETTE_BLUE));
+        lv_style_set_radius(&style_indic, 3);
+        styles_init = 1;
     }
-    
-    // Update position
-    child_x += child_dx;
-    child_y += child_dy;
-    
-    // Get current child size
-    int current_width = lv_obj_get_width(animated_obj);
-    int current_height = lv_obj_get_height(animated_obj);
-    
-    // Get screen dimensions
-    int screen_width = lv_disp_get_hor_res(NULL);
-    int screen_height = lv_disp_get_ver_res(NULL);
-    
-    // Bounce off screen edges
-    if (child_x <= 0) {
-        child_x = 0;
-        child_dx = -child_dx;
-    } else if (child_x + current_width >= screen_width) {
-        child_x = screen_width - current_width;
-        child_dx = -child_dx;
+
+    lv_obj_t *bar = lv_bar_create(lv_scr_act());
+    lv_obj_remove_style_all(bar);
+    lv_obj_add_style(bar, &style_bg, 0);
+    lv_obj_add_style(bar, &style_indic, LV_PART_INDICATOR);
+
+    lv_obj_set_size(bar, cfg->width > 0 ? cfg->width : 200, cfg->height > 0 ? cfg->height : 20);
+    lv_obj_set_pos(bar, cfg->x, cfg->y);
+    lv_bar_set_range(bar, 0, 100);
+    return bar;
+}
+
+static void maybe_attach_bar_label(asset_t *asset)
+{
+    if (!asset->obj) return;
+    if (asset->cfg.label[0] == '\0' && asset->cfg.text_index < 0) return;
+    asset->label_obj = lv_label_create(lv_scr_act());
+    lv_obj_set_style_text_color(asset->label_obj, lv_color_white(), 0);
+    lv_obj_set_style_text_opa(asset->label_obj, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_opa(asset->label_obj, LV_OPA_TRANSP, 0);
+    lv_label_set_text(asset->label_obj, get_asset_text(asset));
+    lv_obj_align_to(asset->label_obj, asset->obj, LV_ALIGN_OUT_RIGHT_MID, 8, 0);
+}
+
+static lv_color_t scale_zone_color(float pct)
+{
+    if (pct < 0.2f) return lv_palette_main(LV_PALETTE_GREY);
+    if (pct < 0.4f) return lv_palette_main(LV_PALETTE_BLUE);
+    if (pct < 0.6f) return lv_palette_main(LV_PALETTE_GREEN);
+    if (pct < 0.8f) return lv_palette_main(LV_PALETTE_ORANGE);
+    return lv_palette_main(LV_PALETTE_RED);
+}
+
+static void init_scale_section_styles(lv_style_t *items, lv_style_t *indicator, lv_style_t *main_style, lv_color_t color)
+{
+    lv_style_init(items);
+    lv_style_set_line_color(items, color);
+    lv_style_set_line_width(items, 0);
+
+    lv_style_init(indicator);
+    lv_style_set_line_color(indicator, color);
+    lv_style_set_line_width(indicator, 0);
+
+    lv_style_init(main_style);
+    lv_style_set_arc_color(main_style, color);
+    lv_style_set_arc_width(main_style, 20);
+}
+
+static void add_scale_section(lv_obj_t *scale,
+                              int32_t from,
+                              int32_t to,
+                              lv_style_t *items,
+                              lv_style_t *indicator,
+                              lv_style_t *main_style)
+{
+    lv_scale_section_t *sec = lv_scale_add_section(scale);
+    lv_scale_set_section_range(scale, sec, from, to);
+    lv_scale_set_section_style_items(scale, sec, items);
+    lv_scale_set_section_style_indicator(scale, sec, indicator);
+    lv_scale_set_section_style_main(scale, sec, main_style);
+}
+
+static void create_example_scale10(asset_t *asset)
+{
+    const asset_cfg_t *cfg = &asset->cfg;
+
+    float min = cfg->min;
+    float max = cfg->max;
+    if (max <= min + 0.0001f) {
+        min = 0.0f;
+        max = 100.0f;
     }
-    
-    if (child_y <= 0) {
-        child_y = 0;
-        child_dy = -child_dy;
-    } else if (child_y + current_height >= screen_height) {
-        child_y = screen_height - current_height;
-        child_dy = -child_dy;
+    asset->scale.range_min = min;
+    asset->scale.range_max = max;
+
+    asset->scale.scale_obj = lv_scale_create(lv_scr_act());
+    lv_obj_set_pos(asset->scale.scale_obj, cfg->x, cfg->y);
+    lv_obj_set_size(asset->scale.scale_obj,
+                    cfg->width > 0 ? cfg->width : 200,
+                    cfg->height > 0 ? cfg->height : 200);
+
+    lv_scale_set_mode(asset->scale.scale_obj, LV_SCALE_MODE_ROUND_INNER);
+    lv_scale_set_range(asset->scale.scale_obj, (int32_t)min, (int32_t)max);
+    lv_scale_set_total_tick_count(asset->scale.scale_obj, 15);
+    lv_scale_set_major_tick_every(asset->scale.scale_obj, 3);
+    lv_scale_set_angle_range(asset->scale.scale_obj, 280);
+    lv_scale_set_rotation(asset->scale.scale_obj, 130);
+    lv_scale_set_label_show(asset->scale.scale_obj, false);
+
+    lv_obj_set_style_length(asset->scale.scale_obj, 6, LV_PART_ITEMS);
+    lv_obj_set_style_length(asset->scale.scale_obj, 10, LV_PART_INDICATOR);
+    lv_obj_set_style_arc_width(asset->scale.scale_obj, 0, LV_PART_MAIN);
+
+    // Five equal sections to mimic the LVGL example zones
+    int32_t seg = (int32_t)((max - min) / 5.0f);
+    if (seg <= 0) seg = 1;
+    init_scale_section_styles(&asset->scale.items[0], &asset->scale.ind[0], &asset->scale.main[0], lv_palette_main(LV_PALETTE_GREY));
+    init_scale_section_styles(&asset->scale.items[1], &asset->scale.ind[1], &asset->scale.main[1], lv_palette_main(LV_PALETTE_BLUE));
+    init_scale_section_styles(&asset->scale.items[2], &asset->scale.ind[2], &asset->scale.main[2], lv_palette_main(LV_PALETTE_GREEN));
+    init_scale_section_styles(&asset->scale.items[3], &asset->scale.ind[3], &asset->scale.main[3], lv_palette_main(LV_PALETTE_ORANGE));
+    init_scale_section_styles(&asset->scale.items[4], &asset->scale.ind[4], &asset->scale.main[4], lv_palette_main(LV_PALETTE_RED));
+
+    add_scale_section(asset->scale.scale_obj, (int32_t)min, (int32_t)(min + seg), &asset->scale.items[0], &asset->scale.ind[0], &asset->scale.main[0]);
+    add_scale_section(asset->scale.scale_obj, (int32_t)(min + seg), (int32_t)(min + seg * 2), &asset->scale.items[1], &asset->scale.ind[1], &asset->scale.main[1]);
+    add_scale_section(asset->scale.scale_obj, (int32_t)(min + seg * 2), (int32_t)(min + seg * 3), &asset->scale.items[2], &asset->scale.ind[2], &asset->scale.main[2]);
+    add_scale_section(asset->scale.scale_obj, (int32_t)(min + seg * 3), (int32_t)(min + seg * 4), &asset->scale.items[3], &asset->scale.ind[3], &asset->scale.main[3]);
+    add_scale_section(asset->scale.scale_obj, (int32_t)(min + seg * 4), (int32_t)max, &asset->scale.items[4], &asset->scale.ind[4], &asset->scale.main[4]);
+
+    asset->scale.needle_line = lv_line_create(asset->scale.scale_obj);
+    lv_obj_set_style_line_color(asset->scale.needle_line, lv_color_black(), LV_PART_MAIN);
+    lv_obj_set_style_line_width(asset->scale.needle_line, 12, LV_PART_MAIN);
+    lv_obj_set_style_length(asset->scale.needle_line, 20, LV_PART_MAIN);
+    lv_obj_set_style_line_rounded(asset->scale.needle_line, false, LV_PART_MAIN);
+    lv_obj_set_style_pad_right(asset->scale.needle_line, 50, LV_PART_MAIN);
+
+    lv_scale_set_line_needle_value(asset->scale.scale_obj, asset->scale.needle_line, 0, (int32_t)min);
+
+    lv_obj_t *circle = lv_obj_create(lv_scr_act());
+    lv_obj_set_size(circle, 130, 130);
+    lv_obj_align_to(circle, asset->scale.scale_obj, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_set_style_radius(circle, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(circle, lv_obj_get_style_bg_color(lv_scr_act(), LV_PART_MAIN), 0);
+    lv_obj_set_style_bg_opa(circle, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(circle, 0, LV_PART_MAIN);
+
+    lv_obj_t *container = lv_obj_create(circle);
+    lv_obj_center(container);
+    lv_obj_set_size(container, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(container, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(container, 0, 0);
+    lv_obj_set_layout(container, LV_LAYOUT_FLEX);
+    lv_obj_set_flex_flow(container, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_all(container, 0, LV_PART_MAIN);
+    lv_obj_set_style_pad_row(container, 0, 0);
+    lv_obj_set_flex_align(container, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+    asset->scale.hr_value_label = lv_label_create(container);
+    lv_label_set_text(asset->scale.hr_value_label, "0");
+    lv_obj_set_style_text_align(asset->scale.hr_value_label, LV_TEXT_ALIGN_CENTER, 0);
+
+    asset->scale.bpm_label = lv_label_create(container);
+    lv_label_set_text(asset->scale.bpm_label, "bpm");
+    lv_obj_set_style_text_align(asset->scale.bpm_label, LV_TEXT_ALIGN_CENTER, 0);
+}
+
+static void create_assets(void)
+{
+    for (int i = 0; i < asset_count; i++) {
+        switch (assets[i].cfg.type) {
+            case ASSET_BAR:
+                assets[i].obj = create_simple_bar(&assets[i].cfg);
+                maybe_attach_bar_label(&assets[i]);
+                break;
+            case ASSET_BAR2:
+                assets[i].obj = create_example_bar2(&assets[i].cfg);
+                maybe_attach_bar_label(&assets[i]);
+                break;
+            case ASSET_SCALE10:
+                create_example_scale10(&assets[i]);
+                break;
+            default:
+                assets[i].obj = create_simple_bar(&assets[i].cfg);
+                maybe_attach_bar_label(&assets[i]);
+                break;
+        }
     }
-    
-    // Update position
-    lv_obj_set_pos(animated_obj, child_x, child_y);
+}
+
+static void update_assets_from_udp(void)
+{
+    for (int i = 0; i < asset_count; i++) {
+        const asset_cfg_t *cfg = &assets[i].cfg;
+        float min = cfg->min;
+        float max = cfg->max;
+        if (max <= min + 0.0001f) {
+            max = min + 1.0f;
+        }
+        float v = (float)udp_values[clamp_int(cfg->value_index, 0, 7)];
+        v = clamp_float(v, min, max);
+        float pct_f = (v - min) / (max - min);
+        int pct = clamp_int((int)(pct_f * 100.0f), 0, 100);
+
+        switch (cfg->type) {
+            case ASSET_BAR:
+            case ASSET_BAR2:
+                if (assets[i].obj) {
+                    lv_bar_set_value(assets[i].obj, pct, LV_ANIM_OFF);
+                }
+                break;
+            case ASSET_SCALE10:
+                if (assets[i].scale.scale_obj && assets[i].scale.needle_line) {
+                    lv_scale_set_line_needle_value(assets[i].scale.scale_obj,
+                                                   assets[i].scale.needle_line,
+                                                   -8,
+                                                   (int32_t)v);
+                }
+                if (assets[i].scale.hr_value_label) {
+                    lv_label_set_text_fmt(assets[i].scale.hr_value_label, "%d", (int)v);
+                }
+                if (assets[i].scale.bpm_label) {
+                    lv_color_t c = scale_zone_color(pct_f);
+                    lv_obj_set_style_text_color(assets[i].scale.hr_value_label, c, 0);
+                    lv_obj_set_style_text_color(assets[i].scale.bpm_label, c, 0);
+                }
+                break;
+            default:
+                break;
+        }
+
+        if (assets[i].label_obj) {
+            const char *txt = get_asset_text(&assets[i]);
+            lv_label_set_text(assets[i].label_obj, txt);
+        }
+    }
 }
 
 static void handle_sigint(int sig)
@@ -201,10 +863,6 @@ static void handle_sigint(int sig)
 
 static void cleanup_resources(void)
 {
-    if (bounce_timer) {
-        lv_timer_del(bounce_timer);
-        bounce_timer = NULL;
-    }
     if (stats_timer) {
         lv_timer_del(stats_timer);
         stats_timer = NULL;
@@ -213,38 +871,73 @@ static void cleanup_resources(void)
     // Tear down OSD region cleanly
     MI_RGN_DetachFromChn(hRgnHandle, &stVpeChnPort);
     MI_RGN_Destroy(hRgnHandle);
+
+    if (udp_sock >= 0) {
+        close(udp_sock);
+        udp_sock = -1;
+    }
+
+    free(buf1);
+    free(buf2);
 }
 
 static void stats_timer_cb(lv_timer_t *timer)
 {
     (void)timer;
 
-    uint32_t now = my_get_milliseconds();
-    if (last_fps_time == 0) {
-        last_fps_time = now;
+    uint64_t now = monotonic_ms64();
+    if (fps_start_ms == 0) fps_start_ms = now;
+    uint64_t elapsed = now - fps_start_ms;
+    if (elapsed > 0) {
+        fps_value = (uint32_t)((fps_frames * 1000ULL) / elapsed);
+        fps_frames = 0;
+        fps_start_ms = now;
     }
 
-    uint32_t elapsed = now - last_fps_time;
-    if (elapsed >= 500) {
-        fps_value = (uint32_t)((frame_counter * 1000U) / (elapsed ? elapsed : 1));
-        frame_counter = 0;
-        last_fps_time = now;
+    int primary_w = 0;
+    int primary_h = 0;
+    if (asset_count > 0) {
+        lv_obj_t *p = assets[0].obj ? assets[0].obj : assets[0].scale.scale_obj;
+        if (p) {
+            primary_w = lv_obj_get_width(p);
+            primary_h = lv_obj_get_height(p);
+        }
+    }
+    char buf[512];
+    int disp_w = lv_disp_get_hor_res(NULL);
+    int disp_h = lv_disp_get_ver_res(NULL);
+    int off = 0;
+    off += lv_snprintf(buf + off, sizeof(buf) - off,
+                       "OSD %dx%d (disp %dx%d)\n"
+                       "Assets %d | primary %d,%d\n"
+                       "FPS %u | work %ums | loop %ums | refresh %dms",
+                       osd_width, osd_height,
+                       disp_w, disp_h,
+                       asset_count, primary_w, primary_h,
+                       fps_value, last_frame_ms, last_loop_ms, refresh_ms_applied);
+
+    if (g_cfg.udp_stats && off < (int)sizeof(buf) - 32) {
+        off += lv_snprintf(buf + off, sizeof(buf) - off, "\nUDP values:");
+        for (int i = 0; i < 8 && off < (int)sizeof(buf) - 16; i++) {
+            int whole = (int)udp_values[i];
+            int frac = (int)((udp_values[i] - whole) * 100.0);
+            if (frac < 0) frac = -frac;
+            off += lv_snprintf(buf + off, sizeof(buf) - off, "\n v%d=%d.%02d", i, whole, frac);
+        }
+        off += lv_snprintf(buf + off, sizeof(buf) - off, "\nUDP texts:");
+        for (int i = 0; i < 8 && off < (int)sizeof(buf) - 20; i++) {
+            const char *t = udp_texts[i][0] ? udp_texts[i] : "-";
+            off += lv_snprintf(buf + off, sizeof(buf) - off, "\n t%d=%s", i, t);
+        }
     }
 
-    int current_width = animated_obj ? lv_obj_get_width(animated_obj) : 0;
-    int current_height = animated_obj ? lv_obj_get_height(animated_obj) : 0;
-
-    char buf[160];
-    lv_snprintf(buf, sizeof(buf),
-                "OSD %dx%d, screen %dx%d\n"
-                "Obj pos %d,%d size %d,%d\n"
-                "FPS %u, frame %ums",
-                OSD_WIDTH, OSD_HEIGHT,
-                lv_disp_get_hor_res(NULL), lv_disp_get_ver_res(NULL),
-                child_x, child_y, current_width, current_height,
-                fps_value, last_frame_ms);
     if (stats_label) {
         lv_label_set_text(stats_label, buf);
+        if (g_cfg.show_stats) {
+            lv_obj_clear_flag(stats_label, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_add_flag(stats_label, LV_OBJ_FLAG_HIDDEN);
+        }
     }
 }
 
@@ -255,7 +948,12 @@ static void stats_timer_cb(lv_timer_t *timer)
 // -------------------------
 int main(void)
 {
+    load_config();
+    osd_width = g_cfg.width;
+    osd_height = g_cfg.height;
     signal(SIGINT, handle_sigint);
+
+    udp_sock = setup_udp_socket();
 
     printf("Initializing OSD region...\n");
     mi_region_init();
@@ -263,37 +961,10 @@ int main(void)
     printf("Initializing LVGL...\n");
     init_lvgl();
 
-
-    printf("Running LVGL demo...\n");
-
     // Transparent screen
     lv_obj_set_style_bg_opa(lv_scr_act(), LV_OPA_TRANSP, LV_PART_MAIN);
 
-    // Simple animated object (small blue box)
-    animated_obj = lv_obj_create(lv_scr_act());
-    lv_obj_set_size(animated_obj, 160, 96);
-    lv_obj_set_style_bg_color(animated_obj, lv_color_hex(0x2266CC), LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(animated_obj, LV_OPA_COVER, LV_PART_MAIN);
-    lv_obj_set_style_border_width(animated_obj, 2, LV_PART_MAIN);
-    lv_obj_set_style_border_color(animated_obj, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
-    lv_obj_set_pos(animated_obj, child_x, child_y);
-
-    // Static reference graphics
-    lv_obj_t *indicator_a = lv_obj_create(lv_scr_act());
-    lv_obj_set_size(indicator_a, 32, 32);
-    lv_obj_set_style_bg_color(indicator_a, lv_color_hex(0x2ECC71), LV_PART_MAIN); // green
-    lv_obj_set_style_bg_opa(indicator_a, LV_OPA_80, LV_PART_MAIN);
-    lv_obj_set_style_border_width(indicator_a, 2, LV_PART_MAIN);
-    lv_obj_set_style_border_color(indicator_a, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
-    lv_obj_align(indicator_a, LV_ALIGN_TOP_RIGHT, -12, 12);
-
-    lv_obj_t *indicator_b = lv_obj_create(lv_scr_act());
-    lv_obj_set_size(indicator_b, 48, 16);
-    lv_obj_set_style_bg_color(indicator_b, lv_color_hex(0xE67E22), LV_PART_MAIN); // orange
-    lv_obj_set_style_bg_opa(indicator_b, LV_OPA_80, LV_PART_MAIN);
-    lv_obj_set_style_border_width(indicator_b, 2, LV_PART_MAIN);
-    lv_obj_set_style_border_color(indicator_b, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
-    lv_obj_align(indicator_b, LV_ALIGN_BOTTOM_LEFT, 12, -12);
+    create_assets();
 
     // Lightweight stats in top-left
     stats_label = lv_label_create(lv_scr_act());
@@ -306,16 +977,32 @@ int main(void)
     lv_label_set_text(stats_label, "OSD stats");
 
     // Timers (throttled to ~10 Hz)
-    bounce_timer = lv_timer_create(bounce_callback, 100, NULL);
     stats_timer = lv_timer_create(stats_timer_cb, 250, NULL);
 
-    // Main loop at ~10 Hz
+    update_assets_from_udp();
+
+    int sleep_ms = clamp_int(g_cfg.refresh_ms, 10, 1000);
+    refresh_ms_applied = sleep_ms;
+    uint64_t next_deadline = monotonic_ms64();
+
+    // Main loop at configured rate (default 10 Hz)
     while (!stop_requested) {
-        uint32_t loop_start = my_get_milliseconds();
+        uint64_t loop_start = next_deadline;
+        poll_udp();
+        update_assets_from_udp();
         lv_timer_handler();
-        frame_counter++;
-        last_frame_ms = my_get_milliseconds() - loop_start;
-        usleep(100000); // 100 ms
+        fps_frames++;
+        uint64_t after_work = monotonic_ms64();
+        last_frame_ms = (uint32_t)(after_work - loop_start);
+        next_deadline += (uint64_t)sleep_ms;
+        uint64_t now = monotonic_ms64();
+        if (next_deadline > now) {
+            uint64_t remain = next_deadline - now;
+            usleep((useconds_t)(remain * 1000ULL));
+        } else {
+            next_deadline = now;
+        }
+        last_loop_ms = (uint32_t)(monotonic_ms64() - loop_start);
     }
 
     cleanup_resources();
