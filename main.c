@@ -3,17 +3,22 @@
 #include <unistd.h>
 #include <string.h>
 #include <sys/time.h>
+#include <signal.h>
 
 #include "lvgl/lvgl.h"
+/*
+ * git clone -b ARGB4444 --recurse-submodules https://github.com/henkwiedig/lvgltest.git
 #include "lvgl/demos/widgets/lv_demo_widgets.h"
 #include "lvgl/demos/music/lv_demo_music.h"
 #include "lvgl/demos/render/lv_demo_render.h"
-
+*/
 #include "mi_sys.h"
 #include "mi_rgn.h"
 
-#define OSD_WIDTH 1920
-#define OSD_HEIGHT 1080
+#define SCREEN_WIDTH 1280   // Set to your panel resolution
+#define SCREEN_HEIGHT 720
+#define OSD_WIDTH SCREEN_WIDTH
+#define OSD_HEIGHT SCREEN_HEIGHT
 #define BUF_ROWS 60  // partial buffer height
 
 // 2 LVGL buffers - now for ARGB8888 (32-bit per pixel)
@@ -30,6 +35,17 @@ static MI_RGN_ChnPortParam_t stRgnChnAttr;
 // Animation variables
 static int child_x = 100, child_y = 100;
 static int child_dx = 3, child_dy = 2;
+static lv_obj_t *animated_obj = NULL;
+
+// Stats/OSD label
+static lv_obj_t *stats_label = NULL;
+static uint32_t frame_counter = 0;
+static uint32_t last_fps_time = 0;
+static uint32_t last_frame_ms = 0;
+static uint32_t fps_value = 0;
+static volatile sig_atomic_t stop_requested = 0;
+static lv_timer_t *bounce_timer = NULL;
+static lv_timer_t *stats_timer = NULL;
 
 // -------------------------
 // LVGL tick function
@@ -140,15 +156,17 @@ void init_lvgl(void)
 
 // Animation callback function
 void bounce_callback(lv_timer_t *timer) {
-    lv_obj_t *main_child = lv_obj_get_child(lv_scr_act(), 0);
+    if (!animated_obj) {
+        return;
+    }
     
     // Update position
     child_x += child_dx;
     child_y += child_dy;
     
     // Get current child size
-    int current_width = lv_obj_get_width(main_child);
-    int current_height = lv_obj_get_height(main_child);
+    int current_width = lv_obj_get_width(animated_obj);
+    int current_height = lv_obj_get_height(animated_obj);
     
     // Get screen dimensions
     int screen_width = lv_disp_get_hor_res(NULL);
@@ -172,7 +190,62 @@ void bounce_callback(lv_timer_t *timer) {
     }
     
     // Update position
-    lv_obj_set_pos(main_child, child_x, child_y);
+    lv_obj_set_pos(animated_obj, child_x, child_y);
+}
+
+static void handle_sigint(int sig)
+{
+    (void)sig;
+    stop_requested = 1;
+}
+
+static void cleanup_resources(void)
+{
+    if (bounce_timer) {
+        lv_timer_del(bounce_timer);
+        bounce_timer = NULL;
+    }
+    if (stats_timer) {
+        lv_timer_del(stats_timer);
+        stats_timer = NULL;
+    }
+
+    // Tear down OSD region cleanly
+    MI_RGN_DetachFromChn(hRgnHandle, &stVpeChnPort);
+    MI_RGN_Destroy(hRgnHandle);
+}
+
+static void stats_timer_cb(lv_timer_t *timer)
+{
+    (void)timer;
+
+    uint32_t now = my_get_milliseconds();
+    if (last_fps_time == 0) {
+        last_fps_time = now;
+    }
+
+    uint32_t elapsed = now - last_fps_time;
+    if (elapsed >= 500) {
+        fps_value = (uint32_t)((frame_counter * 1000U) / (elapsed ? elapsed : 1));
+        frame_counter = 0;
+        last_fps_time = now;
+    }
+
+    int current_width = animated_obj ? lv_obj_get_width(animated_obj) : 0;
+    int current_height = animated_obj ? lv_obj_get_height(animated_obj) : 0;
+
+    char buf[160];
+    lv_snprintf(buf, sizeof(buf),
+                "OSD %dx%d, screen %dx%d\n"
+                "Obj pos %d,%d size %d,%d\n"
+                "FPS %u, frame %ums",
+                OSD_WIDTH, OSD_HEIGHT,
+                lv_disp_get_hor_res(NULL), lv_disp_get_ver_res(NULL),
+                child_x, child_y, current_width, current_height,
+                fps_value, last_frame_ms);
+    if (stats_label) {
+        lv_label_set_text(stats_label, buf);
+    }
 }
 
 
@@ -182,6 +255,8 @@ void bounce_callback(lv_timer_t *timer) {
 // -------------------------
 int main(void)
 {
+    signal(SIGINT, handle_sigint);
+
     printf("Initializing OSD region...\n");
     mi_region_init();
 
@@ -191,30 +266,59 @@ int main(void)
 
     printf("Running LVGL demo...\n");
 
-    lv_demo_render(LV_DEMO_RENDER_SCENE_FILL, LV_OPA_COVER);
-    lv_obj_set_style_bg_opa(lv_scr_act(), LV_OPA_TRANSP, LV_PART_MAIN);  // 50% opacity
+    // Transparent screen
+    lv_obj_set_style_bg_opa(lv_scr_act(), LV_OPA_TRANSP, LV_PART_MAIN);
 
-    // Get the first child of the screen (main child from demo)
-    lv_obj_t *main_child = lv_obj_get_child(lv_scr_act(), 0);
-    lv_obj_set_style_bg_opa(main_child, LV_OPA_TRANSP, LV_PART_MAIN);
+    // Simple animated object (small blue box)
+    animated_obj = lv_obj_create(lv_scr_act());
+    lv_obj_set_size(animated_obj, 160, 96);
+    lv_obj_set_style_bg_color(animated_obj, lv_color_hex(0x2266CC), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(animated_obj, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_border_width(animated_obj, 2, LV_PART_MAIN);
+    lv_obj_set_style_border_color(animated_obj, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
+    lv_obj_set_pos(animated_obj, child_x, child_y);
 
-    // Animation variables for main_child
-    static int child_x = 100, child_y = 100;
-    static int child_dx = 3, child_dy = 2;
+    // Static reference graphics
+    lv_obj_t *indicator_a = lv_obj_create(lv_scr_act());
+    lv_obj_set_size(indicator_a, 32, 32);
+    lv_obj_set_style_bg_color(indicator_a, lv_color_hex(0x2ECC71), LV_PART_MAIN); // green
+    lv_obj_set_style_bg_opa(indicator_a, LV_OPA_80, LV_PART_MAIN);
+    lv_obj_set_style_border_width(indicator_a, 2, LV_PART_MAIN);
+    lv_obj_set_style_border_color(indicator_a, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
+    lv_obj_align(indicator_a, LV_ALIGN_TOP_RIGHT, -12, 12);
 
-    // Set initial position
-    lv_obj_set_pos(main_child, child_x, child_y);
+    lv_obj_t *indicator_b = lv_obj_create(lv_scr_act());
+    lv_obj_set_size(indicator_b, 48, 16);
+    lv_obj_set_style_bg_color(indicator_b, lv_color_hex(0xE67E22), LV_PART_MAIN); // orange
+    lv_obj_set_style_bg_opa(indicator_b, LV_OPA_80, LV_PART_MAIN);
+    lv_obj_set_style_border_width(indicator_b, 2, LV_PART_MAIN);
+    lv_obj_set_style_border_color(indicator_b, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
+    lv_obj_align(indicator_b, LV_ALIGN_BOTTOM_LEFT, 12, -12);
 
-    // Create animation timer
-    lv_timer_t *bounce_timer = lv_timer_create(bounce_callback, 16, NULL);
+    // Lightweight stats in top-left
+    stats_label = lv_label_create(lv_scr_act());
+    lv_obj_set_style_text_color(stats_label, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
+    lv_obj_set_style_text_opa(stats_label, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(stats_label, lv_color_hex(0x000000), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(stats_label, LV_OPA_70, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(stats_label, 4, LV_PART_MAIN);
+    lv_obj_align(stats_label, LV_ALIGN_TOP_LEFT, 4, 4);
+    lv_label_set_text(stats_label, "OSD stats");
 
-    // Main loop
-    while (1) {
+    // Timers (throttled to ~10 Hz)
+    bounce_timer = lv_timer_create(bounce_callback, 100, NULL);
+    stats_timer = lv_timer_create(stats_timer_cb, 250, NULL);
+
+    // Main loop at ~10 Hz
+    while (!stop_requested) {
+        uint32_t loop_start = my_get_milliseconds();
         lv_timer_handler();
-        usleep(5000);
+        frame_counter++;
+        last_frame_ms = my_get_milliseconds() - loop_start;
+        usleep(100000); // 100 ms
     }
 
-    lv_timer_del(bounce_timer);
+    cleanup_resources();
 
     return 0;
 }
