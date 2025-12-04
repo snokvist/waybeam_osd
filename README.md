@@ -1,7 +1,7 @@
 # LVGL OSD (UDP-driven)
 
 - Transparent LVGL OSD that renders up to 8 configurable assets (basic bar, `lv_example_bar_2`-styled bar, `lv_example_scale_10`-styled gauge, or file-based Lottie animation) defined in `config.json` and driven by a UDP payload. Optional descriptors live to the right of bars/Lottie assets (static `label` or live `texts[]` channel). Background stays fully transparent; assets refresh at the configured cadence. (`main.c`, `config.json`)
-- UDP listener on port `7777` consumes JSON payloads documented in `CONTRACT.md` (`values[]` + optional `texts[]`). Incoming packets are drained whenever the socket is readable so only the latest datagram drives the screen. Display work is paced by LVGL timers, with `refresh_ms` (default 100 ms, clamped 10–1000) acting as the maximum idle wait between UDP polls. (`main.c`, `CONTRACT.md`)
+- UDP listener on port `7777` consumes JSON payloads documented in `CONTRACT.md` (`values[]` + optional `texts[]`). Incoming packets are drained whenever the socket is readable so only the latest datagram drives the screen, and `refresh_ms` (default 100 ms, clamped 10–1000) sets the maximum idle wait between UDP polls and screen refreshes. (`main.c`, `CONTRACT.md`)
 - Single stats widget in the top-left (gated by `show_stats`) shows OSD/display resolution, asset count, FPS, and timing. When `udp_stats` is true, it also lists all 8 numeric values and text channels vertically to avoid width overflow. (`main.c`, `config.json`)
 - Size-first build: `-Os`, section folding, no unwind tables, linker GC/strip, LVGL demos/examples excluded by default. (`Makefile`, `lvgl/lvgl.mk`, `lv_conf.h`, `build.sh`)
 - Clean SIGINT handling: timers, UDP socket, LVGL buffers, and RGN are torn down to avoid hangs. (`main.c`)

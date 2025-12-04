@@ -720,7 +720,7 @@ static void lottie_spinner_delete_cb(lv_event_t *e)
     spinner_anim_t *ctx = (spinner_anim_t *)lv_event_get_user_data(e);
     if (ctx) {
         lv_anim_del(ctx, lottie_spinner_anim_cb);
-        lv_mem_free(ctx);
+        free(ctx);
     }
 }
 
@@ -756,7 +756,7 @@ static lv_obj_t *create_lottie_asset(const asset_cfg_t *cfg)
     lv_obj_set_style_arc_color(spinner, lv_color_darken(accent, LV_OPA_60), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_arc_color(spinner, accent, LV_PART_INDICATOR | LV_STATE_DEFAULT);
 
-    spinner_anim_t *ctx = lv_mem_alloc(sizeof(spinner_anim_t));
+    spinner_anim_t *ctx = malloc(sizeof(spinner_anim_t));
     if (!ctx) return spinner;
     ctx->arc = spinner;
     ctx->span = 120;
@@ -1126,21 +1126,11 @@ int main(void)
     int idle_cap_ms = clamp_int(g_cfg.refresh_ms, 10, 1000);
     refresh_ms_applied = idle_cap_ms;
 
-    uint64_t next_lv_tick = monotonic_ms64();
-
-    // Main loop paced by LVGL timers (with a configurable UDP poll cap)
+    // Main loop paced by a simple UDP poll cap
     while (!stop_requested) {
         uint64_t loop_start = monotonic_ms64();
 
-        int wait_ms = 1;
-        if (next_lv_tick > loop_start) {
-            uint64_t until_lv = next_lv_tick - loop_start;
-            if (until_lv < (uint64_t)idle_cap_ms) wait_ms = (int)until_lv;
-            else wait_ms = idle_cap_ms;
-            if (wait_ms < 1) wait_ms = 1;
-        } else {
-            wait_ms = 1;
-        }
+        int wait_ms = idle_cap_ms;
 
         struct pollfd pfd = {0};
         nfds_t nfds = 0;
@@ -1157,14 +1147,10 @@ int main(void)
             }
         }
 
-        uint64_t after_poll = monotonic_ms64();
-        if (after_poll >= next_lv_tick) {
-            uint64_t frame_start = monotonic_ms64();
-            uint32_t lv_delay = lv_timer_handler();
-            fps_frames++;
-            last_frame_ms = (uint32_t)(monotonic_ms64() - frame_start);
-            next_lv_tick = monotonic_ms64() + lv_delay;
-        }
+        uint64_t frame_start = monotonic_ms64();
+        lv_timer_handler();
+        fps_frames++;
+        last_frame_ms = (uint32_t)(monotonic_ms64() - frame_start);
 
         last_loop_ms = (uint32_t)(monotonic_ms64() - loop_start);
     }

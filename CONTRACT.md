@@ -25,7 +25,7 @@ Each on-screen asset binds to one `values[i]` entry via `value_index`. For bar a
   - `width`, `height` (int): OSD canvas resolution. Default 1280x720.
   - `show_stats` (bool): show/hide the top-left stats overlay. Default `true`.
   - `udp_stats` (bool): when `true`, the stats overlay also lists the latest 8 numeric values and text channels. Default `true`.
-  - `refresh_ms` (int): maximum idle wait between UDP polls in milliseconds (clamped 10–1000); default 100 ms. LVGL timers can wake the loop sooner.
+  - `refresh_ms` (int): maximum idle wait between UDP polls and screen refreshes in milliseconds (clamped 10–1000); default 100 ms.
   - `assets` (array, max 8): list of objects defining what to render and which UDP value to consume.
 - Asset fields:
   - `type`: `"bar"`, `"example_bar_2"`, `"example_scale_10"`, or `"lottie"`.
