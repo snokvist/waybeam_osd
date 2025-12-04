@@ -698,6 +698,32 @@ static lv_color_t lottie_color_from_json(const char *json)
     return lv_color_make(r, g, b);
 }
 
+typedef struct {
+    lv_obj_t *arc;
+    int16_t span;
+} spinner_anim_t;
+
+static void lottie_spinner_anim_cb(void *var, int32_t v)
+{
+    spinner_anim_t *ctx = (spinner_anim_t *)var;
+    if (!ctx || !ctx->arc) return;
+
+    int16_t start = (int16_t)(v % 360);
+    int16_t end = start + ctx->span;
+    if (end > 360) end -= 360;
+
+    lv_arc_set_angles(ctx->arc, start, end);
+}
+
+static void lottie_spinner_delete_cb(lv_event_t *e)
+{
+    spinner_anim_t *ctx = (spinner_anim_t *)lv_event_get_user_data(e);
+    if (ctx) {
+        lv_anim_del(ctx, lottie_spinner_anim_cb);
+        lv_mem_free(ctx);
+    }
+}
+
 static lv_obj_t *create_lottie_asset(const asset_cfg_t *cfg)
 {
     const char *json_source = g_embedded_lottie_json;
@@ -713,10 +739,12 @@ static lv_obj_t *create_lottie_asset(const asset_cfg_t *cfg)
     lv_color_t accent = lottie_color_from_json(json_source);
     free(json_from_file);
 
-    lv_obj_t *spinner = lv_spinner_create(lv_scr_act());
+    lv_obj_t *spinner = lv_arc_create(lv_scr_act());
     if (!spinner) return NULL;
 
-    lv_spinner_set_anim_params(spinner, 1200, 60);
+    lv_obj_remove_style_all(spinner);
+    lv_arc_set_bg_angles(spinner, 0, 360);
+    lv_arc_set_angles(spinner, 0, 90);
 
     int w = cfg->width > 0 ? cfg->width : 140;
     int h = cfg->height > 0 ? cfg->height : 140;
@@ -727,6 +755,22 @@ static lv_obj_t *create_lottie_asset(const asset_cfg_t *cfg)
     lv_obj_set_style_arc_width(spinner, 6, LV_PART_INDICATOR | LV_STATE_DEFAULT);
     lv_obj_set_style_arc_color(spinner, lv_color_darken(accent, LV_OPA_60), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_arc_color(spinner, accent, LV_PART_INDICATOR | LV_STATE_DEFAULT);
+
+    spinner_anim_t *ctx = lv_mem_alloc(sizeof(spinner_anim_t));
+    if (!ctx) return spinner;
+    ctx->arc = spinner;
+    ctx->span = 120;
+
+    lv_anim_t a;
+    lv_anim_init(&a);
+    lv_anim_set_var(&a, ctx);
+    lv_anim_set_values(&a, 0, 359);
+    lv_anim_set_time(&a, 1200);
+    lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
+    lv_anim_set_exec_cb(&a, lottie_spinner_anim_cb);
+    lv_anim_start(&a);
+
+    lv_obj_add_event_cb(spinner, lottie_spinner_delete_cb, LV_EVENT_DELETE, ctx);
 
     return spinner;
 }
