@@ -28,12 +28,13 @@ Each on-screen asset binds to one `values[i]` entry via `value_index`. For bar a
   - `refresh_ms` (int): main loop period in milliseconds (clamped 10–1000); default 100 ms (~10 Hz).
   - `assets` (array, max 8): list of objects defining what to render and which UDP value to consume.
 - Asset fields:
-  - `type`: `"bar"`, `"example_bar_2"`, or `"example_scale_10"`.
+  - `type`: `"bar"`, `"example_bar_2"`, `"example_scale_10"`, or `"lottie"`.
   - `value_index` (int): which UDP `values[i]` drives this asset (0–7).
-  - `text_index` (int, optional, bars only): which UDP `texts[i]` drives the descriptor (0–7). `-1` or missing skips UDP text.
-  - `label` (string, optional, bars only): static text descriptor. Used when no `text_index` or when the mapped UDP text is empty.
+  - `text_index` (int, optional, bars and lottie): which UDP `texts[i]` drives the descriptor (0–7). `-1` or missing skips UDP text.
+  - `label` (string, optional, bars and lottie): static text descriptor. Used when no `text_index` or when the mapped UDP text is empty.
+  - `file` (string, lottie only): path to a readable `.json` Lottie animation on disk. When missing or unreadable, the device falls back to a locally rendered embedded sample animation baked into `main.c`.
   - `x`, `y` (int): position relative to the OSD top-left.
-  - `width`, `height` (int): size in pixels (optional for the scale; defaults to 200x200).
+  - `width`, `height` (int): size in pixels (optional for the scale; defaults to 200x200). For lottie, controls the animation canvas.
   - `min`, `max` (float): input range mapped to 0–100% for bars or to the scale range.
   - `color` (int): RGB hex value as a number; used by bar styles.
 
@@ -47,7 +48,8 @@ Example:
   "assets": [
     { "type": "bar", "value_index": 0, "text_index": 0, "label": "BAR CH0", "x": 40, "y": 200, "width": 320, "height": 32, "min": 0.0, "max": 1.0, "color": 2254540 },
     { "type": "example_bar_2", "value_index": 1, "text_index": 1, "label": "BAR CH1", "x": 420, "y": 140, "width": 220, "height": 24, "min": 0.0, "max": 1.0, "color": 2254540 },
-    { "type": "example_scale_10", "value_index": 2, "x": 760, "y": 260, "width": 200, "height": 200, "min": 98.0, "max": 195.0 }
+    { "type": "example_scale_10", "value_index": 2, "x": 760, "y": 260, "width": 200, "height": 200, "min": 98.0, "max": 195.0 },
+    { "type": "lottie", "file": "/customer/animation.json", "label": "Lottie", "text_index": 2, "x": 1040, "y": 80, "width": 160, "height": 160 }
   ]
 }
 ```

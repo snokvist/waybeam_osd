@@ -40,6 +40,16 @@
       "height": 200,
       "min": 98.0,
       "max": 195.0
+    },
+    {
+      "type": "lottie",
+      "file": "/customer/animation.json",
+      "label": "Lottie",
+      "text_index": 2,
+      "x": 1040,
+      "y": 80,
+      "width": 160,
+      "height": 160
     }
   ]
 }

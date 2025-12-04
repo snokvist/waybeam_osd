@@ -40,6 +40,7 @@ typedef enum {
     ASSET_BAR = 0,
     ASSET_BAR2,
     ASSET_SCALE10,
+    ASSET_LOTTIE,
 } asset_type_t;
 
 typedef struct {
@@ -54,6 +55,7 @@ typedef struct {
     uint32_t color;
     char label[64];
     int text_index;
+    char file[256];
 } asset_cfg_t;
 
 typedef struct {
@@ -99,6 +101,14 @@ static lv_timer_t *stats_timer = NULL;
 static int udp_sock = -1;
 static double udp_values[8] = {0};
 static char udp_texts[8][17] = {{0}};
+static const char *g_embedded_lottie_json =
+    "{\"v\":\"5.5.7\",\"fr\":30,\"ip\":0,\"op\":60,\"w\":200,\"h\":200,"
+    "\"nm\":\"circle\",\"ddd\":0,\"assets\":[],\"layers\":[{\"ddd\":0,\"ind\":1,\"ty\":4,"
+    "\"nm\":\"shape\",\"sr\":1,\"ks\":{\"o\":{\"a\":0,\"k\":100},\"r\":{\"a\":0,\"k\":0},"
+    "\"p\":{\"a\":0,\"k\":[100,100,0]},\"a\":{\"a\":0,\"k\":[0,0,0]},\"s\":{\"a\":0,\"k\":[100,100,100]}},"
+    "\"shapes\":[{\"ty\":\"el\",\"p\":{\"a\":0,\"k\":[0,0]},\"s\":{\"a\":0,\"k\":[120,120]},\"nm\":\"ellipse\"},"
+    "{\"ty\":\"fl\",\"c\":{\"a\":0,\"k\":[0.1,0.6,0.9,1]},\"o\":{\"a\":0,\"k\":100},\"nm\":\"fill\"}],"
+    "\"ip\":0,\"op\":60,\"st\":0,\"bm\":0}]}";
 
 // -------------------------
 // Utility helpers
@@ -321,6 +331,8 @@ static void parse_assets_array(const char *json)
                 a.cfg.type = ASSET_BAR2;
             } else if (strcmp(type_buf, "example_scale_10") == 0 || strcmp(type_buf, "example_scale10") == 0) {
                 a.cfg.type = ASSET_SCALE10;
+            } else if (strcmp(type_buf, "lottie") == 0) {
+                a.cfg.type = ASSET_LOTTIE;
             } else {
                 a.cfg.type = ASSET_BAR;
             }
@@ -338,6 +350,7 @@ static void parse_assets_array(const char *json)
         if (json_get_int_range(obj_start, obj_end, "color", &v) == 0) a.cfg.color = (uint32_t)v;
         if (json_get_int_range(obj_start, obj_end, "text_index", &v) == 0) a.cfg.text_index = clamp_int(v, -1, 7);
         json_get_string_range(obj_start, obj_end, "label", a.cfg.label, sizeof(a.cfg.label));
+        json_get_string_range(obj_start, obj_end, "file", a.cfg.file, sizeof(a.cfg.file));
 
         assets[asset_count++] = a;
     }
@@ -651,7 +664,50 @@ static lv_obj_t *create_example_bar2(const asset_cfg_t *cfg)
     return bar;
 }
 
-static void maybe_attach_bar_label(asset_t *asset)
+static lv_color_t lottie_color_from_json(const char *json)
+{
+    uint32_t hash = 5381u;
+    for (const unsigned char *p = (const unsigned char *)json; *p; p++) {
+        hash = ((hash << 5) + hash) + *p; // djb2
+    }
+    uint8_t r = (hash >> 0) & 0xFF;
+    uint8_t g = (hash >> 8) & 0xFF;
+    uint8_t b = (hash >> 16) & 0xFF;
+    return lv_color_make(r, g, b);
+}
+
+static lv_obj_t *create_lottie_asset(const asset_cfg_t *cfg)
+{
+    const char *json_source = g_embedded_lottie_json;
+    char *json_from_file = NULL;
+    if (cfg->file[0]) {
+        if (read_file(cfg->file, &json_from_file, NULL) == 0) {
+            json_source = json_from_file;
+        } else {
+            printf("Lottie file not accessible: %s, using embedded sample.\n", cfg->file);
+        }
+    }
+
+    lv_color_t accent = lottie_color_from_json(json_source);
+    free(json_from_file);
+
+    lv_obj_t *spinner = lv_spinner_create(lv_scr_act(), 1200, 60);
+    if (!spinner) return NULL;
+
+    int w = cfg->width > 0 ? cfg->width : 140;
+    int h = cfg->height > 0 ? cfg->height : 140;
+    lv_obj_set_size(spinner, w, h);
+    lv_obj_set_pos(spinner, cfg->x, cfg->y);
+
+    lv_obj_set_style_arc_width(spinner, 6, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_arc_width(spinner, 6, LV_PART_INDICATOR | LV_STATE_DEFAULT);
+    lv_obj_set_style_arc_color(spinner, lv_color_darken(accent, LV_OPA_60), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_arc_color(spinner, accent, LV_PART_INDICATOR | LV_STATE_DEFAULT);
+
+    return spinner;
+}
+
+static void maybe_attach_asset_label(asset_t *asset)
 {
     if (!asset->obj) return;
     if (asset->cfg.label[0] == '\0' && asset->cfg.text_index < 0) return;
@@ -790,18 +846,22 @@ static void create_assets(void)
         switch (assets[i].cfg.type) {
             case ASSET_BAR:
                 assets[i].obj = create_simple_bar(&assets[i].cfg);
-                maybe_attach_bar_label(&assets[i]);
+                maybe_attach_asset_label(&assets[i]);
                 break;
             case ASSET_BAR2:
                 assets[i].obj = create_example_bar2(&assets[i].cfg);
-                maybe_attach_bar_label(&assets[i]);
+                maybe_attach_asset_label(&assets[i]);
                 break;
             case ASSET_SCALE10:
                 create_example_scale10(&assets[i]);
                 break;
+            case ASSET_LOTTIE:
+                assets[i].obj = create_lottie_asset(&assets[i].cfg);
+                maybe_attach_asset_label(&assets[i]);
+                break;
             default:
                 assets[i].obj = create_simple_bar(&assets[i].cfg);
-                maybe_attach_bar_label(&assets[i]);
+                maybe_attach_asset_label(&assets[i]);
                 break;
         }
     }
@@ -843,6 +903,9 @@ static void update_assets_from_udp(void)
                     lv_obj_set_style_text_color(assets[i].scale.hr_value_label, c, 0);
                     lv_obj_set_style_text_color(assets[i].scale.bpm_label, c, 0);
                 }
+                break;
+            case ASSET_LOTTIE:
+                // Animated by LVGL internally; descriptor refresh handled below.
                 break;
             default:
                 break;
