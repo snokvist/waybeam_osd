@@ -89,10 +89,12 @@ static uint64_t fps_start_ms = 0;
 static uint32_t fps_frames = 0;
 static int idle_ms_applied = 100;
 static volatile sig_atomic_t stop_requested = 0;
+static volatile sig_atomic_t reload_requested = 0;
 static lv_timer_t *stats_timer = NULL;
 static int udp_sock = -1;
 static double udp_values[8] = {0};
 static char udp_texts[8][17] = {{0}};
+static int idle_cap_ms = 100;
 static const char *g_embedded_lottie_json =
     "{\"v\":\"5.5.7\",\"fr\":30,\"ip\":0,\"op\":60,\"w\":200,\"h\":200,"
     "\"nm\":\"circle\",\"ddd\":0,\"assets\":[],\"layers\":[{\"ddd\":0,\"ind\":1,\"ty\":4,"
@@ -793,6 +795,23 @@ static void create_assets(void)
     }
 }
 
+static void destroy_assets(void)
+{
+    for (int i = 0; i < asset_count; i++) {
+        if (assets[i].label_obj) {
+            lv_obj_del(assets[i].label_obj);
+            assets[i].label_obj = NULL;
+        }
+        if (assets[i].obj) {
+            lv_obj_del(assets[i].obj);
+            assets[i].obj = NULL;
+        }
+    }
+
+    asset_count = 0;
+    memset(assets, 0, sizeof(assets));
+}
+
 static void update_assets_from_udp(void)
 {
     for (int i = 0; i < asset_count; i++) {
@@ -839,8 +858,41 @@ static void handle_sigint(int sig)
     stop_requested = 1;
 }
 
+static void handle_sighup(int sig)
+{
+    (void)sig;
+    reload_requested = 1;
+}
+
+static void reload_config_runtime(void)
+{
+    printf("Reloading config...\n");
+
+    destroy_assets();
+    load_config();
+
+    idle_cap_ms = clamp_int(g_cfg.idle_ms, 10, 1000);
+    idle_ms_applied = idle_cap_ms;
+
+    create_assets();
+    update_assets_from_udp();
+
+    if (stats_label) {
+        if (g_cfg.show_stats) {
+            lv_obj_clear_flag(stats_label, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_add_flag(stats_label, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+
+    fps_start_ms = monotonic_ms64();
+    fps_frames = 0;
+}
+
 static void cleanup_resources(void)
 {
+    destroy_assets();
+
     if (stats_timer) {
         lv_timer_del(stats_timer);
         stats_timer = NULL;
@@ -930,6 +982,7 @@ int main(void)
     osd_width = g_cfg.width;
     osd_height = g_cfg.height;
     signal(SIGINT, handle_sigint);
+    signal(SIGHUP, handle_sighup);
 
     udp_sock = setup_udp_socket();
 
@@ -959,11 +1012,16 @@ int main(void)
 
     update_assets_from_udp();
 
-    int idle_cap_ms = clamp_int(g_cfg.idle_ms, 10, 1000);
+    idle_cap_ms = clamp_int(g_cfg.idle_ms, 10, 1000);
     idle_ms_applied = idle_cap_ms;
 
     // Main loop paced by a simple UDP poll cap
     while (!stop_requested) {
+        if (reload_requested) {
+            reload_requested = 0;
+            reload_config_runtime();
+        }
+
         uint64_t loop_start = monotonic_ms64();
 
         int wait_ms = idle_cap_ms;
