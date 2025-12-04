@@ -38,7 +38,7 @@ INCLUDES := -I$(SDK)/include \
             -I$(PWD) \
             -I$(LVGL_DIR)/$(LVGL_DIR_NAME)
 
-LIBS := -lcam_os_wrapper -lmi_rgn -lmi_sys
+LIBS := -lcam_os_wrapper -lmi_rgn -lmi_sys -lrlottie -lstdc++
 
 # Target
 all: $(OUTPUT)

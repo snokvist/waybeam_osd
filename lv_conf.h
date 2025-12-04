@@ -971,7 +971,7 @@
 #endif
 
 /** Rlottie library */
-#define LV_USE_RLOTTIE 0
+#define LV_USE_RLOTTIE 1
 
 /** Enable Vector Graphic APIs
  *  - Requires `LV_USE_MATRIX = 1` */

@@ -18,6 +18,9 @@
 #include "mi_sys.h"
 #include "mi_rgn.h"
 #include "mi_vpe.h"
+#if LV_USE_RLOTTIE
+#include "src/libs/rlottie/lv_rlottie.h"
+#endif
 
 #define DEFAULT_SCREEN_WIDTH 1280   // fallback resolution if config is absent
 #define DEFAULT_SCREEN_HEIGHT 720
@@ -708,21 +711,8 @@ static void lottie_spinner_delete_cb(lv_event_t *e)
     }
 }
 
-static lv_obj_t *create_lottie_asset(const asset_cfg_t *cfg)
+static lv_obj_t *create_lottie_spinner(const asset_cfg_t *cfg, lv_color_t accent)
 {
-    const char *json_source = g_embedded_lottie_json;
-    char *json_from_file = NULL;
-    if (cfg->file[0]) {
-        if (read_file(cfg->file, &json_from_file, NULL) == 0) {
-            json_source = json_from_file;
-        } else {
-            printf("Lottie file not accessible: %s, using embedded sample.\n", cfg->file);
-        }
-    }
-
-    lv_color_t accent = lottie_color_from_json(json_source);
-    free(json_from_file);
-
     lv_obj_t *spinner = lv_arc_create(lv_scr_act());
     if (!spinner) return NULL;
 
@@ -756,6 +746,40 @@ static lv_obj_t *create_lottie_asset(const asset_cfg_t *cfg)
 
     lv_obj_add_event_cb(spinner, lottie_spinner_delete_cb, LV_EVENT_DELETE, ctx);
 
+    return spinner;
+}
+
+static lv_obj_t *create_lottie_asset(const asset_cfg_t *cfg)
+{
+    const char *json_source = g_embedded_lottie_json;
+    char *json_from_file = NULL;
+    if (cfg->file[0]) {
+        if (read_file(cfg->file, &json_from_file, NULL) == 0) {
+            json_source = json_from_file;
+        } else {
+            printf("Lottie file not accessible: %s, using embedded sample.\n", cfg->file);
+        }
+    }
+
+#if LV_USE_RLOTTIE
+    int w = cfg->width > 0 ? cfg->width : 140;
+    int h = cfg->height > 0 ? cfg->height : 140;
+    lv_obj_t *lottie = lv_rlottie_create_from_raw(lv_scr_act(), w, h, json_source);
+    if (!lottie && json_source != g_embedded_lottie_json) {
+        lottie = lv_rlottie_create_from_raw(lv_scr_act(), w, h, g_embedded_lottie_json);
+    }
+    if (lottie) {
+        lv_obj_set_pos(lottie, cfg->x, cfg->y);
+        lv_rlottie_set_play_mode(lottie, LV_RLOTTIE_CTRL_PLAY | LV_RLOTTIE_CTRL_LOOP);
+        free(json_from_file);
+        return lottie;
+    }
+    printf("RLottie unavailable, using spinner fallback.\n");
+#endif
+
+    lv_color_t accent = lottie_color_from_json(json_source);
+    lv_obj_t *spinner = create_lottie_spinner(cfg, accent);
+    free(json_from_file);
     return spinner;
 }
 
