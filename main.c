@@ -11,6 +11,7 @@
 #include <fcntl.h>
 #include <ctype.h>
 #include <time.h>
+#include <limits.h>
 
 #include "lvgl/lvgl.h"
 #include "mi_sys.h"
@@ -73,6 +74,10 @@ typedef struct {
         float range_min;
         float range_max;
     } scale;
+    int last_pct;
+    int last_scale_value;
+    lv_color_t last_scale_color;
+    char last_label_text[64];
 } asset_t;
 
 static app_config_t g_cfg;
@@ -287,6 +292,10 @@ static void set_defaults(void)
     assets[0].cfg.min = 0.0f;
     assets[0].cfg.max = 1.0f;
     assets[0].cfg.color = 0x2266CC;
+    assets[0].last_pct = -1;
+    assets[0].last_scale_value = INT_MIN;
+    assets[0].last_scale_color = lv_color_black();
+    assets[0].last_label_text[0] = '\0';
 }
 
 static void parse_assets_array(const char *json)
@@ -352,6 +361,11 @@ static void parse_assets_array(const char *json)
         json_get_string_range(obj_start, obj_end, "label", a.cfg.label, sizeof(a.cfg.label));
         json_get_string_range(obj_start, obj_end, "file", a.cfg.file, sizeof(a.cfg.file));
 
+        a.last_pct = -1;
+        a.last_scale_value = INT_MIN;
+        a.last_scale_color = lv_color_black();
+        a.last_label_text[0] = '\0';
+
         assets[asset_count++] = a;
     }
 
@@ -368,6 +382,10 @@ static void parse_assets_array(const char *json)
         assets[0].cfg.min = 0.0f;
         assets[0].cfg.max = 1.0f;
         assets[0].cfg.color = 0x2266CC;
+        assets[0].last_pct = -1;
+        assets[0].last_scale_value = INT_MIN;
+        assets[0].last_scale_color = lv_color_black();
+        assets[0].last_label_text[0] = '\0';
     }
 }
 
@@ -882,28 +900,35 @@ static void update_assets_from_udp(void)
         v = clamp_float(v, min, max);
         float pct_f = (v - min) / (max - min);
         int pct = clamp_int((int)(pct_f * 100.0f), 0, 100);
+        int v_int = (int)v;
 
         switch (cfg->type) {
             case ASSET_BAR:
             case ASSET_BAR2:
-                if (assets[i].obj) {
+                if (assets[i].obj && assets[i].last_pct != pct) {
                     lv_bar_set_value(assets[i].obj, pct, LV_ANIM_OFF);
+                    assets[i].last_pct = pct;
                 }
                 break;
             case ASSET_SCALE10:
-                if (assets[i].scale.scale_obj && assets[i].scale.needle_line) {
+                if (assets[i].scale.scale_obj && assets[i].scale.needle_line &&
+                    assets[i].last_scale_value != v_int) {
                     lv_scale_set_line_needle_value(assets[i].scale.scale_obj,
                                                    assets[i].scale.needle_line,
                                                    -8,
-                                                   (int32_t)v);
+                                                   (int32_t)v_int);
                 }
-                if (assets[i].scale.hr_value_label) {
-                    lv_label_set_text_fmt(assets[i].scale.hr_value_label, "%d", (int)v);
+                if (assets[i].scale.hr_value_label && assets[i].last_scale_value != v_int) {
+                    lv_label_set_text_fmt(assets[i].scale.hr_value_label, "%d", v_int);
                 }
+                assets[i].last_scale_value = v_int;
                 if (assets[i].scale.bpm_label) {
                     lv_color_t c = scale_zone_color(pct_f);
-                    lv_obj_set_style_text_color(assets[i].scale.hr_value_label, c, 0);
-                    lv_obj_set_style_text_color(assets[i].scale.bpm_label, c, 0);
+                    if (lv_color_to32(c) != lv_color_to32(assets[i].last_scale_color)) {
+                        assets[i].last_scale_color = c;
+                        lv_obj_set_style_text_color(assets[i].scale.hr_value_label, c, 0);
+                        lv_obj_set_style_text_color(assets[i].scale.bpm_label, c, 0);
+                    }
                 }
                 break;
             case ASSET_LOTTIE:
@@ -915,7 +940,11 @@ static void update_assets_from_udp(void)
 
         if (assets[i].label_obj) {
             const char *txt = get_asset_text(&assets[i]);
-            lv_label_set_text(assets[i].label_obj, txt);
+            if (strncmp(txt, assets[i].last_label_text, sizeof(assets[i].last_label_text) - 1) != 0) {
+                lv_label_set_text(assets[i].label_obj, txt);
+                strncpy(assets[i].last_label_text, txt, sizeof(assets[i].last_label_text) - 1);
+                assets[i].last_label_text[sizeof(assets[i].last_label_text) - 1] = '\0';
+            }
         }
     }
 }
