@@ -1082,16 +1082,21 @@ int main(void)
     int idle_cap_ms = clamp_int(g_cfg.refresh_ms, 10, 1000);
     refresh_ms_applied = idle_cap_ms;
 
+    uint64_t next_lv_tick = monotonic_ms64();
+
     // Main loop paced by LVGL timers (with a configurable UDP poll cap)
     while (!stop_requested) {
         uint64_t loop_start = monotonic_ms64();
 
-        uint32_t lv_delay = lv_timer_handler();
-        fps_frames++;
-
-        int wait_ms = (int)lv_delay;
-        if (wait_ms < 1) wait_ms = 1;
-        if (wait_ms > idle_cap_ms) wait_ms = idle_cap_ms;
+        int wait_ms = 1;
+        if (next_lv_tick > loop_start) {
+            uint64_t until_lv = next_lv_tick - loop_start;
+            if (until_lv < (uint64_t)idle_cap_ms) wait_ms = (int)until_lv;
+            else wait_ms = idle_cap_ms;
+            if (wait_ms < 1) wait_ms = 1;
+        } else {
+            wait_ms = 1;
+        }
 
         struct pollfd pfd = {0};
         nfds_t nfds = 0;
@@ -1108,9 +1113,16 @@ int main(void)
             }
         }
 
-        uint64_t loop_end = monotonic_ms64();
-        last_frame_ms = (uint32_t)(loop_end - loop_start);
-        last_loop_ms = last_frame_ms;
+        uint64_t after_poll = monotonic_ms64();
+        if (after_poll >= next_lv_tick) {
+            uint64_t frame_start = monotonic_ms64();
+            uint32_t lv_delay = lv_timer_handler();
+            fps_frames++;
+            last_frame_ms = (uint32_t)(monotonic_ms64() - frame_start);
+            next_lv_tick = monotonic_ms64() + lv_delay;
+        }
+
+        last_loop_ms = (uint32_t)(monotonic_ms64() - loop_start);
     }
 
     cleanup_resources();
