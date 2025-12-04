@@ -18,7 +18,23 @@
 #include "mi_sys.h"
 #include "mi_rgn.h"
 #include "mi_vpe.h"
+
 #if LV_USE_RLOTTIE
+#if defined(__has_include)
+#  if __has_include(<rlottie_capi.h>)
+#    define LV_HAS_RLOTTIE 1
+#  else
+#    define LV_HAS_RLOTTIE 0
+#warning "rlottie_capi.h not found; disabling rlottie playback"
+#  endif
+#else
+#  define LV_HAS_RLOTTIE 1
+#endif
+#else
+#define LV_HAS_RLOTTIE 0
+#endif
+
+#if LV_HAS_RLOTTIE
 #include "src/libs/rlottie/lv_rlottie.h"
 #endif
 
@@ -761,7 +777,7 @@ static lv_obj_t *create_lottie_asset(const asset_cfg_t *cfg)
         }
     }
 
-#if LV_USE_RLOTTIE
+#if LV_HAS_RLOTTIE
     int w = cfg->width > 0 ? cfg->width : 140;
     int h = cfg->height > 0 ? cfg->height : 140;
     lv_obj_t *lottie = lv_rlottie_create_from_raw(lv_scr_act(), w, h, json_source);

@@ -38,7 +38,12 @@ INCLUDES := -I$(SDK)/include \
             -I$(PWD) \
             -I$(LVGL_DIR)/$(LVGL_DIR_NAME)
 
-LIBS := -lcam_os_wrapper -lmi_rgn -lmi_sys -lrlottie -lstdc++
+LV_RLOTTIE ?= $(shell sed -n 's/^#define[ \t]*LV_USE_RLOTTIE[ \t]*\([0-9]\)/\1/p' lv_conf.h)
+
+LIBS := -lcam_os_wrapper -lmi_rgn -lmi_sys -lstdc++
+ifeq ($(LV_RLOTTIE),1)
+LIBS += -lrlottie
+endif
 
 # Target
 all: $(OUTPUT)

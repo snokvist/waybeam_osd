@@ -11,7 +11,7 @@
 ./build.sh
 ```
 `lvgltest` is produced in the repo root using the Sigmastar toolchain bundled under `toolchain/`.
-The default build links against `rlottie`; provide the library in your toolchain/sysroot or disable `LV_USE_RLOTTIE` in `lv_conf.h` if playback is not required.
+`rlottie` playback is optional; enable `LV_USE_RLOTTIE` in `lv_conf.h` and provide matching headers/libs in your toolchain/sysroot. When disabled or unavailable, Lottie assets fall back to the embedded spinner animation.
 
 ## Run
 1) Adjust `config.json` (resolution, assets, idle wait, stats). See examples inside the file.
@@ -29,7 +29,7 @@ The generator emits both `values[]` and sample 16-char `texts[]` for all 8 chann
 ## Config & contract
 - `config.json` defines screen size, idle wait, stats toggle, UDP stats toggle, and up to 8 assets with positions, sizes, ranges, and color. See `CONTRACT.md` for the full schema and UDP payload format.
 - To show descriptors on bars, set `label` (static text) and/or `text_index` (binds to a `texts[]` entry from UDP).
-- Lottie assets (`type: "lottie"`) load animations from a local JSON file path via `file` and accept `label`/`text_index` descriptors like bars. When rlottie is linked (see `LV_USE_RLOTTIE` in `lv_conf.h`), the JSON is rendered as an animated lottie; missing/unreadable files or missing rlottie support fall back to an embedded spinner-style animation bundled in `main.c`.
+- Lottie assets (`type: "lottie"`) load animations from a local JSON file path via `file` and accept `label`/`text_index` descriptors like bars. When rlottie is linked (see `LV_USE_RLOTTIE` in `lv_conf.h` and ensure headers/libs are present), the JSON is rendered as an animated lottie; missing/unreadable files or missing rlottie support fall back to an embedded spinner-style animation bundled in `main.c`.
 - UDP payloads must include a top-level `values` array; missing entries default to 0. Oversized packets are dropped. The loop keeps only the newest packet per frame.
 - Optional `texts` array (max 8 entries, 16 chars each) can feed asset descriptors when `text_index` is set.
 - `udp_stats` controls whether the stats widget also lists the latest 8 numeric values and text channels (off by default).

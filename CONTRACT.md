@@ -32,7 +32,7 @@ Each on-screen asset binds to one `values[i]` entry via `value_index`. For bar a
   - `value_index` (int): which UDP `values[i]` drives this asset (0–7).
   - `text_index` (int, optional, bars and lottie): which UDP `texts[i]` drives the descriptor (0–7). `-1` or missing skips UDP text.
   - `label` (string, optional, bars and lottie): static text descriptor. Used when no `text_index` or when the mapped UDP text is empty.
-  - `file` (string, lottie only): path to a readable `.json` Lottie animation on disk. With rlottie enabled (`LV_USE_RLOTTIE`), the JSON is played directly; missing/unreadable files or missing rlottie support fall back to a locally rendered embedded sample animation baked into `main.c`.
+  - `file` (string, lottie only): path to a readable `.json` Lottie animation on disk. With rlottie enabled at compile time (`LV_USE_RLOTTIE` with matching headers/libs), the JSON is played directly; missing/unreadable files or missing rlottie support fall back to a locally rendered embedded sample animation baked into `main.c`.
   - `x`, `y` (int): position relative to the OSD top-left.
   - `width`, `height` (int): size in pixels. For lottie, controls the animation canvas.
   - `min`, `max` (float): input range mapped to 0–100% for bars.
