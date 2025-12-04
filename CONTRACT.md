@@ -5,7 +5,7 @@
 - `values` holds up to 8 numeric entries (float/double). Missing entries default to `0` on the device.
 - Extra fields are ignored so senders can add metadata if needed.
 - Keep payloads under 512 bytes (anything larger is dropped).
-- The UDP socket is drained whenever it becomes readable so only the latest datagram drives the screen; older queued packets are discarded. Sending faster than the configured `refresh_ms` cap will still work, but packets may be coalesced when idle.
+- The UDP socket is drained whenever it becomes readable so only the latest datagram drives the screen; older queued packets are discarded. Sending faster than the configured `idle_ms` cap will still work, but packets may be coalesced when idle.
 - Optional `texts` array (up to 8 strings, max 16 chars each) can be sent alongside `values`. These map to `text_index` on bar assets and override a static `label` if present. Missing or empty entries fall back to the asset’s `label`.
 
 Example:
@@ -25,7 +25,7 @@ Each on-screen asset binds to one `values[i]` entry via `value_index`. For bar a
   - `width`, `height` (int): OSD canvas resolution. Default 1280x720.
   - `show_stats` (bool): show/hide the top-left stats overlay. Default `true`.
   - `udp_stats` (bool): when `true`, the stats overlay also lists the latest 8 numeric values and text channels. Default `true`.
-  - `refresh_ms` (int): maximum idle wait between UDP polls and screen refreshes in milliseconds (clamped 10–1000); default 100 ms.
+  - `idle_ms` (int): maximum idle wait between UDP polls and screen refreshes in milliseconds (clamped 10–1000); default 100 ms. Legacy configs may still specify `refresh_ms`, which is treated the same way for compatibility.
   - `assets` (array, max 8): list of objects defining what to render and which UDP value to consume.
 - Asset fields:
   - `type`: `"bar"`, `"example_bar_2"`, `"example_scale_10"`, or `"lottie"`.

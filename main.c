@@ -35,7 +35,7 @@ typedef struct {
     int width;
     int height;
     int show_stats;
-    int refresh_ms;
+    int idle_ms;
     int udp_stats;
 } app_config_t;
 
@@ -102,7 +102,7 @@ static uint32_t last_loop_ms = 0;
 static uint32_t fps_value = 0;
 static uint64_t fps_start_ms = 0;
 static uint32_t fps_frames = 0;
-static int refresh_ms_applied = 100;
+static int idle_ms_applied = 100;
 static volatile sig_atomic_t stop_requested = 0;
 static lv_timer_t *stats_timer = NULL;
 static int udp_sock = -1;
@@ -279,7 +279,7 @@ static void set_defaults(void)
     g_cfg.width = DEFAULT_SCREEN_WIDTH;
     g_cfg.height = DEFAULT_SCREEN_HEIGHT;
     g_cfg.show_stats = 1;
-    g_cfg.refresh_ms = 100;
+    g_cfg.idle_ms = 100;
     g_cfg.udp_stats = 1;
 
     asset_count = 1;
@@ -406,7 +406,12 @@ static void load_config(void)
     if (json_get_int(json, "height", &v) == 0) g_cfg.height = v;
     if (json_get_bool(json, "show_stats", &v) == 0) g_cfg.show_stats = v;
     if (json_get_bool(json, "udp_stats", &v) == 0) g_cfg.udp_stats = v;
-    if (json_get_int(json, "refresh_ms", &v) == 0) g_cfg.refresh_ms = clamp_int(v, 10, 1000);
+    if (json_get_int(json, "idle_ms", &v) == 0) {
+        g_cfg.idle_ms = clamp_int(v, 10, 1000);
+    } else if (json_get_int(json, "refresh_ms", &v) == 0) {
+        // Backward compatibility with older configs
+        g_cfg.idle_ms = clamp_int(v, 10, 1000);
+    }
 
     // Backwards-compatible single bar fields (used only if no assets array)
     if (json_get_int(json, "bar_x", &v) == 0) assets[0].cfg.x = v;
@@ -1052,11 +1057,11 @@ static void stats_timer_cb(lv_timer_t *timer)
     off += lv_snprintf(buf + off, sizeof(buf) - off,
                        "OSD %dx%d (disp %dx%d)\n"
                        "Assets %d | primary %d,%d\n"
-                       "FPS %u | work %ums | loop %ums | refresh %dms",
+                       "FPS %u | work %ums | loop %ums | idle %dms",
                        osd_width, osd_height,
                        disp_w, disp_h,
                        asset_count, primary_w, primary_h,
-                       fps_value, last_frame_ms, last_loop_ms, refresh_ms_applied);
+                       fps_value, last_frame_ms, last_loop_ms, idle_ms_applied);
 
     if (g_cfg.udp_stats && off < (int)sizeof(buf) - 32) {
         off += lv_snprintf(buf + off, sizeof(buf) - off, "\nUDP values:");
@@ -1123,8 +1128,8 @@ int main(void)
 
     update_assets_from_udp();
 
-    int idle_cap_ms = clamp_int(g_cfg.refresh_ms, 10, 1000);
-    refresh_ms_applied = idle_cap_ms;
+    int idle_cap_ms = clamp_int(g_cfg.idle_ms, 10, 1000);
+    idle_ms_applied = idle_cap_ms;
 
     // Main loop paced by a simple UDP poll cap
     while (!stop_requested) {

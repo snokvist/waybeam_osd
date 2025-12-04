@@ -3,7 +3,7 @@
   "height": 720,
   "show_stats": true,
   "udp_stats": true,
-  "refresh_ms": 100,
+  "idle_ms": 100,
   "assets": [
     {
       "type": "bar",
