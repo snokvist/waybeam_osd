@@ -12,7 +12,6 @@
 #include <fcntl.h>
 #include <ctype.h>
 #include <time.h>
-#include <limits.h>
 #include <stdbool.h>
 
 #include "lvgl/lvgl.h"
@@ -42,7 +41,6 @@ typedef struct {
 typedef enum {
     ASSET_BAR = 0,
     ASSET_BAR2,
-    ASSET_SCALE10,
     ASSET_LOTTIE,
 } asset_type_t;
 
@@ -65,20 +63,7 @@ typedef struct {
     asset_cfg_t cfg;
     lv_obj_t *obj;
     lv_obj_t *label_obj;
-    struct {
-        lv_obj_t *needle_line;
-        lv_obj_t *hr_value_label;
-        lv_obj_t *bpm_label;
-        lv_obj_t *scale_obj;
-        lv_style_t items[5];
-        lv_style_t ind[5];
-        lv_style_t main[5];
-        float range_min;
-        float range_max;
-    } scale;
     int last_pct;
-    int last_scale_value;
-    lv_color_t last_scale_color;
     char last_label_text[64];
 } asset_t;
 
@@ -280,7 +265,7 @@ static void set_defaults(void)
     g_cfg.height = DEFAULT_SCREEN_HEIGHT;
     g_cfg.show_stats = 1;
     g_cfg.idle_ms = 100;
-    g_cfg.udp_stats = 1;
+    g_cfg.udp_stats = 0;
 
     asset_count = 1;
     memset(assets, 0, sizeof(assets));
@@ -295,8 +280,6 @@ static void set_defaults(void)
     assets[0].cfg.max = 1.0f;
     assets[0].cfg.color = 0x2266CC;
     assets[0].last_pct = -1;
-    assets[0].last_scale_value = INT_MIN;
-    assets[0].last_scale_color = lv_color_black();
     assets[0].last_label_text[0] = '\0';
 }
 
@@ -340,8 +323,6 @@ static void parse_assets_array(const char *json)
         if (json_get_string_range(obj_start, obj_end, "type", type_buf, sizeof(type_buf)) == 0) {
             if (strcmp(type_buf, "example_bar_2") == 0 || strcmp(type_buf, "example_bar2") == 0) {
                 a.cfg.type = ASSET_BAR2;
-            } else if (strcmp(type_buf, "example_scale_10") == 0 || strcmp(type_buf, "example_scale10") == 0) {
-                a.cfg.type = ASSET_SCALE10;
             } else if (strcmp(type_buf, "lottie") == 0) {
                 a.cfg.type = ASSET_LOTTIE;
             } else {
@@ -364,8 +345,6 @@ static void parse_assets_array(const char *json)
         json_get_string_range(obj_start, obj_end, "file", a.cfg.file, sizeof(a.cfg.file));
 
         a.last_pct = -1;
-        a.last_scale_value = INT_MIN;
-        a.last_scale_color = lv_color_black();
         a.last_label_text[0] = '\0';
 
         assets[asset_count++] = a;
@@ -385,8 +364,6 @@ static void parse_assets_array(const char *json)
         assets[0].cfg.max = 1.0f;
         assets[0].cfg.color = 0x2266CC;
         assets[0].last_pct = -1;
-        assets[0].last_scale_value = INT_MIN;
-        assets[0].last_scale_color = lv_color_black();
         assets[0].last_label_text[0] = '\0';
     }
 }
@@ -792,127 +769,6 @@ static void maybe_attach_asset_label(asset_t *asset)
     lv_obj_align_to(asset->label_obj, asset->obj, LV_ALIGN_OUT_RIGHT_MID, 8, 0);
 }
 
-static lv_color_t scale_zone_color(float pct)
-{
-    if (pct < 0.2f) return lv_palette_main(LV_PALETTE_GREY);
-    if (pct < 0.4f) return lv_palette_main(LV_PALETTE_BLUE);
-    if (pct < 0.6f) return lv_palette_main(LV_PALETTE_GREEN);
-    if (pct < 0.8f) return lv_palette_main(LV_PALETTE_ORANGE);
-    return lv_palette_main(LV_PALETTE_RED);
-}
-
-static void init_scale_section_styles(lv_style_t *items, lv_style_t *indicator, lv_style_t *main_style, lv_color_t color)
-{
-    lv_style_init(items);
-    lv_style_set_line_color(items, color);
-    lv_style_set_line_width(items, 0);
-
-    lv_style_init(indicator);
-    lv_style_set_line_color(indicator, color);
-    lv_style_set_line_width(indicator, 0);
-
-    lv_style_init(main_style);
-    lv_style_set_arc_color(main_style, color);
-    lv_style_set_arc_width(main_style, 20);
-}
-
-static void add_scale_section(lv_obj_t *scale,
-                              int32_t from,
-                              int32_t to,
-                              lv_style_t *items,
-                              lv_style_t *indicator,
-                              lv_style_t *main_style)
-{
-    lv_scale_section_t *sec = lv_scale_add_section(scale);
-    lv_scale_set_section_range(scale, sec, from, to);
-    lv_scale_set_section_style_items(scale, sec, items);
-    lv_scale_set_section_style_indicator(scale, sec, indicator);
-    lv_scale_set_section_style_main(scale, sec, main_style);
-}
-
-static void create_example_scale10(asset_t *asset)
-{
-    const asset_cfg_t *cfg = &asset->cfg;
-
-    float min = cfg->min;
-    float max = cfg->max;
-    if (max <= min + 0.0001f) {
-        min = 0.0f;
-        max = 100.0f;
-    }
-    asset->scale.range_min = min;
-    asset->scale.range_max = max;
-
-    asset->scale.scale_obj = lv_scale_create(lv_scr_act());
-    lv_obj_set_pos(asset->scale.scale_obj, cfg->x, cfg->y);
-    lv_obj_set_size(asset->scale.scale_obj,
-                    cfg->width > 0 ? cfg->width : 200,
-                    cfg->height > 0 ? cfg->height : 200);
-
-    lv_scale_set_mode(asset->scale.scale_obj, LV_SCALE_MODE_ROUND_INNER);
-    lv_scale_set_range(asset->scale.scale_obj, (int32_t)min, (int32_t)max);
-    lv_scale_set_total_tick_count(asset->scale.scale_obj, 15);
-    lv_scale_set_major_tick_every(asset->scale.scale_obj, 3);
-    lv_scale_set_angle_range(asset->scale.scale_obj, 280);
-    lv_scale_set_rotation(asset->scale.scale_obj, 130);
-    lv_scale_set_label_show(asset->scale.scale_obj, false);
-
-    lv_obj_set_style_length(asset->scale.scale_obj, 6, LV_PART_ITEMS);
-    lv_obj_set_style_length(asset->scale.scale_obj, 10, LV_PART_INDICATOR);
-    lv_obj_set_style_arc_width(asset->scale.scale_obj, 0, LV_PART_MAIN);
-
-    // Five equal sections to mimic the LVGL example zones
-    int32_t seg = (int32_t)((max - min) / 5.0f);
-    if (seg <= 0) seg = 1;
-    init_scale_section_styles(&asset->scale.items[0], &asset->scale.ind[0], &asset->scale.main[0], lv_palette_main(LV_PALETTE_GREY));
-    init_scale_section_styles(&asset->scale.items[1], &asset->scale.ind[1], &asset->scale.main[1], lv_palette_main(LV_PALETTE_BLUE));
-    init_scale_section_styles(&asset->scale.items[2], &asset->scale.ind[2], &asset->scale.main[2], lv_palette_main(LV_PALETTE_GREEN));
-    init_scale_section_styles(&asset->scale.items[3], &asset->scale.ind[3], &asset->scale.main[3], lv_palette_main(LV_PALETTE_ORANGE));
-    init_scale_section_styles(&asset->scale.items[4], &asset->scale.ind[4], &asset->scale.main[4], lv_palette_main(LV_PALETTE_RED));
-
-    add_scale_section(asset->scale.scale_obj, (int32_t)min, (int32_t)(min + seg), &asset->scale.items[0], &asset->scale.ind[0], &asset->scale.main[0]);
-    add_scale_section(asset->scale.scale_obj, (int32_t)(min + seg), (int32_t)(min + seg * 2), &asset->scale.items[1], &asset->scale.ind[1], &asset->scale.main[1]);
-    add_scale_section(asset->scale.scale_obj, (int32_t)(min + seg * 2), (int32_t)(min + seg * 3), &asset->scale.items[2], &asset->scale.ind[2], &asset->scale.main[2]);
-    add_scale_section(asset->scale.scale_obj, (int32_t)(min + seg * 3), (int32_t)(min + seg * 4), &asset->scale.items[3], &asset->scale.ind[3], &asset->scale.main[3]);
-    add_scale_section(asset->scale.scale_obj, (int32_t)(min + seg * 4), (int32_t)max, &asset->scale.items[4], &asset->scale.ind[4], &asset->scale.main[4]);
-
-    asset->scale.needle_line = lv_line_create(asset->scale.scale_obj);
-    lv_obj_set_style_line_color(asset->scale.needle_line, lv_color_black(), LV_PART_MAIN);
-    lv_obj_set_style_line_width(asset->scale.needle_line, 12, LV_PART_MAIN);
-    lv_obj_set_style_length(asset->scale.needle_line, 20, LV_PART_MAIN);
-    lv_obj_set_style_line_rounded(asset->scale.needle_line, false, LV_PART_MAIN);
-    lv_obj_set_style_pad_right(asset->scale.needle_line, 50, LV_PART_MAIN);
-
-    lv_scale_set_line_needle_value(asset->scale.scale_obj, asset->scale.needle_line, 0, (int32_t)min);
-
-    lv_obj_t *circle = lv_obj_create(lv_scr_act());
-    lv_obj_set_size(circle, 130, 130);
-    lv_obj_align_to(circle, asset->scale.scale_obj, LV_ALIGN_CENTER, 0, 0);
-    lv_obj_set_style_radius(circle, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_color(circle, lv_obj_get_style_bg_color(lv_scr_act(), LV_PART_MAIN), 0);
-    lv_obj_set_style_bg_opa(circle, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(circle, 0, LV_PART_MAIN);
-
-    lv_obj_t *container = lv_obj_create(circle);
-    lv_obj_center(container);
-    lv_obj_set_size(container, lv_pct(100), LV_SIZE_CONTENT);
-    lv_obj_set_style_bg_opa(container, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(container, 0, 0);
-    lv_obj_set_layout(container, LV_LAYOUT_FLEX);
-    lv_obj_set_flex_flow(container, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_all(container, 0, LV_PART_MAIN);
-    lv_obj_set_style_pad_row(container, 0, 0);
-    lv_obj_set_flex_align(container, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-
-    asset->scale.hr_value_label = lv_label_create(container);
-    lv_label_set_text(asset->scale.hr_value_label, "0");
-    lv_obj_set_style_text_align(asset->scale.hr_value_label, LV_TEXT_ALIGN_CENTER, 0);
-
-    asset->scale.bpm_label = lv_label_create(container);
-    lv_label_set_text(asset->scale.bpm_label, "bpm");
-    lv_obj_set_style_text_align(asset->scale.bpm_label, LV_TEXT_ALIGN_CENTER, 0);
-}
-
 static void create_assets(void)
 {
     for (int i = 0; i < asset_count; i++) {
@@ -924,9 +780,6 @@ static void create_assets(void)
             case ASSET_BAR2:
                 assets[i].obj = create_example_bar2(&assets[i].cfg);
                 maybe_attach_asset_label(&assets[i]);
-                break;
-            case ASSET_SCALE10:
-                create_example_scale10(&assets[i]);
                 break;
             case ASSET_LOTTIE:
                 assets[i].obj = create_lottie_asset(&assets[i].cfg);
@@ -953,7 +806,6 @@ static void update_assets_from_udp(void)
         v = clamp_float(v, min, max);
         float pct_f = (v - min) / (max - min);
         int pct = clamp_int((int)(pct_f * 100.0f), 0, 100);
-        int v_int = (int)v;
 
         switch (cfg->type) {
             case ASSET_BAR:
@@ -961,27 +813,6 @@ static void update_assets_from_udp(void)
                 if (assets[i].obj && assets[i].last_pct != pct) {
                     lv_bar_set_value(assets[i].obj, pct, LV_ANIM_OFF);
                     assets[i].last_pct = pct;
-                }
-                break;
-            case ASSET_SCALE10:
-                if (assets[i].scale.scale_obj && assets[i].scale.needle_line &&
-                    assets[i].last_scale_value != v_int) {
-                    lv_scale_set_line_needle_value(assets[i].scale.scale_obj,
-                                                   assets[i].scale.needle_line,
-                                                   -8,
-                                                   (int32_t)v_int);
-                }
-                if (assets[i].scale.hr_value_label && assets[i].last_scale_value != v_int) {
-                    lv_label_set_text_fmt(assets[i].scale.hr_value_label, "%d", v_int);
-                }
-                assets[i].last_scale_value = v_int;
-                if (assets[i].scale.bpm_label) {
-                    lv_color_t c = scale_zone_color(pct_f);
-                    if (memcmp(&c, &assets[i].last_scale_color, sizeof(lv_color_t)) != 0) {
-                        assets[i].last_scale_color = c;
-                        lv_obj_set_style_text_color(assets[i].scale.hr_value_label, c, 0);
-                        lv_obj_set_style_text_color(assets[i].scale.bpm_label, c, 0);
-                    }
                 }
                 break;
             case ASSET_LOTTIE:
@@ -1044,7 +875,7 @@ static void stats_timer_cb(lv_timer_t *timer)
     int primary_w = 0;
     int primary_h = 0;
     if (asset_count > 0) {
-        lv_obj_t *p = assets[0].obj ? assets[0].obj : assets[0].scale.scale_obj;
+        lv_obj_t *p = assets[0].obj;
         if (p) {
             primary_w = lv_obj_get_width(p);
             primary_h = lv_obj_get_height(p);
