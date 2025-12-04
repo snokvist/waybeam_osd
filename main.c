@@ -691,8 +691,10 @@ static lv_obj_t *create_lottie_asset(const asset_cfg_t *cfg)
     lv_color_t accent = lottie_color_from_json(json_source);
     free(json_from_file);
 
-    lv_obj_t *spinner = lv_spinner_create(lv_scr_act(), 1200, 60);
+    lv_obj_t *spinner = lv_spinner_create(lv_scr_act());
     if (!spinner) return NULL;
+
+    lv_spinner_set_anim_params(spinner, 1200, 60);
 
     int w = cfg->width > 0 ? cfg->width : 140;
     int h = cfg->height > 0 ? cfg->height : 140;
