@@ -924,7 +924,7 @@ static void update_assets_from_udp(void)
                 assets[i].last_scale_value = v_int;
                 if (assets[i].scale.bpm_label) {
                     lv_color_t c = scale_zone_color(pct_f);
-                    if (lv_color_to32(c) != lv_color_to32(assets[i].last_scale_color)) {
+                    if (memcmp(&c, &assets[i].last_scale_color, sizeof(lv_color_t)) != 0) {
                         assets[i].last_scale_color = c;
                         lv_obj_set_style_text_color(assets[i].scale.hr_value_label, c, 0);
                         lv_obj_set_style_text_color(assets[i].scale.bpm_label, c, 0);
