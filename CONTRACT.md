@@ -20,7 +20,7 @@ Example:
 Each on-screen asset binds to one `values[i]` entry via `value_index`. For bar assets, `text_index` maps the descriptor to `texts[i]`; otherwise the bar uses the optional static `label`. When `udp_stats` is enabled, the stats overlay also lists all 8 numeric values and text entries vertically.
 
 ## Local config file (`config.json`)
-- JSON file read at startup; missing keys fall back to defaults.
+- JSON file read at startup; missing keys fall back to defaults. Send `SIGHUP` to the running process to reload the file without restarting (asset layout, stats toggle, and `idle_ms` update in-place; resolution still follows the startup config).
 - Top-level fields:
   - `width`, `height` (int): OSD canvas resolution. Default 1280x720.
   - `show_stats` (bool): show/hide the top-left stats overlay. Default `true`.
