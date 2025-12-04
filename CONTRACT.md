@@ -5,7 +5,7 @@
 - `values` holds up to 8 numeric entries (float/double). Missing entries default to `0` on the device.
 - Extra fields are ignored so senders can add metadata if needed.
 - Keep payloads under 512 bytes (anything larger is dropped).
-- The UDP socket is drained whenever it becomes readable so only the latest datagram drives the screen; older queued packets are discarded. Sending faster than the configured `idle_ms` cap will still work, but packets may be coalesced when idle.
+- The UDP socket is drained whenever it becomes readable so only the latest datagram drives the screen; older queued packets are discarded. Incoming packets trigger an immediate refresh when received, while `idle_ms` only caps the sleep when no data arrives.
 - Optional `texts` array (up to 8 strings, max 16 chars each) can be sent alongside `values`. These map to `text_index` on bar assets and override a static `label` if present. Missing or empty entries fall back to the asset’s `label`.
 
 Example:
