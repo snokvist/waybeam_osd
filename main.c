@@ -4,6 +4,7 @@
 #include <unistd.h>
 #include <string.h>
 #include <sys/time.h>
+#include <poll.h>
 #include <signal.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -11,6 +12,7 @@
 #include <fcntl.h>
 #include <ctype.h>
 #include <time.h>
+#include <stdbool.h>
 
 #include "lvgl/lvgl.h"
 #include "mi_sys.h"
@@ -32,14 +34,14 @@ typedef struct {
     int width;
     int height;
     int show_stats;
-    int refresh_ms;
+    int idle_ms;
     int udp_stats;
 } app_config_t;
 
 typedef enum {
     ASSET_BAR = 0,
     ASSET_BAR2,
-    ASSET_SCALE10,
+    ASSET_LOTTIE,
 } asset_type_t;
 
 typedef struct {
@@ -54,23 +56,15 @@ typedef struct {
     uint32_t color;
     char label[64];
     int text_index;
+    char file[256];
 } asset_cfg_t;
 
 typedef struct {
     asset_cfg_t cfg;
     lv_obj_t *obj;
     lv_obj_t *label_obj;
-    struct {
-        lv_obj_t *needle_line;
-        lv_obj_t *hr_value_label;
-        lv_obj_t *bpm_label;
-        lv_obj_t *scale_obj;
-        lv_style_t items[5];
-        lv_style_t ind[5];
-        lv_style_t main[5];
-        float range_min;
-        float range_max;
-    } scale;
+    int last_pct;
+    char last_label_text[64];
 } asset_t;
 
 static app_config_t g_cfg;
@@ -93,12 +87,20 @@ static uint32_t last_loop_ms = 0;
 static uint32_t fps_value = 0;
 static uint64_t fps_start_ms = 0;
 static uint32_t fps_frames = 0;
-static int refresh_ms_applied = 100;
+static int idle_ms_applied = 100;
 static volatile sig_atomic_t stop_requested = 0;
 static lv_timer_t *stats_timer = NULL;
 static int udp_sock = -1;
 static double udp_values[8] = {0};
 static char udp_texts[8][17] = {{0}};
+static const char *g_embedded_lottie_json =
+    "{\"v\":\"5.5.7\",\"fr\":30,\"ip\":0,\"op\":60,\"w\":200,\"h\":200,"
+    "\"nm\":\"circle\",\"ddd\":0,\"assets\":[],\"layers\":[{\"ddd\":0,\"ind\":1,\"ty\":4,"
+    "\"nm\":\"shape\",\"sr\":1,\"ks\":{\"o\":{\"a\":0,\"k\":100},\"r\":{\"a\":0,\"k\":0},"
+    "\"p\":{\"a\":0,\"k\":[100,100,0]},\"a\":{\"a\":0,\"k\":[0,0,0]},\"s\":{\"a\":0,\"k\":[100,100,100]}},"
+    "\"shapes\":[{\"ty\":\"el\",\"p\":{\"a\":0,\"k\":[0,0]},\"s\":{\"a\":0,\"k\":[120,120]},\"nm\":\"ellipse\"},"
+    "{\"ty\":\"fl\",\"c\":{\"a\":0,\"k\":[0.1,0.6,0.9,1]},\"o\":{\"a\":0,\"k\":100},\"nm\":\"fill\"}],"
+    "\"ip\":0,\"op\":60,\"st\":0,\"bm\":0}]}";
 
 // -------------------------
 // Utility helpers
@@ -262,8 +264,8 @@ static void set_defaults(void)
     g_cfg.width = DEFAULT_SCREEN_WIDTH;
     g_cfg.height = DEFAULT_SCREEN_HEIGHT;
     g_cfg.show_stats = 1;
-    g_cfg.refresh_ms = 100;
-    g_cfg.udp_stats = 1;
+    g_cfg.idle_ms = 100;
+    g_cfg.udp_stats = 0;
 
     asset_count = 1;
     memset(assets, 0, sizeof(assets));
@@ -277,6 +279,8 @@ static void set_defaults(void)
     assets[0].cfg.min = 0.0f;
     assets[0].cfg.max = 1.0f;
     assets[0].cfg.color = 0x2266CC;
+    assets[0].last_pct = -1;
+    assets[0].last_label_text[0] = '\0';
 }
 
 static void parse_assets_array(const char *json)
@@ -319,8 +323,8 @@ static void parse_assets_array(const char *json)
         if (json_get_string_range(obj_start, obj_end, "type", type_buf, sizeof(type_buf)) == 0) {
             if (strcmp(type_buf, "example_bar_2") == 0 || strcmp(type_buf, "example_bar2") == 0) {
                 a.cfg.type = ASSET_BAR2;
-            } else if (strcmp(type_buf, "example_scale_10") == 0 || strcmp(type_buf, "example_scale10") == 0) {
-                a.cfg.type = ASSET_SCALE10;
+            } else if (strcmp(type_buf, "lottie") == 0) {
+                a.cfg.type = ASSET_LOTTIE;
             } else {
                 a.cfg.type = ASSET_BAR;
             }
@@ -338,6 +342,10 @@ static void parse_assets_array(const char *json)
         if (json_get_int_range(obj_start, obj_end, "color", &v) == 0) a.cfg.color = (uint32_t)v;
         if (json_get_int_range(obj_start, obj_end, "text_index", &v) == 0) a.cfg.text_index = clamp_int(v, -1, 7);
         json_get_string_range(obj_start, obj_end, "label", a.cfg.label, sizeof(a.cfg.label));
+        json_get_string_range(obj_start, obj_end, "file", a.cfg.file, sizeof(a.cfg.file));
+
+        a.last_pct = -1;
+        a.last_label_text[0] = '\0';
 
         assets[asset_count++] = a;
     }
@@ -355,6 +363,8 @@ static void parse_assets_array(const char *json)
         assets[0].cfg.min = 0.0f;
         assets[0].cfg.max = 1.0f;
         assets[0].cfg.color = 0x2266CC;
+        assets[0].last_pct = -1;
+        assets[0].last_label_text[0] = '\0';
     }
 }
 
@@ -373,7 +383,12 @@ static void load_config(void)
     if (json_get_int(json, "height", &v) == 0) g_cfg.height = v;
     if (json_get_bool(json, "show_stats", &v) == 0) g_cfg.show_stats = v;
     if (json_get_bool(json, "udp_stats", &v) == 0) g_cfg.udp_stats = v;
-    if (json_get_int(json, "refresh_ms", &v) == 0) g_cfg.refresh_ms = clamp_int(v, 10, 1000);
+    if (json_get_int(json, "idle_ms", &v) == 0) {
+        g_cfg.idle_ms = clamp_int(v, 10, 1000);
+    } else if (json_get_int(json, "refresh_ms", &v) == 0) {
+        // Backward compatibility with older configs
+        g_cfg.idle_ms = clamp_int(v, 10, 1000);
+    }
 
     // Backwards-compatible single bar fields (used only if no assets array)
     if (json_get_int(json, "bar_x", &v) == 0) assets[0].cfg.x = v;
@@ -471,9 +486,9 @@ static const char *get_asset_text(const asset_t *asset)
     return "";
 }
 
-static void poll_udp(void)
+static bool poll_udp(void)
 {
-    if (udp_sock < 0) return;
+    if (udp_sock < 0) return false;
     char buf[UDP_MAX_PACKET];
     ssize_t r = 0;
     ssize_t last_r = -1;
@@ -485,7 +500,9 @@ static void poll_udp(void)
         buf[last_r] = '\0';
         parse_udp_values(buf);
         parse_udp_texts(buf);
+        return true;
     }
+    return false;
 }
 
 // -------------------------
@@ -651,7 +668,96 @@ static lv_obj_t *create_example_bar2(const asset_cfg_t *cfg)
     return bar;
 }
 
-static void maybe_attach_bar_label(asset_t *asset)
+static lv_color_t lottie_color_from_json(const char *json)
+{
+    uint32_t hash = 5381u;
+    for (const unsigned char *p = (const unsigned char *)json; *p; p++) {
+        hash = ((hash << 5) + hash) + *p; // djb2
+    }
+    uint8_t r = (hash >> 0) & 0xFF;
+    uint8_t g = (hash >> 8) & 0xFF;
+    uint8_t b = (hash >> 16) & 0xFF;
+    return lv_color_make(r, g, b);
+}
+
+typedef struct {
+    lv_obj_t *arc;
+    int16_t span;
+} spinner_anim_t;
+
+static void lottie_spinner_anim_cb(void *var, int32_t v)
+{
+    spinner_anim_t *ctx = (spinner_anim_t *)var;
+    if (!ctx || !ctx->arc) return;
+
+    int16_t start = (int16_t)(v % 360);
+    int16_t end = start + ctx->span;
+    if (end > 360) end -= 360;
+
+    lv_arc_set_angles(ctx->arc, start, end);
+}
+
+static void lottie_spinner_delete_cb(lv_event_t *e)
+{
+    spinner_anim_t *ctx = (spinner_anim_t *)lv_event_get_user_data(e);
+    if (ctx) {
+        lv_anim_del(ctx, lottie_spinner_anim_cb);
+        free(ctx);
+    }
+}
+
+static lv_obj_t *create_lottie_asset(const asset_cfg_t *cfg)
+{
+    const char *json_source = g_embedded_lottie_json;
+    char *json_from_file = NULL;
+    if (cfg->file[0]) {
+        if (read_file(cfg->file, &json_from_file, NULL) == 0) {
+            json_source = json_from_file;
+        } else {
+            printf("Lottie file not accessible: %s, using embedded sample.\n", cfg->file);
+        }
+    }
+
+    lv_color_t accent = lottie_color_from_json(json_source);
+    free(json_from_file);
+
+    lv_obj_t *spinner = lv_arc_create(lv_scr_act());
+    if (!spinner) return NULL;
+
+    lv_obj_remove_style_all(spinner);
+    lv_arc_set_bg_angles(spinner, 0, 360);
+    lv_arc_set_angles(spinner, 0, 90);
+
+    int w = cfg->width > 0 ? cfg->width : 140;
+    int h = cfg->height > 0 ? cfg->height : 140;
+    lv_obj_set_size(spinner, w, h);
+    lv_obj_set_pos(spinner, cfg->x, cfg->y);
+
+    lv_obj_set_style_arc_width(spinner, 6, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_arc_width(spinner, 6, LV_PART_INDICATOR | LV_STATE_DEFAULT);
+    lv_obj_set_style_arc_color(spinner, lv_color_darken(accent, LV_OPA_60), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_arc_color(spinner, accent, LV_PART_INDICATOR | LV_STATE_DEFAULT);
+
+    spinner_anim_t *ctx = malloc(sizeof(spinner_anim_t));
+    if (!ctx) return spinner;
+    ctx->arc = spinner;
+    ctx->span = 120;
+
+    lv_anim_t a;
+    lv_anim_init(&a);
+    lv_anim_set_var(&a, ctx);
+    lv_anim_set_values(&a, 0, 359);
+    lv_anim_set_time(&a, 1200);
+    lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
+    lv_anim_set_exec_cb(&a, lottie_spinner_anim_cb);
+    lv_anim_start(&a);
+
+    lv_obj_add_event_cb(spinner, lottie_spinner_delete_cb, LV_EVENT_DELETE, ctx);
+
+    return spinner;
+}
+
+static void maybe_attach_asset_label(asset_t *asset)
 {
     if (!asset->obj) return;
     if (asset->cfg.label[0] == '\0' && asset->cfg.text_index < 0) return;
@@ -663,145 +769,25 @@ static void maybe_attach_bar_label(asset_t *asset)
     lv_obj_align_to(asset->label_obj, asset->obj, LV_ALIGN_OUT_RIGHT_MID, 8, 0);
 }
 
-static lv_color_t scale_zone_color(float pct)
-{
-    if (pct < 0.2f) return lv_palette_main(LV_PALETTE_GREY);
-    if (pct < 0.4f) return lv_palette_main(LV_PALETTE_BLUE);
-    if (pct < 0.6f) return lv_palette_main(LV_PALETTE_GREEN);
-    if (pct < 0.8f) return lv_palette_main(LV_PALETTE_ORANGE);
-    return lv_palette_main(LV_PALETTE_RED);
-}
-
-static void init_scale_section_styles(lv_style_t *items, lv_style_t *indicator, lv_style_t *main_style, lv_color_t color)
-{
-    lv_style_init(items);
-    lv_style_set_line_color(items, color);
-    lv_style_set_line_width(items, 0);
-
-    lv_style_init(indicator);
-    lv_style_set_line_color(indicator, color);
-    lv_style_set_line_width(indicator, 0);
-
-    lv_style_init(main_style);
-    lv_style_set_arc_color(main_style, color);
-    lv_style_set_arc_width(main_style, 20);
-}
-
-static void add_scale_section(lv_obj_t *scale,
-                              int32_t from,
-                              int32_t to,
-                              lv_style_t *items,
-                              lv_style_t *indicator,
-                              lv_style_t *main_style)
-{
-    lv_scale_section_t *sec = lv_scale_add_section(scale);
-    lv_scale_set_section_range(scale, sec, from, to);
-    lv_scale_set_section_style_items(scale, sec, items);
-    lv_scale_set_section_style_indicator(scale, sec, indicator);
-    lv_scale_set_section_style_main(scale, sec, main_style);
-}
-
-static void create_example_scale10(asset_t *asset)
-{
-    const asset_cfg_t *cfg = &asset->cfg;
-
-    float min = cfg->min;
-    float max = cfg->max;
-    if (max <= min + 0.0001f) {
-        min = 0.0f;
-        max = 100.0f;
-    }
-    asset->scale.range_min = min;
-    asset->scale.range_max = max;
-
-    asset->scale.scale_obj = lv_scale_create(lv_scr_act());
-    lv_obj_set_pos(asset->scale.scale_obj, cfg->x, cfg->y);
-    lv_obj_set_size(asset->scale.scale_obj,
-                    cfg->width > 0 ? cfg->width : 200,
-                    cfg->height > 0 ? cfg->height : 200);
-
-    lv_scale_set_mode(asset->scale.scale_obj, LV_SCALE_MODE_ROUND_INNER);
-    lv_scale_set_range(asset->scale.scale_obj, (int32_t)min, (int32_t)max);
-    lv_scale_set_total_tick_count(asset->scale.scale_obj, 15);
-    lv_scale_set_major_tick_every(asset->scale.scale_obj, 3);
-    lv_scale_set_angle_range(asset->scale.scale_obj, 280);
-    lv_scale_set_rotation(asset->scale.scale_obj, 130);
-    lv_scale_set_label_show(asset->scale.scale_obj, false);
-
-    lv_obj_set_style_length(asset->scale.scale_obj, 6, LV_PART_ITEMS);
-    lv_obj_set_style_length(asset->scale.scale_obj, 10, LV_PART_INDICATOR);
-    lv_obj_set_style_arc_width(asset->scale.scale_obj, 0, LV_PART_MAIN);
-
-    // Five equal sections to mimic the LVGL example zones
-    int32_t seg = (int32_t)((max - min) / 5.0f);
-    if (seg <= 0) seg = 1;
-    init_scale_section_styles(&asset->scale.items[0], &asset->scale.ind[0], &asset->scale.main[0], lv_palette_main(LV_PALETTE_GREY));
-    init_scale_section_styles(&asset->scale.items[1], &asset->scale.ind[1], &asset->scale.main[1], lv_palette_main(LV_PALETTE_BLUE));
-    init_scale_section_styles(&asset->scale.items[2], &asset->scale.ind[2], &asset->scale.main[2], lv_palette_main(LV_PALETTE_GREEN));
-    init_scale_section_styles(&asset->scale.items[3], &asset->scale.ind[3], &asset->scale.main[3], lv_palette_main(LV_PALETTE_ORANGE));
-    init_scale_section_styles(&asset->scale.items[4], &asset->scale.ind[4], &asset->scale.main[4], lv_palette_main(LV_PALETTE_RED));
-
-    add_scale_section(asset->scale.scale_obj, (int32_t)min, (int32_t)(min + seg), &asset->scale.items[0], &asset->scale.ind[0], &asset->scale.main[0]);
-    add_scale_section(asset->scale.scale_obj, (int32_t)(min + seg), (int32_t)(min + seg * 2), &asset->scale.items[1], &asset->scale.ind[1], &asset->scale.main[1]);
-    add_scale_section(asset->scale.scale_obj, (int32_t)(min + seg * 2), (int32_t)(min + seg * 3), &asset->scale.items[2], &asset->scale.ind[2], &asset->scale.main[2]);
-    add_scale_section(asset->scale.scale_obj, (int32_t)(min + seg * 3), (int32_t)(min + seg * 4), &asset->scale.items[3], &asset->scale.ind[3], &asset->scale.main[3]);
-    add_scale_section(asset->scale.scale_obj, (int32_t)(min + seg * 4), (int32_t)max, &asset->scale.items[4], &asset->scale.ind[4], &asset->scale.main[4]);
-
-    asset->scale.needle_line = lv_line_create(asset->scale.scale_obj);
-    lv_obj_set_style_line_color(asset->scale.needle_line, lv_color_black(), LV_PART_MAIN);
-    lv_obj_set_style_line_width(asset->scale.needle_line, 12, LV_PART_MAIN);
-    lv_obj_set_style_length(asset->scale.needle_line, 20, LV_PART_MAIN);
-    lv_obj_set_style_line_rounded(asset->scale.needle_line, false, LV_PART_MAIN);
-    lv_obj_set_style_pad_right(asset->scale.needle_line, 50, LV_PART_MAIN);
-
-    lv_scale_set_line_needle_value(asset->scale.scale_obj, asset->scale.needle_line, 0, (int32_t)min);
-
-    lv_obj_t *circle = lv_obj_create(lv_scr_act());
-    lv_obj_set_size(circle, 130, 130);
-    lv_obj_align_to(circle, asset->scale.scale_obj, LV_ALIGN_CENTER, 0, 0);
-    lv_obj_set_style_radius(circle, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_color(circle, lv_obj_get_style_bg_color(lv_scr_act(), LV_PART_MAIN), 0);
-    lv_obj_set_style_bg_opa(circle, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(circle, 0, LV_PART_MAIN);
-
-    lv_obj_t *container = lv_obj_create(circle);
-    lv_obj_center(container);
-    lv_obj_set_size(container, lv_pct(100), LV_SIZE_CONTENT);
-    lv_obj_set_style_bg_opa(container, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(container, 0, 0);
-    lv_obj_set_layout(container, LV_LAYOUT_FLEX);
-    lv_obj_set_flex_flow(container, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_all(container, 0, LV_PART_MAIN);
-    lv_obj_set_style_pad_row(container, 0, 0);
-    lv_obj_set_flex_align(container, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-
-    asset->scale.hr_value_label = lv_label_create(container);
-    lv_label_set_text(asset->scale.hr_value_label, "0");
-    lv_obj_set_style_text_align(asset->scale.hr_value_label, LV_TEXT_ALIGN_CENTER, 0);
-
-    asset->scale.bpm_label = lv_label_create(container);
-    lv_label_set_text(asset->scale.bpm_label, "bpm");
-    lv_obj_set_style_text_align(asset->scale.bpm_label, LV_TEXT_ALIGN_CENTER, 0);
-}
-
 static void create_assets(void)
 {
     for (int i = 0; i < asset_count; i++) {
         switch (assets[i].cfg.type) {
             case ASSET_BAR:
                 assets[i].obj = create_simple_bar(&assets[i].cfg);
-                maybe_attach_bar_label(&assets[i]);
+                maybe_attach_asset_label(&assets[i]);
                 break;
             case ASSET_BAR2:
                 assets[i].obj = create_example_bar2(&assets[i].cfg);
-                maybe_attach_bar_label(&assets[i]);
+                maybe_attach_asset_label(&assets[i]);
                 break;
-            case ASSET_SCALE10:
-                create_example_scale10(&assets[i]);
+            case ASSET_LOTTIE:
+                assets[i].obj = create_lottie_asset(&assets[i].cfg);
+                maybe_attach_asset_label(&assets[i]);
                 break;
             default:
                 assets[i].obj = create_simple_bar(&assets[i].cfg);
-                maybe_attach_bar_label(&assets[i]);
+                maybe_attach_asset_label(&assets[i]);
                 break;
         }
     }
@@ -824,25 +810,13 @@ static void update_assets_from_udp(void)
         switch (cfg->type) {
             case ASSET_BAR:
             case ASSET_BAR2:
-                if (assets[i].obj) {
+                if (assets[i].obj && assets[i].last_pct != pct) {
                     lv_bar_set_value(assets[i].obj, pct, LV_ANIM_OFF);
+                    assets[i].last_pct = pct;
                 }
                 break;
-            case ASSET_SCALE10:
-                if (assets[i].scale.scale_obj && assets[i].scale.needle_line) {
-                    lv_scale_set_line_needle_value(assets[i].scale.scale_obj,
-                                                   assets[i].scale.needle_line,
-                                                   -8,
-                                                   (int32_t)v);
-                }
-                if (assets[i].scale.hr_value_label) {
-                    lv_label_set_text_fmt(assets[i].scale.hr_value_label, "%d", (int)v);
-                }
-                if (assets[i].scale.bpm_label) {
-                    lv_color_t c = scale_zone_color(pct_f);
-                    lv_obj_set_style_text_color(assets[i].scale.hr_value_label, c, 0);
-                    lv_obj_set_style_text_color(assets[i].scale.bpm_label, c, 0);
-                }
+            case ASSET_LOTTIE:
+                // Animated by LVGL internally; descriptor refresh handled below.
                 break;
             default:
                 break;
@@ -850,7 +824,11 @@ static void update_assets_from_udp(void)
 
         if (assets[i].label_obj) {
             const char *txt = get_asset_text(&assets[i]);
-            lv_label_set_text(assets[i].label_obj, txt);
+            if (strncmp(txt, assets[i].last_label_text, sizeof(assets[i].last_label_text) - 1) != 0) {
+                lv_label_set_text(assets[i].label_obj, txt);
+                strncpy(assets[i].last_label_text, txt, sizeof(assets[i].last_label_text) - 1);
+                assets[i].last_label_text[sizeof(assets[i].last_label_text) - 1] = '\0';
+            }
         }
     }
 }
@@ -897,7 +875,7 @@ static void stats_timer_cb(lv_timer_t *timer)
     int primary_w = 0;
     int primary_h = 0;
     if (asset_count > 0) {
-        lv_obj_t *p = assets[0].obj ? assets[0].obj : assets[0].scale.scale_obj;
+        lv_obj_t *p = assets[0].obj;
         if (p) {
             primary_w = lv_obj_get_width(p);
             primary_h = lv_obj_get_height(p);
@@ -910,11 +888,11 @@ static void stats_timer_cb(lv_timer_t *timer)
     off += lv_snprintf(buf + off, sizeof(buf) - off,
                        "OSD %dx%d (disp %dx%d)\n"
                        "Assets %d | primary %d,%d\n"
-                       "FPS %u | work %ums | loop %ums | refresh %dms",
+                       "FPS %u | work %ums | loop %ums | idle %dms",
                        osd_width, osd_height,
                        disp_w, disp_h,
                        asset_count, primary_w, primary_h,
-                       fps_value, last_frame_ms, last_loop_ms, refresh_ms_applied);
+                       fps_value, last_frame_ms, last_loop_ms, idle_ms_applied);
 
     if (g_cfg.udp_stats && off < (int)sizeof(buf) - 32) {
         off += lv_snprintf(buf + off, sizeof(buf) - off, "\nUDP values:");
@@ -981,27 +959,38 @@ int main(void)
 
     update_assets_from_udp();
 
-    int sleep_ms = clamp_int(g_cfg.refresh_ms, 10, 1000);
-    refresh_ms_applied = sleep_ms;
-    uint64_t next_deadline = monotonic_ms64();
+    int idle_cap_ms = clamp_int(g_cfg.idle_ms, 10, 1000);
+    idle_ms_applied = idle_cap_ms;
 
-    // Main loop at configured rate (default 10 Hz)
+    // Main loop paced by a simple UDP poll cap
     while (!stop_requested) {
-        uint64_t loop_start = next_deadline;
-        poll_udp();
-        update_assets_from_udp();
+        uint64_t loop_start = monotonic_ms64();
+
+        int wait_ms = idle_cap_ms;
+
+        struct pollfd pfd = {0};
+        nfds_t nfds = 0;
+        if (udp_sock >= 0) {
+            pfd.fd = udp_sock;
+            pfd.events = POLLIN;
+            nfds = 1;
+        }
+
+        uint64_t poll_start = monotonic_ms64();
+        int ret = poll(nfds ? &pfd : NULL, nfds, wait_ms);
+        uint64_t poll_spent = monotonic_ms64() - poll_start;
+        idle_ms_applied = clamp_int((int)poll_spent, 0, idle_cap_ms);
+        if (ret > 0 && (pfd.revents & POLLIN)) {
+            if (poll_udp()) {
+                update_assets_from_udp();
+            }
+        }
+
+        uint64_t frame_start = monotonic_ms64();
         lv_timer_handler();
         fps_frames++;
-        uint64_t after_work = monotonic_ms64();
-        last_frame_ms = (uint32_t)(after_work - loop_start);
-        next_deadline += (uint64_t)sleep_ms;
-        uint64_t now = monotonic_ms64();
-        if (next_deadline > now) {
-            uint64_t remain = next_deadline - now;
-            usleep((useconds_t)(remain * 1000ULL));
-        } else {
-            next_deadline = now;
-        }
+        last_frame_ms = (uint32_t)(monotonic_ms64() - frame_start);
+
         last_loop_ms = (uint32_t)(monotonic_ms64() - loop_start);
     }
 

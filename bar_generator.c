@@ -7,7 +7,7 @@
 // Simple UDP generator that animates a full 8-value payload at ~10 Hz.
 // value[0]: 0..1 triangle wave (bar)
 // value[1]: 1..0 triangle wave (example_bar_2)
-// value[2]: 98..195 ramp (example_scale_10)
+// value[2]: 98..195 ramp (spare/lottie)
 // value[3]: 0..100 ramp (spare bar)
 // value[4]: -50..50 triangle (spare bar)
 // value[5]: 0..360 wrap (e.g. degrees)
