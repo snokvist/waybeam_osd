@@ -1145,7 +1145,10 @@ int main(void)
             nfds = 1;
         }
 
+        uint64_t poll_start = monotonic_ms64();
         int ret = poll(nfds ? &pfd : NULL, nfds, wait_ms);
+        uint64_t poll_spent = monotonic_ms64() - poll_start;
+        idle_ms_applied = clamp_int((int)poll_spent, 0, idle_cap_ms);
         if (ret > 0 && (pfd.revents & POLLIN)) {
             if (poll_udp()) {
                 update_assets_from_udp();
