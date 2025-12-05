@@ -435,14 +435,24 @@ static void layout_bar_asset(asset_t *asset)
     int pad_y = 6;
     int bar_width = cfg->width > 0 ? cfg->width : (cfg->type == ASSET_BAR ? 320 : 200);
     int bar_height = cfg->height > 0 ? cfg->height : (cfg->type == ASSET_BAR ? 32 : 20);
-    int label_width = asset->label_obj ? lv_obj_get_width(asset->label_obj) : 0;
-    int label_height = asset->label_obj ? lv_obj_get_height(asset->label_obj) : 0;
+    int label_width = 0;
+    int label_height = 0;
+
+    if (asset->label_obj) {
+        lv_obj_update_layout(asset->label_obj);
+        label_width = lv_obj_get_width(asset->label_obj);
+        label_height = lv_obj_get_height(asset->label_obj);
+    }
 
     int container_height = bar_height;
     if (label_height > container_height) container_height = label_height;
     container_height += pad_y * 2;
     int container_width = bar_width + pad_x * 2;
-    if (label_width > 0) container_width += label_width + pad_x;
+    int label_x = bar_width + pad_x * 2;
+    if (label_width > 0) {
+        container_width += label_width + pad_x;
+        label_x += pad_x;
+    }
 
     lv_obj_set_size(asset->container_obj, container_width, container_height);
     lv_obj_set_pos(asset->container_obj, cfg->x, cfg->y);
@@ -452,7 +462,7 @@ static void layout_bar_asset(asset_t *asset)
     lv_obj_align(asset->obj, LV_ALIGN_LEFT_MID, pad_x, 0);
 
     if (asset->label_obj) {
-        lv_obj_align(asset->label_obj, LV_ALIGN_RIGHT_MID, -pad_x, 0);
+        lv_obj_align(asset->label_obj, LV_ALIGN_LEFT_MID, label_x, 0);
     }
 }
 
