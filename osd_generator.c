@@ -1,4 +1,5 @@
 #include <arpa/inet.h>
+#include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -71,36 +72,49 @@ int main(int argc, char **argv)
             bar_color = 0xFFA500; // orange
         }
 
-#define APPEND_UPDATE(fmt, ...) \
-        do { \
-            int add = snprintf(updates + uoff, sizeof(updates) - (size_t)uoff, \
-                               first_update ? fmt : "," fmt, __VA_ARGS__); \
-            if (add < 0 || add >= (int)(sizeof(updates) - (size_t)uoff)) { \
-                fprintf(stderr, "Asset update buffer overflow\n"); \
-                close(sock); \
-                return 1; \
-            } \
-            uoff += add; \
-            first_update = 0; \
-        } while (0)
+        int append_update(const char *fmt, ...)
+        {
+            if (!fmt) return -1;
+            if (!first_update) {
+                if ((size_t)uoff + 1 >= sizeof(updates)) return -1;
+                updates[uoff++] = ',';
+            }
 
-        // Enable asset 6 as a bar and bind it to value[6]
-        APPEND_UPDATE("{\"id\":6,\"enabled\":true,\"type\":\"bar\",\"value_index\":6,\"label\":\"UDP BAR 6\","
-                      "\"x\":10,\"y\":200,\"width\":300,\"height\":24,\"min\":0,\"max\":1,"
-                      "\"bar_color\":%u,\"text_color\":16777215,\"background\":1,\"background_opacity\":60}",
-                      0x00AA00u);
-
-        // Enable asset 7 as a text widget fed by texts[7]
-        APPEND_UPDATE("{\"id\":7,\"enabled\":true,\"type\":\"text\",\"text_indices\":[7],"
-                      "\"text_inline\":true,\"label\":\"UDP TEXT 7\",\"x\":360,\"y\":200,\"width\":320,\"height\":60,"
-                      "\"background\":3,\"background_opacity\":50,\"text_color\":16777215}");
-
-        if (bar_color != last_bar_color) {
-            APPEND_UPDATE("{\"id\":0,\"bar_color\":%u}", bar_color);
-            last_bar_color = bar_color;
+            va_list ap;
+            va_start(ap, fmt);
+            int add = vsnprintf(updates + uoff, sizeof(updates) - (size_t)uoff, fmt, ap);
+            va_end(ap);
+            if (add < 0 || add >= (int)(sizeof(updates) - (size_t)uoff)) {
+                return -1;
+            }
+            uoff += add;
+            first_update = 0;
+            return 0;
         }
 
-#undef APPEND_UPDATE
+        // Enable asset 6 as a bar and bind it to value[6]
+        if (append_update("{\"id\":6,\"enabled\":true,\"type\":\"bar\",\"value_index\":6,\"label\":\"UDP BAR 6\",\"x\":10,\"y\":200,\"width\":300,\"height\":24,\"min\":0,\"max\":1,\"bar_color\":%u,\"text_color\":16777215,\"background\":1,\"background_opacity\":60}",
+                           0x00AA00u) != 0) {
+            fprintf(stderr, "Asset update buffer overflow\n");
+            close(sock);
+            return 1;
+        }
+
+        // Enable asset 7 as a text widget fed by texts[7]
+        if (append_update("{\"id\":7,\"enabled\":true,\"type\":\"text\",\"text_indices\":[7],\"text_inline\":true,\"label\":\"UDP TEXT 7\",\"x\":360,\"y\":200,\"width\":320,\"height\":60,\"background\":3,\"background_opacity\":50,\"text_color\":16777215}") != 0) {
+            fprintf(stderr, "Asset update buffer overflow\n");
+            close(sock);
+            return 1;
+        }
+
+        if (bar_color != last_bar_color) {
+            if (append_update("{\"id\":0,\"bar_color\":%u}", bar_color) != 0) {
+                fprintf(stderr, "Asset update buffer overflow\n");
+                close(sock);
+                return 1;
+            }
+            last_bar_color = bar_color;
+        }
 
         int len = snprintf(buf, sizeof(buf),
                            "{\"values\":[%.3f,%.3f,%.1f,%.1f,%.1f,%.1f,%.3f,%.3f],"

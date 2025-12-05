@@ -44,6 +44,11 @@ typedef enum {
     ASSET_TEXT,
 } asset_type_t;
 
+typedef enum {
+    ORIENTATION_RIGHT = 0,
+    ORIENTATION_LEFT,
+} asset_orientation_t;
+
 typedef struct {
     asset_type_t type;
     int id;
@@ -64,6 +69,7 @@ typedef struct {
     int text_indices[8];
     int text_indices_count;
     int text_inline;
+    asset_orientation_t orientation;
 } asset_cfg_t;
 
 typedef struct {
@@ -137,6 +143,14 @@ static float clamp_float(float v, float lo, float hi) {
     if (v < lo) return lo;
     if (v > hi) return hi;
     return v;
+}
+
+static asset_orientation_t parse_orientation_string(const char *str, asset_orientation_t def)
+{
+    if (!str) return def;
+    if (strcmp(str, "left") == 0) return ORIENTATION_LEFT;
+    if (strcmp(str, "right") == 0) return ORIENTATION_RIGHT;
+    return def;
 }
 
 static int read_file(const char *path, char **out_buf, size_t *out_len)
@@ -346,6 +360,7 @@ static void init_asset_defaults(asset_t *a, int id)
     a->cfg.text_indices_count = 0;
     a->cfg.text_inline = 0;
     a->cfg.text_index = -1;
+    a->cfg.orientation = ORIENTATION_RIGHT;
     a->cfg.label[0] = '\0';
     a->last_pct = -1;
     a->last_label_text[0] = '\0';
@@ -377,17 +392,23 @@ static void apply_asset_styles(asset_t *asset)
         case ASSET_BAR:
             style_bar_container(asset, lv_color_hex(0x222222), LV_OPA_40);
             if (asset->obj) {
+                int thickness = cfg->height > 0 ? cfg->height : (cfg->type == ASSET_BAR ? 32 : 20);
                 lv_obj_set_style_bg_opa(asset->obj, LV_OPA_TRANSP, LV_PART_MAIN);
                 lv_obj_set_style_bg_color(asset->obj, lv_color_hex(cfg->color), LV_PART_INDICATOR);
                 lv_obj_set_style_bg_opa(asset->obj, LV_OPA_COVER, LV_PART_INDICATOR);
+                lv_obj_set_style_radius(asset->obj, thickness / 2, LV_PART_MAIN);
+                lv_obj_set_style_radius(asset->obj, thickness / 2, LV_PART_INDICATOR);
             }
             break;
         case ASSET_BAR2:
             style_bar_container(asset, lv_color_hex(0x222222), LV_OPA_40);
             if (asset->obj) {
+                int thickness = cfg->height > 0 ? cfg->height : (cfg->type == ASSET_BAR ? 32 : 20);
                 lv_obj_set_style_border_color(asset->obj, lv_color_hex(cfg->color), 0);
                 lv_obj_set_style_bg_color(asset->obj, lv_color_hex(cfg->color), LV_PART_INDICATOR);
                 lv_obj_set_style_bg_opa(asset->obj, LV_OPA_COVER, LV_PART_INDICATOR);
+                lv_obj_set_style_radius(asset->obj, thickness / 2, LV_PART_MAIN);
+                lv_obj_set_style_radius(asset->obj, thickness / 2, LV_PART_INDICATOR);
             }
             break;
         case ASSET_TEXT:
@@ -446,25 +467,43 @@ static void layout_bar_asset(asset_t *asset)
         label_height = lv_obj_get_height(asset->label_obj);
     }
 
+    int extra_height = (cfg->type == ASSET_BAR2) ? 4 : 0;
     int container_height = bar_height;
     if (label_height > container_height) container_height = label_height;
-    int extra_height = (cfg->type == ASSET_BAR2) ? 4 : 0;
     container_height += pad_y * 2 + extra_height;
-    int gap = label_width > 0 ? pad_x : 0;
-    int tail_pad = pad_x;
-    if (label_width > 0) tail_pad += 8;
+    int gap = (label_width > 0) ? pad_x : 0;
+    int tail_pad = pad_x + (label_width > 0 ? 4 : 0);
     int container_width = pad_x + bar_width + gap + label_width + tail_pad;
-    int label_x = pad_x + bar_width + gap;
 
     lv_obj_set_size(asset->container_obj, container_width, container_height);
     lv_obj_set_pos(asset->container_obj, cfg->x, cfg->y);
-    lv_obj_set_style_radius(asset->container_obj, container_height / 2, 0);
+    int container_radius = container_height / 2;
+    lv_obj_set_style_radius(asset->container_obj, container_radius, 0);
 
     lv_obj_set_size(asset->obj, bar_width, bar_height);
-    lv_obj_align(asset->obj, LV_ALIGN_LEFT_MID, pad_x, 0);
+    lv_obj_set_style_radius(asset->obj, bar_height / 2, LV_PART_MAIN);
+    lv_obj_set_style_radius(asset->obj, bar_height / 2, LV_PART_INDICATOR);
+    lv_obj_set_style_transform_angle(asset->obj, 0, LV_PART_MAIN);
+    lv_obj_set_style_transform_angle(asset->obj, 0, LV_PART_INDICATOR);
+    lv_obj_set_style_transform_pivot_x(asset->obj, bar_width / 2, LV_PART_MAIN);
+    lv_obj_set_style_transform_pivot_y(asset->obj, bar_height / 2, LV_PART_MAIN);
+    lv_obj_set_style_transform_pivot_x(asset->obj, bar_width / 2, LV_PART_INDICATOR);
+    lv_obj_set_style_transform_pivot_y(asset->obj, bar_height / 2, LV_PART_INDICATOR);
 
-    if (asset->label_obj) {
-        lv_obj_align(asset->label_obj, LV_ALIGN_LEFT_MID, label_x, 0);
+    if (cfg->orientation == ORIENTATION_LEFT) {
+        lv_obj_set_style_transform_angle(asset->obj, 1800, LV_PART_MAIN);
+        lv_obj_set_style_transform_angle(asset->obj, 1800, LV_PART_INDICATOR);
+        int bar_x = pad_x + label_width + gap;
+        if (asset->label_obj) {
+            lv_obj_align(asset->label_obj, LV_ALIGN_LEFT_MID, pad_x, 0);
+        }
+        lv_obj_align(asset->obj, LV_ALIGN_LEFT_MID, bar_x, 0);
+    } else {
+        int label_x = pad_x + bar_width + gap;
+        lv_obj_align(asset->obj, LV_ALIGN_LEFT_MID, pad_x, 0);
+        if (asset->label_obj) {
+            lv_obj_align(asset->label_obj, LV_ALIGN_LEFT_MID, label_x, 0);
+        }
     }
 }
 
@@ -556,6 +595,10 @@ static void parse_assets_array(const char *json)
         json_get_int_array_range(obj_start, obj_end, "text_indices", a.cfg.text_indices, 8, &a.cfg.text_indices_count);
         if (json_get_bool_range(obj_start, obj_end, "text_inline", &v) == 0) a.cfg.text_inline = v;
         json_get_string_range(obj_start, obj_end, "label", a.cfg.label, sizeof(a.cfg.label));
+        char orient_buf[16];
+        if (json_get_string_range(obj_start, obj_end, "orientation", orient_buf, sizeof(orient_buf)) == 0) {
+            a.cfg.orientation = parse_orientation_string(orient_buf, ORIENTATION_RIGHT);
+        }
 
         a.last_pct = -1;
         a.last_label_text[0] = '\0';
@@ -777,6 +820,15 @@ static void parse_udp_asset_updates(const char *buf)
 
         if (json_get_string_range(obj_start, obj_end, "label", asset->cfg.label, sizeof(asset->cfg.label)) == 0) {
             text_change = 1;
+        }
+
+        char orient_buf[16];
+        if (json_get_string_range(obj_start, obj_end, "orientation", orient_buf, sizeof(orient_buf)) == 0) {
+            asset_orientation_t orientation = parse_orientation_string(orient_buf, asset->cfg.orientation);
+            if (orientation != asset->cfg.orientation) {
+                asset->cfg.orientation = orientation;
+                relayout = 1;
+            }
         }
 
         if (json_get_int_range(obj_start, obj_end, "bar_color", &v) == 0) {
