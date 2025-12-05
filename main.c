@@ -462,9 +462,17 @@ static void layout_bar_asset(asset_t *asset)
     int label_height = 0;
 
     if (asset->label_obj) {
-        lv_obj_update_layout(asset->label_obj);
+        // Avoid a full layout pass when we already have cached label dimensions, but
+        // fall back to calculating them if they haven't been resolved yet. This keeps
+        // orientation changes from degenerating into repeated layouts while still
+        // giving left/right placement accurate sizing data.
         label_width = lv_obj_get_width(asset->label_obj);
         label_height = lv_obj_get_height(asset->label_obj);
+        if (label_width == 0 || label_height == 0) {
+            lv_obj_update_layout(asset->label_obj);
+            label_width = lv_obj_get_width(asset->label_obj);
+            label_height = lv_obj_get_height(asset->label_obj);
+        }
     }
 
     int extra_height = (cfg->type == ASSET_BAR2) ? 4 : 0;
@@ -483,16 +491,12 @@ static void layout_bar_asset(asset_t *asset)
     lv_obj_set_size(asset->obj, bar_width, bar_height);
     lv_obj_set_style_radius(asset->obj, bar_height / 2, LV_PART_MAIN);
     lv_obj_set_style_radius(asset->obj, bar_height / 2, LV_PART_INDICATOR);
-    lv_obj_set_style_transform_angle(asset->obj, 0, LV_PART_MAIN);
-    lv_obj_set_style_transform_angle(asset->obj, 0, LV_PART_INDICATOR);
-    lv_obj_set_style_transform_pivot_x(asset->obj, bar_width / 2, LV_PART_MAIN);
-    lv_obj_set_style_transform_pivot_y(asset->obj, bar_height / 2, LV_PART_MAIN);
-    lv_obj_set_style_transform_pivot_x(asset->obj, bar_width / 2, LV_PART_INDICATOR);
-    lv_obj_set_style_transform_pivot_y(asset->obj, bar_height / 2, LV_PART_INDICATOR);
+    lv_obj_set_style_base_dir(asset->obj, LV_BASE_DIR_LTR, LV_PART_MAIN);
+    lv_obj_set_style_base_dir(asset->obj, LV_BASE_DIR_LTR, LV_PART_INDICATOR);
 
     if (cfg->orientation == ORIENTATION_LEFT) {
-        lv_obj_set_style_transform_angle(asset->obj, 1800, LV_PART_MAIN);
-        lv_obj_set_style_transform_angle(asset->obj, 1800, LV_PART_INDICATOR);
+        lv_obj_set_style_base_dir(asset->obj, LV_BASE_DIR_RTL, LV_PART_MAIN);
+        lv_obj_set_style_base_dir(asset->obj, LV_BASE_DIR_RTL, LV_PART_INDICATOR);
         int bar_x = pad_x + label_width + gap;
         if (asset->label_obj) {
             lv_obj_align(asset->label_obj, LV_ALIGN_LEFT_MID, pad_x, 0);
