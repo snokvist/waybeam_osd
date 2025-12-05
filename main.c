@@ -68,6 +68,7 @@ typedef struct {
 
 typedef struct {
     asset_cfg_t cfg;
+    lv_obj_t *container_obj;
     lv_obj_t *obj;
     lv_obj_t *label_obj;
     int last_pct;
@@ -311,6 +312,7 @@ static lv_opa_t pct_to_opa(int pct)
 }
 
 static void apply_background_style(lv_obj_t *obj, int bg_style, int bg_opacity_pct, lv_part_t part);
+static void layout_bar_asset(asset_t *asset);
 
 static asset_t *find_asset_by_id(int id)
 {
@@ -354,25 +356,30 @@ static void apply_asset_styles(asset_t *asset)
 
     switch (cfg->type) {
         case ASSET_BAR:
-            if (asset->obj) {
+            if (asset->container_obj) {
                 if (cfg->bg_style >= 0) {
-                    apply_background_style(asset->obj, cfg->bg_style, cfg->bg_opacity_pct, LV_PART_MAIN);
+                    apply_background_style(asset->container_obj, cfg->bg_style, cfg->bg_opacity_pct, 0);
                 } else {
-                    lv_obj_set_style_bg_color(asset->obj, lv_color_hex(0x222222), LV_PART_MAIN);
-                    lv_obj_set_style_bg_opa(asset->obj, LV_OPA_40, LV_PART_MAIN);
+                    lv_obj_set_style_bg_color(asset->container_obj, lv_color_hex(0x222222), 0);
+                    lv_obj_set_style_bg_opa(asset->container_obj, LV_OPA_40, 0);
                 }
+            }
+            if (asset->obj) {
+                lv_obj_set_style_bg_opa(asset->obj, LV_OPA_TRANSP, LV_PART_MAIN);
                 lv_obj_set_style_bg_color(asset->obj, lv_color_hex(cfg->color), LV_PART_INDICATOR);
                 lv_obj_set_style_bg_opa(asset->obj, LV_OPA_COVER, LV_PART_INDICATOR);
             }
             break;
         case ASSET_BAR2:
-            if (asset->obj) {
+            if (asset->container_obj) {
                 if (cfg->bg_style >= 0) {
-                    apply_background_style(asset->obj, cfg->bg_style, cfg->bg_opacity_pct, 0);
+                    apply_background_style(asset->container_obj, cfg->bg_style, cfg->bg_opacity_pct, 0);
                 } else {
-                    lv_obj_set_style_bg_color(asset->obj, lv_color_hex(0x111111), 0);
-                    lv_obj_set_style_bg_opa(asset->obj, LV_OPA_30, 0);
+                    lv_obj_set_style_bg_color(asset->container_obj, lv_color_hex(0x111111), 0);
+                    lv_obj_set_style_bg_opa(asset->container_obj, LV_OPA_30, 0);
                 }
+            }
+            if (asset->obj) {
                 lv_obj_set_style_border_color(asset->obj, lv_color_hex(cfg->color), 0);
                 lv_obj_set_style_bg_color(asset->obj, lv_color_hex(cfg->color), LV_PART_INDICATOR);
                 lv_obj_set_style_bg_opa(asset->obj, LV_OPA_COVER, LV_PART_INDICATOR);
@@ -390,7 +397,11 @@ static void apply_asset_styles(asset_t *asset)
     }
 
     if (asset->label_obj) {
-        apply_background_style(asset->label_obj, cfg->bg_style, cfg->bg_opacity_pct, 0);
+        if (cfg->type == ASSET_TEXT) {
+            apply_background_style(asset->label_obj, cfg->bg_style, cfg->bg_opacity_pct, 0);
+        } else {
+            lv_obj_set_style_bg_opa(asset->label_obj, LV_OPA_TRANSP, 0);
+        }
         lv_obj_set_style_text_color(asset->label_obj, lv_color_hex(cfg->text_color), 0);
         lv_obj_set_style_text_opa(asset->label_obj, LV_OPA_COVER, 0);
     }
@@ -411,6 +422,35 @@ static void apply_background_style(lv_obj_t *obj, int bg_style, int bg_opacity_p
         opa = pct_to_opa(bg_opacity_pct);
     }
     lv_obj_set_style_bg_opa(obj, opa, part);
+}
+
+static void layout_bar_asset(asset_t *asset)
+{
+    if (!asset || !asset->container_obj || !asset->obj) return;
+    const asset_cfg_t *cfg = &asset->cfg;
+    int pad_x = 8;
+    int pad_y = 6;
+    int bar_width = cfg->width > 0 ? cfg->width : (cfg->type == ASSET_BAR ? 320 : 200);
+    int bar_height = cfg->height > 0 ? cfg->height : (cfg->type == ASSET_BAR ? 32 : 20);
+    int label_width = asset->label_obj ? lv_obj_get_width(asset->label_obj) : 0;
+    int label_height = asset->label_obj ? lv_obj_get_height(asset->label_obj) : 0;
+
+    int container_height = bar_height;
+    if (label_height > container_height) container_height = label_height;
+    container_height += pad_y * 2;
+    int container_width = bar_width + pad_x * 2;
+    if (label_width > 0) container_width += label_width + pad_x;
+
+    lv_obj_set_size(asset->container_obj, container_width, container_height);
+    lv_obj_set_pos(asset->container_obj, cfg->x, cfg->y);
+    lv_obj_set_style_radius(asset->container_obj, container_height / 2, 0);
+
+    lv_obj_set_size(asset->obj, bar_width, bar_height);
+    lv_obj_align(asset->obj, LV_ALIGN_LEFT_MID, pad_x, 0);
+
+    if (asset->label_obj) {
+        lv_obj_align(asset->label_obj, LV_ALIGN_RIGHT_MID, -pad_x, 0);
+    }
 }
 
 static int json_get_string_range(const char *start, const char *end, const char *key, char *buf, size_t buf_sz)
@@ -813,14 +853,9 @@ static void parse_udp_asset_updates(const char *buf)
                     int width = asset->cfg.width > 0 ? asset->cfg.width : LV_SIZE_CONTENT;
                     int height = asset->cfg.height > 0 ? asset->cfg.height : LV_SIZE_CONTENT;
                     lv_obj_set_size(asset->obj, width, height);
+                    lv_obj_set_pos(asset->obj, asset->cfg.x, asset->cfg.y);
                 } else {
-                    int width = asset->cfg.width > 0 ? asset->cfg.width : (asset->cfg.type == ASSET_BAR ? 320 : 200);
-                    int height = asset->cfg.height > 0 ? asset->cfg.height : (asset->cfg.type == ASSET_BAR ? 32 : 20);
-                    lv_obj_set_size(asset->obj, width, height);
-                }
-                lv_obj_set_pos(asset->obj, asset->cfg.x, asset->cfg.y);
-                if (asset->label_obj && asset->cfg.type != ASSET_TEXT) {
-                    lv_obj_align_to(asset->label_obj, asset->obj, LV_ALIGN_OUT_RIGHT_MID, 8, 0);
+                    layout_bar_asset(asset);
                 }
             }
 
@@ -1036,19 +1071,42 @@ void init_lvgl(void)
 }
 
 
-static lv_obj_t *create_simple_bar(const asset_cfg_t *cfg)
+static lv_obj_t *create_simple_bar(asset_t *asset)
 {
-    lv_obj_t *bar = lv_bar_create(lv_scr_act());
-    lv_obj_set_size(bar, cfg->width, cfg->height);
-    lv_obj_align(bar, LV_ALIGN_TOP_LEFT, cfg->x, cfg->y);
-    if (cfg->bg_style >= 0) {
-        apply_background_style(bar, cfg->bg_style, cfg->bg_opacity_pct, LV_PART_MAIN);
-    } else {
-        lv_obj_set_style_bg_color(bar, lv_color_hex(0x222222), LV_PART_MAIN);
-        lv_obj_set_style_bg_opa(bar, LV_OPA_40, LV_PART_MAIN);
-    }
+    if (!asset) return NULL;
+    const asset_cfg_t *cfg = &asset->cfg;
+    asset->container_obj = lv_obj_create(lv_scr_act());
+    lv_obj_remove_style_all(asset->container_obj);
+    lv_obj_clear_flag(asset->container_obj, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *bar = lv_bar_create(asset->container_obj);
+    lv_obj_set_style_bg_opa(bar, LV_OPA_TRANSP, LV_PART_MAIN);
+    lv_obj_set_style_radius(bar, cfg->height > 0 ? cfg->height / 2 : 16, LV_PART_MAIN);
+    lv_obj_set_style_radius(bar, 3, LV_PART_INDICATOR);
     lv_obj_set_style_bg_color(bar, lv_color_hex(cfg->color), LV_PART_INDICATOR);
     lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, LV_PART_INDICATOR);
+    lv_bar_set_range(bar, 0, 100);
+    return bar;
+}
+
+static lv_obj_t *create_example_bar2(asset_t *asset)
+{
+    if (!asset) return NULL;
+    const asset_cfg_t *cfg = &asset->cfg;
+    asset->container_obj = lv_obj_create(lv_scr_act());
+    lv_obj_remove_style_all(asset->container_obj);
+    lv_obj_clear_flag(asset->container_obj, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *bar = lv_bar_create(asset->container_obj);
+    lv_obj_remove_style_all(bar);
+    lv_obj_set_style_border_width(bar, 2, 0);
+    lv_obj_set_style_border_color(bar, lv_color_hex(cfg->color), 0);
+    lv_obj_set_style_pad_all(bar, 6, 0);
+    lv_obj_set_style_radius(bar, 6, 0);
+    lv_obj_set_style_anim_duration(bar, 1000, 0);
+    lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, LV_PART_INDICATOR);
+    lv_obj_set_style_bg_color(bar, lv_color_hex(cfg->color), LV_PART_INDICATOR);
+    lv_obj_set_style_radius(bar, 3, LV_PART_INDICATOR);
     lv_bar_set_range(bar, 0, 100);
     return bar;
 }
@@ -1056,40 +1114,17 @@ static lv_obj_t *create_simple_bar(const asset_cfg_t *cfg)
 static void destroy_asset_visual(asset_t *asset)
 {
     if (!asset) return;
-    if (asset->label_obj) {
-        lv_obj_del(asset->label_obj);
-        asset->label_obj = NULL;
+    if (asset->container_obj) {
+        lv_obj_del(asset->container_obj);
+    } else {
+        if (asset->label_obj) lv_obj_del(asset->label_obj);
+        if (asset->obj) lv_obj_del(asset->obj);
     }
-    if (asset->obj) {
-        lv_obj_del(asset->obj);
-        asset->obj = NULL;
-    }
+    asset->container_obj = NULL;
+    asset->label_obj = NULL;
+    asset->obj = NULL;
     asset->last_pct = -1;
     asset->last_label_text[0] = '\0';
-}
-
-static lv_obj_t *create_example_bar2(const asset_cfg_t *cfg)
-{
-    lv_obj_t *bar = lv_bar_create(lv_scr_act());
-    lv_obj_remove_style_all(bar);
-    lv_obj_set_size(bar, cfg->width > 0 ? cfg->width : 200, cfg->height > 0 ? cfg->height : 20);
-    lv_obj_set_pos(bar, cfg->x, cfg->y);
-    lv_obj_set_style_border_width(bar, 2, 0);
-    lv_obj_set_style_border_color(bar, lv_color_hex(cfg->color), 0);
-    lv_obj_set_style_pad_all(bar, 6, 0);
-    lv_obj_set_style_radius(bar, 6, 0);
-    lv_obj_set_style_anim_duration(bar, 1000, 0);
-    if (cfg->bg_style >= 0) {
-        apply_background_style(bar, cfg->bg_style, cfg->bg_opacity_pct, 0);
-    } else {
-        lv_obj_set_style_bg_color(bar, lv_color_hex(0x111111), 0);
-        lv_obj_set_style_bg_opa(bar, LV_OPA_30, 0);
-    }
-    lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, LV_PART_INDICATOR);
-    lv_obj_set_style_bg_color(bar, lv_color_hex(cfg->color), LV_PART_INDICATOR);
-    lv_obj_set_style_radius(bar, 3, LV_PART_INDICATOR);
-    lv_bar_set_range(bar, 0, 100);
-    return bar;
 }
 
 static lv_obj_t *create_text_asset(asset_t *asset)
@@ -1118,20 +1153,24 @@ static void create_asset_visual(asset_t *asset)
     destroy_asset_visual(asset);
     switch (asset->cfg.type) {
         case ASSET_BAR:
-            asset->obj = create_simple_bar(&asset->cfg);
+            asset->obj = create_simple_bar(asset);
             maybe_attach_asset_label(asset);
             break;
         case ASSET_BAR2:
-            asset->obj = create_example_bar2(&asset->cfg);
+            asset->obj = create_example_bar2(asset);
             maybe_attach_asset_label(asset);
             break;
         case ASSET_TEXT:
             asset->obj = create_text_asset(asset);
             break;
         default:
-            asset->obj = create_simple_bar(&asset->cfg);
+            asset->obj = create_simple_bar(asset);
             maybe_attach_asset_label(asset);
             break;
+    }
+
+    if (asset->container_obj && asset->cfg.type != ASSET_TEXT) {
+        layout_bar_asset(asset);
     }
 }
 
@@ -1140,17 +1179,22 @@ static void maybe_attach_asset_label(asset_t *asset)
     if (!asset->obj) return;
     if (asset->cfg.type == ASSET_TEXT) return;
     if (asset->cfg.label[0] == '\0' && asset->cfg.text_index < 0) return;
-    asset->label_obj = lv_label_create(lv_scr_act());
+    lv_obj_t *parent = asset->container_obj ? asset->container_obj : lv_scr_act();
+    asset->label_obj = lv_label_create(parent);
     lv_obj_set_style_text_color(asset->label_obj, lv_color_hex(asset->cfg.text_color), 0);
     lv_obj_set_style_text_opa(asset->label_obj, LV_OPA_COVER, 0);
-    apply_background_style(asset->label_obj, asset->cfg.bg_style, asset->cfg.bg_opacity_pct, 0);
+    lv_obj_set_style_bg_opa(asset->label_obj, LV_OPA_TRANSP, 0);
 
     char text_buf[128];
     compose_asset_text(asset, text_buf, sizeof(text_buf));
     lv_label_set_text(asset->label_obj, text_buf);
     strncpy(asset->last_label_text, text_buf, sizeof(asset->last_label_text) - 1);
     asset->last_label_text[sizeof(asset->last_label_text) - 1] = '\0';
-    lv_obj_align_to(asset->label_obj, asset->obj, LV_ALIGN_OUT_RIGHT_MID, 8, 0);
+    if (asset->container_obj) {
+        layout_bar_asset(asset);
+    } else {
+        lv_obj_align_to(asset->label_obj, asset->obj, LV_ALIGN_OUT_RIGHT_MID, 8, 0);
+    }
 }
 
 static void create_assets(void)
@@ -1216,6 +1260,9 @@ static void update_assets_from_udp(void)
                 lv_label_set_text(assets[i].label_obj, text_buf);
                 strncpy(assets[i].last_label_text, text_buf, sizeof(assets[i].last_label_text) - 1);
                 assets[i].last_label_text[sizeof(assets[i].last_label_text) - 1] = '\0';
+                if (assets[i].container_obj) {
+                    layout_bar_asset(&assets[i]);
+                }
             }
         }
     }
