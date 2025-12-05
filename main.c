@@ -15,6 +15,7 @@
 #include <stdbool.h>
 
 #include "lvgl/lvgl.h"
+#include "lvgl/src/draw/lv_draw_private.h"
 #include "mi_sys.h"
 #include "mi_rgn.h"
 #include "mi_vpe.h"
@@ -447,30 +448,32 @@ static void apply_background_style(lv_obj_t *obj, int bg_style, int bg_opacity_p
     lv_obj_set_style_bg_opa(obj, opa, part);
 }
 
+/*
+ * LVGL v9 draw task hook that replaces the indicator fill with segmented
+ * rectangles when asset->cfg.segments > 1.
+ */
 static void bar_draw_event_cb(lv_event_t *e)
 {
     asset_t *asset = (asset_t *)lv_event_get_user_data(e);
     if (!asset || asset->cfg.segments <= 1) return;
 
-    lv_event_code_t code = lv_event_get_code(e);
-    if (code != LV_EVENT_DRAW_PART_BEGIN && code != LV_EVENT_DRAW_PART_END) return;
+    lv_draw_task_t *task = (lv_draw_task_t *)lv_event_get_param(e);
+    if (!task) return;
 
-    lv_obj_draw_part_dsc_t *dsc = lv_event_get_draw_part_dsc(e);
-    if (!dsc || dsc->part != LV_PART_INDICATOR) return;
+    lv_draw_dsc_base_t *base = (lv_draw_dsc_base_t *)task->draw_dsc;
+    if (!base || base->part != LV_PART_INDICATOR) return;
 
-    if (code == LV_EVENT_DRAW_PART_BEGIN) {
-        // Suppress the default solid indicator so we can render segmented fills manually.
-        dsc->rect_dsc->bg_opa = LV_OPA_TRANSP;
-        dsc->rect_dsc->border_opa = LV_OPA_TRANSP;
-        return;
-    }
+    lv_draw_fill_dsc_t *fill_dsc = lv_draw_task_get_fill_dsc(task);
+    if (fill_dsc) fill_dsc->opa = LV_OPA_TRANSP;
+    lv_draw_border_dsc_t *border_dsc = lv_draw_task_get_border_dsc(task);
+    if (border_dsc) border_dsc->opa = LV_OPA_TRANSP;
 
-    lv_draw_ctx_t *draw_ctx = lv_event_get_draw_ctx(e);
-    if (!draw_ctx) return;
+    lv_layer_t *layer = base->layer;
+    if (!layer) return;
 
-    lv_area_t area = *dsc->draw_area;
-    int total_w = area.x2 - area.x1 + 1;
-    int total_h = area.y2 - area.y1 + 1;
+    lv_area_t area = task->area;
+    int total_w = lv_area_get_width(&area);
+    int total_h = lv_area_get_height(&area);
     if (total_w <= 0 || total_h <= 0) return;
 
     int segs = asset->cfg.segments;
@@ -482,10 +485,12 @@ static void bar_draw_event_cb(lv_event_t *e)
     int remainder = total_w - seg_w * segs;
     int gap = seg_w >= 14 ? 3 : (seg_w >= 8 ? 2 : (seg_w >= 5 ? 1 : 0));
 
-    lv_draw_rect_dsc_t seg_dsc = *dsc->rect_dsc;
+    lv_draw_rect_dsc_t seg_dsc;
+    lv_draw_rect_dsc_init(&seg_dsc);
+    lv_obj_init_draw_rect_dsc(base->obj, LV_PART_INDICATOR, &seg_dsc);
     seg_dsc.bg_opa = LV_OPA_COVER;
     seg_dsc.border_opa = LV_OPA_TRANSP;
-    if (seg_dsc.bg_color.full == 0) {
+    if (lv_color_to_int(seg_dsc.bg_color) == 0) {
         seg_dsc.bg_color = lv_color_hex(asset->cfg.color);
     }
     seg_dsc.radius = total_h / 3;
@@ -503,7 +508,7 @@ static void bar_draw_event_cb(lv_event_t *e)
         lv_area_t seg_area = area;
         seg_area.x1 = x;
         seg_area.x2 = x + draw_w - 1;
-        lv_draw_rect(draw_ctx, &seg_dsc, &seg_area);
+        lv_draw_rect(layer, &seg_dsc, &seg_area);
         x += w;
     }
 }
@@ -1259,8 +1264,8 @@ static lv_obj_t *create_bar(asset_t *asset)
     lv_obj_set_style_radius(bar, 3, LV_PART_INDICATOR);
     lv_obj_set_style_bg_color(bar, lv_color_hex(cfg->color), LV_PART_INDICATOR);
     lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, LV_PART_INDICATOR);
-    lv_obj_add_event_cb(bar, bar_draw_event_cb, LV_EVENT_DRAW_PART_BEGIN, asset);
-    lv_obj_add_event_cb(bar, bar_draw_event_cb, LV_EVENT_DRAW_PART_END, asset);
+    lv_obj_add_flag(bar, LV_OBJ_FLAG_SEND_DRAW_TASK_EVENTS);
+    lv_obj_add_event_cb(bar, bar_draw_event_cb, LV_EVENT_DRAW_TASK_ADDED, asset);
     lv_bar_set_range(bar, 0, 100);
     return bar;
 }
