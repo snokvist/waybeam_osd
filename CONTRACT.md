@@ -48,7 +48,7 @@ Each on-screen asset binds to one `values[i]` entry via `value_index`. For bar a
     - `min`, `max` (float): input range mapped to 0–100% for bars.
     - `bar_color` (int): RGB hex value as a number; used by bar styles.
     - `rounded_outline` (bool, bars only): enables the outlined capsule look. Defaults to `false`.
-    - `segments` (int, bars only): when greater than 1, divides the bar fill into that many evenly spaced blocks (useful for battery-style indicators). Defaults to `0`/unset for a continuous fill.
+    - `segments` (int, bars only): when greater than 1, divides the bar fill into that many evenly spaced blocks that extinguish one-by-one as the value drops (useful for battery-style indicators). Defaults to `0`/unset for a continuous fill.
     - `text_color` (int, optional): RGB hex value for labels/text content. Default white.
     - `background` (int, optional): index of a predefined palette of 11 background swatches (including a fully transparent entry and tinted fills). `-1` or omission keeps the default transparent look. For bars, the background is applied to a rounded container that extends across the bar and its label for a unified pill.
     - `background_opacity` (int, optional): percent opacity (0–100) to apply to the chosen background swatch. When omitted, the default palette opacity is used (0%, 50%, 50%, 70%, 90%, 60%, 60%, 60%, 70%, 60%, 70% by index as listed below).

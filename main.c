@@ -468,15 +468,18 @@ static void bar_draw_event_cb(lv_event_t *e)
     lv_draw_border_dsc_t *border_dsc = lv_draw_task_get_border_dsc(task);
     if (border_dsc) border_dsc->opa = LV_OPA_TRANSP;
 
-    lv_layer_t *layer = base->layer;
-    if (!layer) return;
-
-    lv_area_t area = task->area;
-    int total_w = lv_area_get_width(&area);
-    int total_h = lv_area_get_height(&area);
-    if (total_w <= 0 || total_h <= 0) return;
+    int pct = asset->last_pct;
+    if (pct < 0) pct = 0;
+    if (pct > 100) pct = 100;
 
     int segs = asset->cfg.segments;
+    lv_area_t track_area;
+    lv_obj_get_content_coords(base->obj, &track_area);
+
+    int total_w = lv_area_get_width(&track_area);
+    int total_h = lv_area_get_height(&task->area);
+    if (total_w <= 0 || total_h <= 0) return;
+
     int seg_w = segs > 0 ? total_w / segs : total_w;
     if (seg_w <= 0) {
         segs = 1;
@@ -484,6 +487,9 @@ static void bar_draw_event_cb(lv_event_t *e)
     }
     int remainder = total_w - seg_w * segs;
     int gap = seg_w >= 14 ? 3 : (seg_w >= 8 ? 2 : (seg_w >= 5 ? 1 : 0));
+    int filled = (pct * segs + 99) / 100;
+    if (pct == 0) filled = 0;
+    if (filled > segs) filled = segs;
 
     lv_draw_rect_dsc_t seg_dsc;
     lv_draw_rect_dsc_init(&seg_dsc);
@@ -496,20 +502,39 @@ static void bar_draw_event_cb(lv_event_t *e)
     seg_dsc.radius = total_h / 3;
     if (seg_dsc.radius > total_h / 2) seg_dsc.radius = total_h / 2;
 
-    int x = area.x1;
-    for (int i = 0; i < segs; i++) {
-        int w = seg_w + (i < remainder ? 1 : 0);
-        int draw_w = w;
-        if (i < segs - 1 && gap < draw_w) draw_w -= gap;
-        if (draw_w <= 0) {
-            x += w;
-            continue;
+    lv_base_dir_t dir = lv_obj_get_style_base_dir(base->obj, LV_PART_INDICATOR);
+    if (dir == LV_BASE_DIR_RTL) {
+        int x = track_area.x2 + 1;
+        for (int i = 0; i < filled; i++) {
+            int w = seg_w + (i < remainder ? 1 : 0);
+            int draw_w = w;
+            if (i < segs - 1 && gap < draw_w) draw_w -= gap;
+            if (draw_w <= 0) {
+                x -= w;
+                continue;
+            }
+            lv_area_t seg_area = task->area;
+            seg_area.x2 = x - 1;
+            seg_area.x1 = seg_area.x2 - draw_w + 1;
+            lv_draw_rect(base->layer, &seg_dsc, &seg_area);
+            x -= w;
         }
-        lv_area_t seg_area = area;
-        seg_area.x1 = x;
-        seg_area.x2 = x + draw_w - 1;
-        lv_draw_rect(layer, &seg_dsc, &seg_area);
-        x += w;
+    } else {
+        int x = track_area.x1;
+        for (int i = 0; i < filled; i++) {
+            int w = seg_w + (i < remainder ? 1 : 0);
+            int draw_w = w;
+            if (i < segs - 1 && gap < draw_w) draw_w -= gap;
+            if (draw_w <= 0) {
+                x += w;
+                continue;
+            }
+            lv_area_t seg_area = task->area;
+            seg_area.x1 = x;
+            seg_area.x2 = x + draw_w - 1;
+            lv_draw_rect(base->layer, &seg_dsc, &seg_area);
+            x += w;
+        }
     }
 }
 
