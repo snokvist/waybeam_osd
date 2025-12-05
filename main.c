@@ -313,6 +313,9 @@ static lv_opa_t pct_to_opa(int pct)
 
 static void apply_background_style(lv_obj_t *obj, int bg_style, int bg_opacity_pct, lv_part_t part);
 static void layout_bar_asset(asset_t *asset);
+static void destroy_asset_visual(asset_t *asset);
+static void create_asset_visual(asset_t *asset);
+static void maybe_attach_asset_label(asset_t *asset);
 
 static asset_t *find_asset_by_id(int id)
 {
