@@ -117,6 +117,7 @@ static MI_RGN_ChnPort_t stVpeChnPort;
 static MI_RGN_Attr_t stRgnAttr;
 static MI_RGN_ChnPortParam_t stRgnChnAttr;
 static bool region_initialized = false;
+static volatile sig_atomic_t rgn_deinit_in_progress = 0;
 
 // UI
 static lv_obj_t *stats_label = NULL;
@@ -1464,6 +1465,15 @@ static void handle_sighup(int sig)
     reload_requested = 1;
 }
 
+static void handle_sigalrm(int sig)
+{
+    (void)sig;
+    if (!rgn_deinit_in_progress) return;
+    const char msg[] = "cleanup: MI_RGN_DeInit still in progress...\n";
+    write(STDERR_FILENO, msg, sizeof(msg) - 1);
+    alarm(1);
+}
+
 static void reload_config_runtime(void)
 {
     printf("Reloading config...\n");
@@ -1519,7 +1529,11 @@ static void cleanup_resources(void)
                 stRgnAttr.stOsdInitParam.stSize.u32Height,
                 stRgnAttr.stOsdInitParam.ePixelFmt);
         fflush(stderr);
+        rgn_deinit_in_progress = 1;
+        alarm(1);
         ret = MI_RGN_DeInit();
+        rgn_deinit_in_progress = 0;
+        alarm(0);
         uint64_t deinit_elapsed = monotonic_ms64() - deinit_start;
         fprintf(stderr, "cleanup: MI_RGN_DeInit ret=%d elapsed=%llums\n", ret,
                 (unsigned long long)deinit_elapsed);
@@ -1611,6 +1625,7 @@ int main(void)
     osd_height = g_cfg.height;
     signal(SIGINT, handle_sigint);
     signal(SIGHUP, handle_sighup);
+    signal(SIGALRM, handle_sigalrm);
 
     udp_sock = setup_udp_socket();
 
