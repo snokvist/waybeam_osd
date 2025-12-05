@@ -1509,9 +1509,12 @@ static void cleanup_resources(void)
         ret = MI_RGN_Destroy(hRgnHandle);
         fprintf(stderr, "cleanup: MI_RGN_Destroy ret=%d\n", ret);
 
-        fprintf(stderr, "cleanup: deinitializing RGN driver\n");
+        uint64_t deinit_start = monotonic_ms64();
+        fprintf(stderr, "cleanup: deinitializing RGN driver (start)\n");
         ret = MI_RGN_DeInit();
-        fprintf(stderr, "cleanup: MI_RGN_DeInit ret=%d\n", ret);
+        uint64_t deinit_elapsed = monotonic_ms64() - deinit_start;
+        fprintf(stderr, "cleanup: MI_RGN_DeInit ret=%d elapsed=%llums\n", ret,
+                (unsigned long long)deinit_elapsed);
         region_initialized = false;
     }
 
