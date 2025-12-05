@@ -1510,7 +1510,15 @@ static void cleanup_resources(void)
         fprintf(stderr, "cleanup: MI_RGN_Destroy ret=%d\n", ret);
 
         uint64_t deinit_start = monotonic_ms64();
-        fprintf(stderr, "cleanup: deinitializing RGN driver (start)\n");
+        fprintf(stderr,
+                "cleanup: deinitializing RGN driver (start handle=%u dev=%d chn=%d port=%d "
+                "size=%ux%u fmt=%d)\n",
+                hRgnHandle, stVpeChnPort.s32DevId, stVpeChnPort.s32ChnId,
+                stVpeChnPort.s32OutputPortId,
+                stRgnAttr.stOsdInitParam.stSize.u32Width,
+                stRgnAttr.stOsdInitParam.stSize.u32Height,
+                stRgnAttr.stOsdInitParam.ePixelFmt);
+        fflush(stderr);
         ret = MI_RGN_DeInit();
         uint64_t deinit_elapsed = monotonic_ms64() - deinit_start;
         fprintf(stderr, "cleanup: MI_RGN_DeInit ret=%d elapsed=%llums\n", ret,
