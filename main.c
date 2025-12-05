@@ -69,6 +69,7 @@ typedef struct {
     int text_indices_count;
     int text_inline;
     int rounded_outline;
+    int segments;
     asset_orientation_t orientation;
 } asset_cfg_t;
 
@@ -327,6 +328,7 @@ static lv_opa_t pct_to_opa(int pct)
 
 static void apply_background_style(lv_obj_t *obj, int bg_style, int bg_opacity_pct, lv_part_t part);
 static void layout_bar_asset(asset_t *asset);
+static void bar_draw_event_cb(lv_event_t *e);
 static void destroy_asset_visual(asset_t *asset);
 static void create_asset_visual(asset_t *asset);
 static void maybe_attach_asset_label(asset_t *asset);
@@ -362,6 +364,7 @@ static void init_asset_defaults(asset_t *a, int id)
     a->cfg.text_index = -1;
     a->cfg.orientation = ORIENTATION_RIGHT;
     a->cfg.rounded_outline = 0;
+    a->cfg.segments = 0;
     a->cfg.label[0] = '\0';
     a->last_pct = -1;
     a->last_label_text[0] = '\0';
@@ -442,6 +445,67 @@ static void apply_background_style(lv_obj_t *obj, int bg_style, int bg_opacity_p
         opa = pct_to_opa(bg_opacity_pct);
     }
     lv_obj_set_style_bg_opa(obj, opa, part);
+}
+
+static void bar_draw_event_cb(lv_event_t *e)
+{
+    asset_t *asset = (asset_t *)lv_event_get_user_data(e);
+    if (!asset || asset->cfg.segments <= 1) return;
+
+    lv_event_code_t code = lv_event_get_code(e);
+    if (code != LV_EVENT_DRAW_PART_BEGIN && code != LV_EVENT_DRAW_PART_END) return;
+
+    lv_obj_draw_part_dsc_t *dsc = lv_event_get_draw_part_dsc(e);
+    if (!dsc || dsc->part != LV_PART_INDICATOR) return;
+
+    if (code == LV_EVENT_DRAW_PART_BEGIN) {
+        // Suppress the default solid indicator so we can render segmented fills manually.
+        dsc->rect_dsc->bg_opa = LV_OPA_TRANSP;
+        dsc->rect_dsc->border_opa = LV_OPA_TRANSP;
+        return;
+    }
+
+    lv_draw_ctx_t *draw_ctx = lv_event_get_draw_ctx(e);
+    if (!draw_ctx) return;
+
+    lv_area_t area = *dsc->draw_area;
+    int total_w = area.x2 - area.x1 + 1;
+    int total_h = area.y2 - area.y1 + 1;
+    if (total_w <= 0 || total_h <= 0) return;
+
+    int segs = asset->cfg.segments;
+    int seg_w = segs > 0 ? total_w / segs : total_w;
+    if (seg_w <= 0) {
+        segs = 1;
+        seg_w = total_w;
+    }
+    int remainder = total_w - seg_w * segs;
+    int gap = seg_w >= 14 ? 3 : (seg_w >= 8 ? 2 : (seg_w >= 5 ? 1 : 0));
+
+    lv_draw_rect_dsc_t seg_dsc = *dsc->rect_dsc;
+    seg_dsc.bg_opa = LV_OPA_COVER;
+    seg_dsc.border_opa = LV_OPA_TRANSP;
+    if (seg_dsc.bg_color.full == 0) {
+        seg_dsc.bg_color = lv_color_hex(asset->cfg.color);
+    }
+    seg_dsc.radius = total_h / 3;
+    if (seg_dsc.radius > total_h / 2) seg_dsc.radius = total_h / 2;
+
+    int x = area.x1;
+    for (int i = 0; i < segs; i++) {
+        int w = seg_w + (i < remainder ? 1 : 0);
+        int draw_w = w;
+        if (i < segs - 1 && gap < draw_w) draw_w -= gap;
+        if (draw_w <= 0) {
+            x += w;
+            continue;
+        }
+        lv_area_t seg_area = area;
+        seg_area.x1 = x;
+        seg_area.x2 = x + draw_w - 1;
+        lv_draw_rect(draw_ctx, &seg_dsc, &seg_area);
+        x += w;
+    }
 }
 
 static void layout_bar_asset(asset_t *asset)
@@ -594,6 +658,7 @@ static void parse_assets_array(const char *json)
         if (json_get_int_range(obj_start, obj_end, "text_color", &v) == 0) a.cfg.text_color = (uint32_t)v;
         if (json_get_int_range(obj_start, obj_end, "background", &v) == 0) a.cfg.bg_style = clamp_int(v, -1, (int)(sizeof(g_bg_styles) / sizeof(g_bg_styles[0])) - 1);
         if (json_get_int_range(obj_start, obj_end, "background_opacity", &v) == 0) a.cfg.bg_opacity_pct = clamp_int(v, 0, 100);
+        if (json_get_int_range(obj_start, obj_end, "segments", &v) == 0) a.cfg.segments = clamp_int(v, 0, 64);
         if (json_get_int_range(obj_start, obj_end, "text_index", &v) == 0) a.cfg.text_index = clamp_int(v, -1, 7);
         json_get_int_array_range(obj_start, obj_end, "text_indices", a.cfg.text_indices, 8, &a.cfg.text_indices_count);
         if (json_get_bool_range(obj_start, obj_end, "text_inline", &v) == 0) a.cfg.text_inline = v;
@@ -868,6 +933,14 @@ static void parse_udp_asset_updates(const char *buf)
             if (asset->cfg.bg_opacity_pct != opa) {
                 asset->cfg.bg_opacity_pct = opa;
                 restyle = 1;
+            }
+        }
+
+        if (json_get_int_range(obj_start, obj_end, "segments", &v) == 0) {
+            int segs = clamp_int(v, 0, 64);
+            if (asset->cfg.segments != segs) {
+                asset->cfg.segments = segs;
+                if (asset->obj) lv_obj_invalidate(asset->obj);
             }
         }
 
@@ -1186,6 +1259,8 @@ static lv_obj_t *create_bar(asset_t *asset)
     lv_obj_set_style_radius(bar, 3, LV_PART_INDICATOR);
     lv_obj_set_style_bg_color(bar, lv_color_hex(cfg->color), LV_PART_INDICATOR);
     lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, LV_PART_INDICATOR);
+    lv_obj_add_event_cb(bar, bar_draw_event_cb, LV_EVENT_DRAW_PART_BEGIN, asset);
+    lv_obj_add_event_cb(bar, bar_draw_event_cb, LV_EVENT_DRAW_PART_END, asset);
     lv_bar_set_range(bar, 0, 100);
     return bar;
 }
