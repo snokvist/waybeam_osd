@@ -7,6 +7,7 @@ LVGL_DIR ?= ${shell pwd}
 TOOLCHAIN ?= $(PWD)/toolchain/sigmastar-infinity6e
 SYSROOT ?= $(TOOLCHAIN)/arm-openipc-linux-gnueabihf/sysroot
 CC ?= $(TOOLCHAIN)/bin/arm-openipc-linux-gnueabihf-gcc
+CXX ?= $(TOOLCHAIN)/bin/arm-openipc-linux-gnueabihf-g++
 
 include $(LVGL_DIR)/$(LVGL_DIR_NAME)/lvgl.mk
 
@@ -28,6 +29,7 @@ BUILD_DIR := build
 
 # Convert LVGL CSRCS into object files inside build directory
 LVGL_OBJS := $(addprefix $(BUILD_DIR)/, $(CSRCS:.c=.o))
+LVGL_OBJS += $(addprefix $(BUILD_DIR)/, $(CXXSRCS:.cpp=.o))
 
 # Convert your own sources into objects
 APP_OBJS := $(addprefix $(BUILD_DIR)/, $(SRCS:.c=.o))
@@ -39,18 +41,24 @@ INCLUDES := -I$(SDK)/include \
             -I$(LVGL_DIR)/$(LVGL_DIR_NAME)
 
 LIBS := -lcam_os_wrapper -lmi_rgn -lmi_sys
+LIBS += -lstdc++ -lm
 
 # Target
 all: $(OUTPUT)
 
 $(OUTPUT): $(APP_OBJS) $(LVGL_OBJS)
-	@mkdir -p $(@D)
-	$(CC) $(APP_OBJS) $(LVGL_OBJS) $(INCLUDES) $(CFLAGS) $(LDFLAGS) -L$(DRV) $(LIBS) -o $@
+        @mkdir -p $(@D)
+        $(CC) $(APP_OBJS) $(LVGL_OBJS) $(INCLUDES) $(CFLAGS) $(LDFLAGS) -L$(DRV) $(LIBS) -o $@
 
 # Build rule for all .c files (app + LVGL)
 $(BUILD_DIR)/%.o: %.c
-	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) $(INCLUDES) -c $< -o $@
+        @mkdir -p $(dir $@)
+        $(CC) $(CFLAGS) $(INCLUDES) -c $< -o $@
+
+# Build rule for all .cpp files from LVGL (e.g., ThorVG sources)
+$(BUILD_DIR)/%.o: %.cpp
+        @mkdir -p $(dir $@)
+        $(CXX) $(CFLAGS) $(INCLUDES) -c $< -o $@
 
 clean:
 	rm -rf $(BUILD_DIR) $(OUTPUT)
