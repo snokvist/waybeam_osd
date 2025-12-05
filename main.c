@@ -568,10 +568,7 @@ static void parse_assets_array(const char *json)
 
         char type_buf[32];
         if (json_get_string_range(obj_start, obj_end, "type", type_buf, sizeof(type_buf)) == 0) {
-            if (strcmp(type_buf, "example_bar_2") == 0 || strcmp(type_buf, "example_bar2") == 0) {
-                a.cfg.rounded_outline = 1;
-                a.cfg.type = ASSET_BAR;
-            } else if (strcmp(type_buf, "text") == 0) {
+            if (strcmp(type_buf, "text") == 0) {
                 a.cfg.type = ASSET_TEXT;
             } else {
                 a.cfg.type = ASSET_BAR;
@@ -774,19 +771,13 @@ static void parse_udp_asset_updates(const char *buf)
         char type_buf[32];
         if (json_get_string_range(obj_start, obj_end, "type", type_buf, sizeof(type_buf)) == 0) {
             asset_type_t new_type = asset->cfg.type;
-            int new_outline = asset->cfg.rounded_outline;
-            if (strcmp(type_buf, "example_bar_2") == 0 || strcmp(type_buf, "example_bar2") == 0) {
-                new_type = ASSET_BAR;
-                new_outline = 1;
-            } else if (strcmp(type_buf, "text") == 0) {
+            if (strcmp(type_buf, "text") == 0) {
                 new_type = ASSET_TEXT;
             } else {
                 new_type = ASSET_BAR;
-                new_outline = asset->cfg.rounded_outline;
             }
-            if (new_type != asset->cfg.type || new_outline != asset->cfg.rounded_outline) {
+            if (new_type != asset->cfg.type) {
                 asset->cfg.type = new_type;
-                asset->cfg.rounded_outline = new_outline;
                 recreate = 1;
             }
         }
