@@ -7,7 +7,7 @@
 - Keep payloads under 512 bytes (anything larger is dropped).
 - The UDP socket is drained whenever it becomes readable so only the latest datagram drives the screen; older queued packets are discarded. Incoming packets trigger an immediate refresh when received, while `idle_ms` only caps the sleep when no data arrives.
 - Optional `texts` array (up to 8 strings, max 16 chars each) can be sent alongside `values`. These map to `text_index` on bar assets and override a static `label` if present. Missing or empty entries fall back to the asset’s `label`.
-- Optional `asset_updates` array lets senders retint, reposition, enable/disable, or fully reconfigure assets at runtime. Each object must contain an `id`; if the ID does not exist yet and there is room (max 8 assets), the asset slot is created on the fly. Valid keys include: `enabled` (bool), `type` (`"bar"`, `"example_bar_2"`, or `"text"`), `value_index`, `text_index`, `text_indices` (array), `text_inline`, `label`, `x`, `y`, `width`, `height`, `min`, `max`, `bar_color` (bars only), `text_color`, `background`, and `background_opacity`. Only valid values that differ from the current config are applied; disabled assets are removed from the screen immediately.
+- Optional `asset_updates` array lets senders retint, reposition, enable/disable, or fully reconfigure assets at runtime. Each object must contain an `id`; if the ID does not exist yet and there is room (max 8 assets), the asset slot is created on the fly. Valid keys include: `enabled` (bool), `type` (`"bar"`, `"example_bar_2"`, or `"text"`), `value_index`, `text_index`, `text_indices` (array), `text_inline`, `label`, `orientation`, `x`, `y`, `width`, `height`, `min`, `max`, `bar_color` (bars only), `text_color`, `background`, and `background_opacity`. Only valid values that differ from the current config are applied; disabled assets are removed from the screen immediately.
 
 Example:
 ```json
@@ -42,6 +42,7 @@ Each on-screen asset binds to one `values[i]` entry via `value_index`. For bar a
     - `text_indices` (array<int>, text only): render multiple UDP text entries; empty strings are skipped.
     - `text_inline` (bool, text only): when `true`, joins `text_indices` on a single line with spaces; otherwise stacks them on new lines. Default `false`.
     - `label` (string, optional, bars/text): static text descriptor. Used when no UDP text is present.
+    - `orientation` (string, bars only): `"right"` (default) keeps the bar horizontal with the label to the right; `"left"` mirrors the layout with the label on the left; `"up"` rotates the stack vertically with a bottom-up bar and a vertical label above; `"down"` rotates vertically with a top-down bar and a vertical label below.
     - `x`, `y` (int): position relative to the OSD top-left.
     - `width`, `height` (int): size in pixels. For text, enables wrapping.
     - `min`, `max` (float): input range mapped to 0–100% for bars.
@@ -70,8 +71,8 @@ Example:
   "show_stats": true,
   "udp_stats": false,
   "assets": [
-    { "type": "bar", "value_index": 0, "text_index": 0, "label": "BAR CH0", "x": 40, "y": 200, "width": 320, "height": 32, "min": 0.0, "max": 1.0, "bar_color": 2254540, "text_color": 16777215, "background": 4, "background_opacity": 70 },
-    { "type": "example_bar_2", "value_index": 1, "text_index": 1, "label": "BAR CH1", "x": 420, "y": 140, "width": 220, "height": 24, "min": 0.0, "max": 1.0, "bar_color": 2254540, "text_color": 0, "background": 2, "background_opacity": 60 },
+    { "type": "bar", "value_index": 0, "text_index": 0, "label": "BAR CH0", "x": 40, "y": 200, "width": 320, "height": 32, "min": 0.0, "max": 1.0, "orientation": "right", "bar_color": 2254540, "text_color": 16777215, "background": 4, "background_opacity": 70 },
+    { "type": "example_bar_2", "value_index": 1, "text_index": 1, "label": "BAR CH1", "x": 420, "y": 140, "width": 220, "height": 24, "min": 0.0, "max": 1.0, "orientation": "left", "bar_color": 2254540, "text_color": 0, "background": 2, "background_opacity": 60 },
     { "type": "text", "text_indices": [2, 3, 4], "text_inline": false, "label": "Status", "x": 40, "y": 260, "width": 320, "height": 80, "background": 1, "background_opacity": 50, "text_color": 16777215 }
   ]
 }
