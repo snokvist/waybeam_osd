@@ -307,6 +307,8 @@ static lv_opa_t pct_to_opa(int pct)
     return (lv_opa_t)((clamped * 255) / 100);
 }
 
+static void apply_background_style(lv_obj_t *obj, int bg_style, int bg_opacity_pct, lv_part_t part);
+
 static asset_t *find_asset_by_id(int id)
 {
     for (int i = 0; i < asset_count; i++) {
