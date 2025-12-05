@@ -47,6 +47,7 @@ typedef enum {
 typedef struct {
     asset_type_t type;
     int id;
+    int enabled;
     int value_index;
     int x;
     int y;
@@ -97,6 +98,8 @@ static int osd_width = DEFAULT_SCREEN_WIDTH;
 static int osd_height = DEFAULT_SCREEN_HEIGHT;
 static asset_t assets[8];
 static int asset_count = 0;
+
+#define MAX_ASSETS (int)(sizeof(assets) / sizeof(assets[0]))
 
 // Sigmastar RGN
 static MI_RGN_PaletteTable_t g_stPaletteTable = {};
@@ -317,9 +320,36 @@ static asset_t *find_asset_by_id(int id)
     return NULL;
 }
 
+static void init_asset_defaults(asset_t *a, int id)
+{
+    if (!a) return;
+    memset(a, 0, sizeof(*a));
+    a->cfg.type = ASSET_BAR;
+    a->cfg.id = id;
+    a->cfg.enabled = 1;
+    a->cfg.value_index = clamp_int(id, 0, 7);
+    a->cfg.x = 40;
+    a->cfg.y = 60 + id * 60;
+    a->cfg.width = 320;
+    a->cfg.height = 32;
+    a->cfg.min = 0.0f;
+    a->cfg.max = 1.0f;
+    a->cfg.color = 0x2266CC;
+    a->cfg.text_color = 0xFFFFFF;
+    a->cfg.bg_style = -1;
+    a->cfg.bg_opacity_pct = -1;
+    a->cfg.text_indices_count = 0;
+    a->cfg.text_inline = 0;
+    a->cfg.text_index = -1;
+    a->cfg.label[0] = '\0';
+    a->last_pct = -1;
+    a->last_label_text[0] = '\0';
+}
+
 static void apply_asset_styles(asset_t *asset)
 {
     if (!asset) return;
+    if (!asset->cfg.enabled) return;
     const asset_cfg_t *cfg = &asset->cfg;
 
     switch (cfg->type) {
@@ -410,26 +440,9 @@ static void set_defaults(void)
     g_cfg.idle_ms = 100;
     g_cfg.udp_stats = 0;
 
-    asset_count = 1;
     memset(assets, 0, sizeof(assets));
-    assets[0].cfg.type = ASSET_BAR;
-    assets[0].cfg.id = 0;
-    assets[0].cfg.value_index = 0;
-    assets[0].cfg.text_index = -1;
-    assets[0].cfg.x = 40;
-    assets[0].cfg.y = 200;
-    assets[0].cfg.width = 320;
-    assets[0].cfg.height = 32;
-    assets[0].cfg.min = 0.0f;
-    assets[0].cfg.max = 1.0f;
-    assets[0].cfg.color = 0x2266CC;
-    assets[0].cfg.text_color = 0xFFFFFF;
-    assets[0].cfg.bg_style = -1;
-    assets[0].cfg.bg_opacity_pct = -1;
-    assets[0].cfg.text_indices_count = 0;
-    assets[0].cfg.text_inline = 0;
-    assets[0].last_pct = -1;
-    assets[0].last_label_text[0] = '\0';
+    asset_count = 1;
+    init_asset_defaults(&assets[0], 0);
 }
 
 static void parse_assets_array(const char *json)
@@ -455,24 +468,8 @@ static void parse_assets_array(const char *json)
         const char *obj_end = p;
         if (depth != 0) break;
 
-        asset_t a = {0};
-        a.cfg.type = ASSET_BAR;
-        a.cfg.id = asset_count;
-        a.cfg.value_index = asset_count;
-        a.cfg.x = 40;
-        a.cfg.y = 60 + asset_count * 60;
-        a.cfg.width = 320;
-        a.cfg.height = 32;
-        a.cfg.min = 0.0f;
-        a.cfg.max = 1.0f;
-        a.cfg.color = 0x2266CC;
-        a.cfg.text_color = 0xFFFFFF;
-        a.cfg.bg_style = -1;
-        a.cfg.bg_opacity_pct = -1;
-        a.cfg.text_indices_count = 0;
-        a.cfg.text_inline = 0;
-        a.cfg.text_index = -1;
-        a.cfg.label[0] = '\0';
+        asset_t a;
+        init_asset_defaults(&a, asset_count);
 
         char type_buf[32];
         if (json_get_string_range(obj_start, obj_end, "type", type_buf, sizeof(type_buf)) == 0) {
@@ -487,6 +484,7 @@ static void parse_assets_array(const char *json)
 
         int v = 0;
         float fv = 0.0f;
+        if (json_get_bool_range(obj_start, obj_end, "enabled", &v) == 0 || json_get_bool_range(obj_start, obj_end, "enable", &v) == 0) a.cfg.enabled = v;
         if (json_get_int_range(obj_start, obj_end, "value_index", &v) == 0) a.cfg.value_index = clamp_int(v, 0, 7);
         if (json_get_int_range(obj_start, obj_end, "id", &v) == 0) a.cfg.id = clamp_int(v, 0, 63);
         if (json_get_int_range(obj_start, obj_end, "x", &v) == 0) a.cfg.x = v;
@@ -508,29 +506,13 @@ static void parse_assets_array(const char *json)
         a.last_label_text[0] = '\0';
 
         assets[asset_count++] = a;
+        if (asset_count >= MAX_ASSETS) break;
     }
 
     if (asset_count == 0) {
         memset(assets, 0, sizeof(assets));
         asset_count = 1;
-        assets[0].cfg.type = ASSET_BAR;
-        assets[0].cfg.id = 0;
-        assets[0].cfg.value_index = 0;
-        assets[0].cfg.text_index = -1;
-        assets[0].cfg.x = 40;
-        assets[0].cfg.y = 200;
-        assets[0].cfg.width = 320;
-        assets[0].cfg.height = 32;
-        assets[0].cfg.min = 0.0f;
-        assets[0].cfg.max = 1.0f;
-        assets[0].cfg.color = 0x2266CC;
-        assets[0].cfg.text_color = 0xFFFFFF;
-        assets[0].cfg.bg_style = -1;
-        assets[0].cfg.bg_opacity_pct = -1;
-        assets[0].cfg.text_indices_count = 0;
-        assets[0].cfg.text_inline = 0;
-        assets[0].last_pct = -1;
-        assets[0].last_label_text[0] = '\0';
+        init_asset_defaults(&assets[0], 0);
     }
 }
 
@@ -668,41 +650,192 @@ static void parse_udp_asset_updates(const char *buf)
         }
 
         asset_t *asset = find_asset_by_id(id);
-        if (!asset) continue;
+        if (!asset) {
+            if (asset_count >= MAX_ASSETS) continue;
+            asset = &assets[asset_count++];
+            init_asset_defaults(asset, id);
+            asset->cfg.enabled = 0;
+        }
 
         int v = 0;
-        int changed = 0;
+        float fv = 0.0f;
+        int restyle = 0;
+        int relayout = 0;
+        int rerange = 0;
+        int recreate = 0;
+        int text_change = 0;
+
+        int enabled_flag = asset->cfg.enabled;
+        if (json_get_bool_range(obj_start, obj_end, "enabled", &v) == 0 || json_get_bool_range(obj_start, obj_end, "enable", &v) == 0) {
+            enabled_flag = v ? 1 : 0;
+        }
+
+        char type_buf[32];
+        if (json_get_string_range(obj_start, obj_end, "type", type_buf, sizeof(type_buf)) == 0) {
+            asset_type_t new_type = asset->cfg.type;
+            if (strcmp(type_buf, "example_bar_2") == 0 || strcmp(type_buf, "example_bar2") == 0) {
+                new_type = ASSET_BAR2;
+            } else if (strcmp(type_buf, "text") == 0) {
+                new_type = ASSET_TEXT;
+            } else {
+                new_type = ASSET_BAR;
+            }
+            if (new_type != asset->cfg.type) {
+                asset->cfg.type = new_type;
+                recreate = 1;
+            }
+        }
+
+        if (json_get_int_range(obj_start, obj_end, "value_index", &v) == 0) {
+            int idx = clamp_int(v, 0, 7);
+            if (idx != asset->cfg.value_index) {
+                asset->cfg.value_index = idx;
+            }
+        }
+
+        if (json_get_int_range(obj_start, obj_end, "text_index", &v) == 0) {
+            int idx = clamp_int(v, -1, 7);
+            if (idx != asset->cfg.text_index) {
+                asset->cfg.text_index = idx;
+                text_change = 1;
+            }
+        }
+
+        int indices_tmp[8] = {0};
+        int idx_count = 0;
+        if (find_key_range(obj_start, obj_end, "text_indices")) {
+            json_get_int_array_range(obj_start, obj_end, "text_indices", indices_tmp, 8, &idx_count);
+            if (idx_count != asset->cfg.text_indices_count || memcmp(indices_tmp, asset->cfg.text_indices, sizeof(int) * (size_t)idx_count) != 0) {
+                memcpy(asset->cfg.text_indices, indices_tmp, sizeof(int) * (size_t)idx_count);
+                asset->cfg.text_indices_count = idx_count;
+                text_change = 1;
+            }
+        }
+
+        if (json_get_bool_range(obj_start, obj_end, "text_inline", &v) == 0) {
+            int inline_flag = v ? 1 : 0;
+            if (inline_flag != asset->cfg.text_inline) {
+                asset->cfg.text_inline = inline_flag;
+                text_change = 1;
+            }
+        }
+
+        if (json_get_string_range(obj_start, obj_end, "label", asset->cfg.label, sizeof(asset->cfg.label)) == 0) {
+            text_change = 1;
+        }
+
         if (json_get_int_range(obj_start, obj_end, "bar_color", &v) == 0) {
             uint32_t color = (uint32_t)v;
             if (asset->cfg.type != ASSET_TEXT && asset->cfg.color != color) {
                 asset->cfg.color = color;
-                changed = 1;
+                restyle = 1;
             }
         }
         if (json_get_int_range(obj_start, obj_end, "text_color", &v) == 0) {
             uint32_t color = (uint32_t)v;
             if (asset->cfg.text_color != color) {
                 asset->cfg.text_color = color;
-                changed = 1;
+                restyle = 1;
+                text_change = 1;
             }
         }
         if (json_get_int_range(obj_start, obj_end, "background", &v) == 0) {
             int bg = clamp_int(v, -1, (int)(sizeof(g_bg_styles) / sizeof(g_bg_styles[0])) - 1);
             if (asset->cfg.bg_style != bg) {
                 asset->cfg.bg_style = bg;
-                changed = 1;
+                restyle = 1;
             }
         }
         if (json_get_int_range(obj_start, obj_end, "background_opacity", &v) == 0) {
             int opa = clamp_int(v, 0, 100);
             if (asset->cfg.bg_opacity_pct != opa) {
                 asset->cfg.bg_opacity_pct = opa;
-                changed = 1;
+                restyle = 1;
             }
         }
 
-        if (changed) {
+        if (json_get_int_range(obj_start, obj_end, "x", &v) == 0) {
+            if (asset->cfg.x != v) {
+                asset->cfg.x = v;
+                relayout = 1;
+            }
+        }
+        if (json_get_int_range(obj_start, obj_end, "y", &v) == 0) {
+            if (asset->cfg.y != v) {
+                asset->cfg.y = v;
+                relayout = 1;
+            }
+        }
+        if (json_get_int_range(obj_start, obj_end, "width", &v) == 0) {
+            if (asset->cfg.width != v) {
+                asset->cfg.width = v;
+                relayout = 1;
+                recreate = asset->cfg.type == ASSET_TEXT ? 1 : recreate;
+            }
+        }
+        if (json_get_int_range(obj_start, obj_end, "height", &v) == 0) {
+            if (asset->cfg.height != v) {
+                asset->cfg.height = v;
+                relayout = 1;
+                recreate = asset->cfg.type == ASSET_TEXT ? 1 : recreate;
+            }
+        }
+        if (json_get_float_range(obj_start, obj_end, "min", &fv) == 0) {
+            if (asset->cfg.min != fv) {
+                asset->cfg.min = fv;
+                rerange = 1;
+            }
+        }
+        if (json_get_float_range(obj_start, obj_end, "max", &fv) == 0) {
+            if (asset->cfg.max != fv) {
+                asset->cfg.max = fv;
+                rerange = 1;
+            }
+        }
+
+        int enabled_change = (enabled_flag != asset->cfg.enabled);
+        asset->cfg.enabled = enabled_flag;
+
+        if (!asset->cfg.enabled) {
+            destroy_asset_visual(asset);
+            continue;
+        }
+
+        if (!asset->obj || recreate || enabled_change) {
+            create_asset_visual(asset);
+            restyle = 1;
+            relayout = 0;
+            rerange = 1;
+            text_change = 1;
+        } else {
+            if (relayout) {
+                if (asset->cfg.type == ASSET_TEXT) {
+                    int width = asset->cfg.width > 0 ? asset->cfg.width : LV_SIZE_CONTENT;
+                    int height = asset->cfg.height > 0 ? asset->cfg.height : LV_SIZE_CONTENT;
+                    lv_obj_set_size(asset->obj, width, height);
+                } else {
+                    int width = asset->cfg.width > 0 ? asset->cfg.width : (asset->cfg.type == ASSET_BAR ? 320 : 200);
+                    int height = asset->cfg.height > 0 ? asset->cfg.height : (asset->cfg.type == ASSET_BAR ? 32 : 20);
+                    lv_obj_set_size(asset->obj, width, height);
+                }
+                lv_obj_set_pos(asset->obj, asset->cfg.x, asset->cfg.y);
+                if (asset->label_obj && asset->cfg.type != ASSET_TEXT) {
+                    lv_obj_align_to(asset->label_obj, asset->obj, LV_ALIGN_OUT_RIGHT_MID, 8, 0);
+                }
+            }
+
+            if (rerange && (asset->cfg.type == ASSET_BAR || asset->cfg.type == ASSET_BAR2)) {
+                lv_bar_set_range(asset->obj, 0, 100);
+                asset->last_pct = -1;
+            }
+        }
+
+        if (restyle) {
             apply_asset_styles(asset);
+        }
+
+        if (text_change) {
+            asset->last_label_text[0] = '\0';
         }
     }
 }
@@ -920,6 +1053,21 @@ static lv_obj_t *create_simple_bar(const asset_cfg_t *cfg)
     return bar;
 }
 
+static void destroy_asset_visual(asset_t *asset)
+{
+    if (!asset) return;
+    if (asset->label_obj) {
+        lv_obj_del(asset->label_obj);
+        asset->label_obj = NULL;
+    }
+    if (asset->obj) {
+        lv_obj_del(asset->obj);
+        asset->obj = NULL;
+    }
+    asset->last_pct = -1;
+    asset->last_label_text[0] = '\0';
+}
+
 static lv_obj_t *create_example_bar2(const asset_cfg_t *cfg)
 {
     lv_obj_t *bar = lv_bar_create(lv_scr_act());
@@ -964,6 +1112,29 @@ static lv_obj_t *create_text_asset(asset_t *asset)
     return label;
 }
 
+static void create_asset_visual(asset_t *asset)
+{
+    if (!asset || !asset->cfg.enabled) return;
+    destroy_asset_visual(asset);
+    switch (asset->cfg.type) {
+        case ASSET_BAR:
+            asset->obj = create_simple_bar(&asset->cfg);
+            maybe_attach_asset_label(asset);
+            break;
+        case ASSET_BAR2:
+            asset->obj = create_example_bar2(&asset->cfg);
+            maybe_attach_asset_label(asset);
+            break;
+        case ASSET_TEXT:
+            asset->obj = create_text_asset(asset);
+            break;
+        default:
+            asset->obj = create_simple_bar(&asset->cfg);
+            maybe_attach_asset_label(asset);
+            break;
+    }
+}
+
 static void maybe_attach_asset_label(asset_t *asset)
 {
     if (!asset->obj) return;
@@ -985,37 +1156,14 @@ static void maybe_attach_asset_label(asset_t *asset)
 static void create_assets(void)
 {
     for (int i = 0; i < asset_count; i++) {
-        switch (assets[i].cfg.type) {
-            case ASSET_BAR:
-                assets[i].obj = create_simple_bar(&assets[i].cfg);
-                maybe_attach_asset_label(&assets[i]);
-                break;
-            case ASSET_BAR2:
-                assets[i].obj = create_example_bar2(&assets[i].cfg);
-                maybe_attach_asset_label(&assets[i]);
-                break;
-            case ASSET_TEXT:
-                assets[i].obj = create_text_asset(&assets[i]);
-                break;
-            default:
-                assets[i].obj = create_simple_bar(&assets[i].cfg);
-                maybe_attach_asset_label(&assets[i]);
-                break;
-        }
+        create_asset_visual(&assets[i]);
     }
 }
 
 static void destroy_assets(void)
 {
     for (int i = 0; i < asset_count; i++) {
-        if (assets[i].label_obj) {
-            lv_obj_del(assets[i].label_obj);
-            assets[i].label_obj = NULL;
-        }
-        if (assets[i].obj) {
-            lv_obj_del(assets[i].obj);
-            assets[i].obj = NULL;
-        }
+        destroy_asset_visual(&assets[i]);
     }
 
     asset_count = 0;
@@ -1025,6 +1173,7 @@ static void destroy_assets(void)
 static void update_assets_from_udp(void)
 {
     for (int i = 0; i < asset_count; i++) {
+        if (!assets[i].cfg.enabled) continue;
         const asset_cfg_t *cfg = &assets[i].cfg;
         float min = cfg->min;
         float max = cfg->max;
@@ -1146,11 +1295,13 @@ static void stats_timer_cb(lv_timer_t *timer)
 
     int primary_w = 0;
     int primary_h = 0;
-    if (asset_count > 0) {
-        lv_obj_t *p = assets[0].obj;
-        if (p) {
-            primary_w = lv_obj_get_width(p);
-            primary_h = lv_obj_get_height(p);
+    int active_assets = 0;
+    for (int i = 0; i < asset_count; i++) {
+        if (!assets[i].cfg.enabled) continue;
+        active_assets++;
+        if (primary_w == 0 && assets[i].obj) {
+            primary_w = lv_obj_get_width(assets[i].obj);
+            primary_h = lv_obj_get_height(assets[i].obj);
         }
     }
     char buf[512];
@@ -1159,11 +1310,11 @@ static void stats_timer_cb(lv_timer_t *timer)
     int off = 0;
     off += lv_snprintf(buf + off, sizeof(buf) - off,
                        "OSD %dx%d (disp %dx%d)\n"
-                       "Assets %d | primary %d,%d\n"
+                       "Assets %d/%d | primary %d,%d\n"
                        "FPS %u | work %ums | loop %ums | idle %dms",
                        osd_width, osd_height,
                        disp_w, disp_h,
-                       asset_count, primary_w, primary_h,
+                       active_assets, asset_count, primary_w, primary_h,
                        fps_value, last_frame_ms, last_loop_ms, idle_ms_applied);
 
     if (g_cfg.udp_stats && off < (int)sizeof(buf) - 32) {

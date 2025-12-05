@@ -7,14 +7,18 @@
 - Keep payloads under 512 bytes (anything larger is dropped).
 - The UDP socket is drained whenever it becomes readable so only the latest datagram drives the screen; older queued packets are discarded. Incoming packets trigger an immediate refresh when received, while `idle_ms` only caps the sleep when no data arrives.
 - Optional `texts` array (up to 8 strings, max 16 chars each) can be sent alongside `values`. These map to `text_index` on bar assets and override a static `label` if present. Missing or empty entries fall back to the asset’s `label`.
-- Optional `asset_updates` array lets senders retint assets at runtime. Each object must contain an `id` that matches an asset in `config.json` plus any of: `bar_color` (bars only), `text_color`, `background`, `background_opacity`. Only valid values that differ from the current config are applied.
+- Optional `asset_updates` array lets senders retint, reposition, enable/disable, or fully reconfigure assets at runtime. Each object must contain an `id`; if the ID does not exist yet and there is room (max 8 assets), the asset slot is created on the fly. Valid keys include: `enabled` (bool), `type` (`"bar"`, `"example_bar_2"`, or `"text"`), `value_index`, `text_index`, `text_indices` (array), `text_inline`, `label`, `x`, `y`, `width`, `height`, `min`, `max`, `bar_color` (bars only), `text_color`, `background`, and `background_opacity`. Only valid values that differ from the current config are applied; disabled assets are removed from the screen immediately.
 
 Example:
 ```json
 {
   "values":[0.12,0.5,1.0,0,0,0,0,0],
   "texts":["BAR CH0","BAR CH1","TEXT CH2","CH3","CH4","CH5","CH6","CH7"],
-  "asset_updates":[{"id":0,"bar_color":65280,"background":5,"background_opacity":80}],
+  "asset_updates":[
+    {"id":0,"bar_color":65280,"background":5,"background_opacity":80},
+    {"id":6,"enabled":true,"type":"bar","value_index":6,"label":"UDP BAR 6","x":10,"y":200,"width":300,"height":24,"bar_color":255},
+    {"id":7,"enabled":true,"type":"text","text_indices":[7],"text_inline":true,"label":"UDP TEXT 7","x":360,"y":200,"width":320,"height":60}
+  ],
   "timestamp_ms":1712345678
 }
 ```
@@ -31,6 +35,7 @@ Each on-screen asset binds to one `values[i]` entry via `value_index`. For bar a
   - `assets` (array, max 8): list of objects defining what to render and which UDP value to consume.
   - Asset fields:
     - `type`: `"bar"`, `"example_bar_2"`, or `"text"`.
+    - `enabled` (bool, optional): when `false`, the asset stays hidden until enabled by config reload or UDP `asset_updates`. Defaults to `true`.
     - `id` (int, optional): unique asset identifier for UDP `asset_updates`. Defaults to the array index when omitted.
     - `value_index` (int): which UDP `values[i]` drives this asset (0–7).
     - `text_index` (int, optional, bars/text): which UDP `texts[i]` drives the descriptor (0–7). `-1` or missing skips UDP text.
