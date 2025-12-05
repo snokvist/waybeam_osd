@@ -448,7 +448,8 @@ static void layout_bar_asset(asset_t *asset)
 
     int container_height = bar_height;
     if (label_height > container_height) container_height = label_height;
-    container_height += pad_y * 2;
+    int extra_height = (cfg->type == ASSET_BAR2) ? 4 : 0;
+    container_height += pad_y * 2 + extra_height;
     int gap = label_width > 0 ? pad_x : 0;
     int tail_pad = pad_x;
     if (label_width > 0) tail_pad += 8;
