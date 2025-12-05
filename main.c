@@ -18,6 +18,7 @@
 
 #include "lvgl/lvgl.h"
 #include "lvgl/src/draw/lv_draw_private.h"
+#include "lvgl/src/libs/svg/lv_svg.h"
 #include "mi_sys.h"
 #include "mi_rgn.h"
 #include "mi_vpe.h"
@@ -274,7 +275,7 @@ static void register_simple_fs_driver(void)
     drv.seek_cb = fs_seek_cb;
     drv.tell_cb = fs_tell_cb;
     lv_fs_drv_register(&drv);
-    lv_svg_decoder_init();
+    lv_svg_init();
     registered = 1;
 #endif
 }
@@ -471,8 +472,6 @@ static void init_asset_defaults(asset_t *a, int id)
     a->cfg.image_path[0] = '\0';
     a->last_pct = -1;
     a->last_label_text[0] = '\0';
-    a->image_buf = NULL;
-    a->image_buf_size = 0;
     a->image_src[0] = '\0';
 }
 
