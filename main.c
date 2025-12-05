@@ -47,8 +47,6 @@ typedef enum {
 typedef enum {
     ORIENTATION_RIGHT = 0,
     ORIENTATION_LEFT,
-    ORIENTATION_UP,
-    ORIENTATION_DOWN,
 } asset_orientation_t;
 
 typedef struct {
@@ -152,8 +150,6 @@ static asset_orientation_t parse_orientation_string(const char *str, asset_orien
     if (!str) return def;
     if (strcmp(str, "left") == 0) return ORIENTATION_LEFT;
     if (strcmp(str, "right") == 0) return ORIENTATION_RIGHT;
-    if (strcmp(str, "up") == 0) return ORIENTATION_UP;
-    if (strcmp(str, "down") == 0) return ORIENTATION_DOWN;
     return def;
 }
 
@@ -382,9 +378,6 @@ static void style_bar_container(asset_t *asset, lv_color_t fallback_color, lv_op
     }
 
     int radius = lv_obj_get_height(asset->container_obj) / 2;
-    if (asset->cfg.orientation == ORIENTATION_UP || asset->cfg.orientation == ORIENTATION_DOWN) {
-        radius = lv_obj_get_width(asset->container_obj) / 2;
-    }
     if (radius < 6) radius = 6;
     lv_obj_set_style_radius(asset->container_obj, radius, 0);
 }
@@ -399,9 +392,7 @@ static void apply_asset_styles(asset_t *asset)
         case ASSET_BAR:
             style_bar_container(asset, lv_color_hex(0x222222), LV_OPA_40);
             if (asset->obj) {
-                int is_vertical = (cfg->orientation == ORIENTATION_UP || cfg->orientation == ORIENTATION_DOWN);
-                int thickness = is_vertical ? (cfg->width > 0 ? cfg->width : (cfg->type == ASSET_BAR ? 32 : 20))
-                                             : (cfg->height > 0 ? cfg->height : (cfg->type == ASSET_BAR ? 32 : 20));
+                int thickness = cfg->height > 0 ? cfg->height : (cfg->type == ASSET_BAR ? 32 : 20);
                 lv_obj_set_style_bg_opa(asset->obj, LV_OPA_TRANSP, LV_PART_MAIN);
                 lv_obj_set_style_bg_color(asset->obj, lv_color_hex(cfg->color), LV_PART_INDICATOR);
                 lv_obj_set_style_bg_opa(asset->obj, LV_OPA_COVER, LV_PART_INDICATOR);
@@ -412,9 +403,7 @@ static void apply_asset_styles(asset_t *asset)
         case ASSET_BAR2:
             style_bar_container(asset, lv_color_hex(0x222222), LV_OPA_40);
             if (asset->obj) {
-                int is_vertical = (cfg->orientation == ORIENTATION_UP || cfg->orientation == ORIENTATION_DOWN);
-                int thickness = is_vertical ? (cfg->width > 0 ? cfg->width : (cfg->type == ASSET_BAR ? 32 : 20))
-                                             : (cfg->height > 0 ? cfg->height : (cfg->type == ASSET_BAR ? 32 : 20));
+                int thickness = cfg->height > 0 ? cfg->height : (cfg->type == ASSET_BAR ? 32 : 20);
                 lv_obj_set_style_border_color(asset->obj, lv_color_hex(cfg->color), 0);
                 lv_obj_set_style_bg_color(asset->obj, lv_color_hex(cfg->color), LV_PART_INDICATOR);
                 lv_obj_set_style_bg_opa(asset->obj, LV_OPA_COVER, LV_PART_INDICATOR);
@@ -467,11 +456,8 @@ static void layout_bar_asset(asset_t *asset)
     const asset_cfg_t *cfg = &asset->cfg;
     int pad_x = 8;
     int pad_y = 6;
-    int is_vertical = (cfg->orientation == ORIENTATION_UP || cfg->orientation == ORIENTATION_DOWN);
-    int bar_width = cfg->width > 0 ? cfg->width
-                                   : (cfg->type == ASSET_BAR ? (is_vertical ? 32 : 320) : (is_vertical ? 20 : 200));
-    int bar_height = cfg->height > 0 ? cfg->height
-                                     : (cfg->type == ASSET_BAR ? (is_vertical ? 320 : 32) : (is_vertical ? 200 : 20));
+    int bar_width = cfg->width > 0 ? cfg->width : (cfg->type == ASSET_BAR ? 320 : 200);
+    int bar_height = cfg->height > 0 ? cfg->height : (cfg->type == ASSET_BAR ? 32 : 20);
     int label_width = 0;
     int label_height = 0;
 
@@ -482,48 +468,21 @@ static void layout_bar_asset(asset_t *asset)
     }
 
     int extra_height = (cfg->type == ASSET_BAR2) ? 4 : 0;
-    int container_width = 0;
-    int container_height = 0;
-    int effective_label_width = label_width;
-    int effective_label_height = label_height;
-
-    if (asset->label_obj) {
-        lv_obj_set_style_transform_angle(asset->label_obj, 0, 0);
-        lv_obj_set_style_transform_pivot_x(asset->label_obj, 0, 0);
-        lv_obj_set_style_transform_pivot_y(asset->label_obj, 0, 0);
-        if (cfg->orientation == ORIENTATION_UP) {
-            lv_obj_set_style_transform_angle(asset->label_obj, 900, 0);
-        } else if (cfg->orientation == ORIENTATION_DOWN) {
-            lv_obj_set_style_transform_angle(asset->label_obj, 2700, 0);
-        }
-    }
-
-    if (is_vertical) {
-        effective_label_width = label_height;
-        effective_label_height = label_width;
-    }
-
-    int gap = effective_label_width > 0 || effective_label_height > 0 ? pad_x : 0;
-    int tail_pad = pad_x + (effective_label_width > 0 || effective_label_height > 0 ? 4 : 0);
-
-    if (is_vertical) {
-        container_width = pad_x * 2 + (bar_width > effective_label_width ? bar_width : effective_label_width);
-        container_height = pad_y + bar_height + gap + effective_label_height + tail_pad + extra_height;
-    } else {
-        container_height = bar_height;
-        if (effective_label_height > container_height) container_height = effective_label_height;
-        container_height += pad_y * 2 + extra_height;
-        container_width = pad_x + bar_width + gap + effective_label_width + tail_pad;
-    }
+    int container_height = bar_height;
+    if (label_height > container_height) container_height = label_height;
+    container_height += pad_y * 2 + extra_height;
+    int gap = (label_width > 0) ? pad_x : 0;
+    int tail_pad = pad_x + (label_width > 0 ? 4 : 0);
+    int container_width = pad_x + bar_width + gap + label_width + tail_pad;
 
     lv_obj_set_size(asset->container_obj, container_width, container_height);
     lv_obj_set_pos(asset->container_obj, cfg->x, cfg->y);
-    int container_radius = is_vertical ? container_width / 2 : container_height / 2;
+    int container_radius = container_height / 2;
     lv_obj_set_style_radius(asset->container_obj, container_radius, 0);
 
     lv_obj_set_size(asset->obj, bar_width, bar_height);
-    lv_obj_set_style_radius(asset->obj, (is_vertical ? bar_width : bar_height) / 2, LV_PART_MAIN);
-    lv_obj_set_style_radius(asset->obj, (is_vertical ? bar_width : bar_height) / 2, LV_PART_INDICATOR);
+    lv_obj_set_style_radius(asset->obj, bar_height / 2, LV_PART_MAIN);
+    lv_obj_set_style_radius(asset->obj, bar_height / 2, LV_PART_INDICATOR);
     lv_obj_set_style_transform_angle(asset->obj, 0, LV_PART_MAIN);
     lv_obj_set_style_transform_angle(asset->obj, 0, LV_PART_INDICATOR);
     lv_obj_set_style_transform_pivot_x(asset->obj, bar_width / 2, LV_PART_MAIN);
@@ -531,36 +490,19 @@ static void layout_bar_asset(asset_t *asset)
     lv_obj_set_style_transform_pivot_x(asset->obj, bar_width / 2, LV_PART_INDICATOR);
     lv_obj_set_style_transform_pivot_y(asset->obj, bar_height / 2, LV_PART_INDICATOR);
 
-    if (is_vertical) {
-        if (cfg->orientation == ORIENTATION_DOWN) {
-            lv_obj_set_style_transform_angle(asset->obj, 1800, LV_PART_MAIN);
-            lv_obj_set_style_transform_angle(asset->obj, 1800, LV_PART_INDICATOR);
+    if (cfg->orientation == ORIENTATION_LEFT) {
+        lv_obj_set_style_transform_angle(asset->obj, 1800, LV_PART_MAIN);
+        lv_obj_set_style_transform_angle(asset->obj, 1800, LV_PART_INDICATOR);
+        int bar_x = pad_x + label_width + gap;
+        if (asset->label_obj) {
+            lv_obj_align(asset->label_obj, LV_ALIGN_LEFT_MID, pad_x, 0);
         }
-
-        if (cfg->orientation == ORIENTATION_UP) {
-            lv_obj_align(asset->obj, LV_ALIGN_BOTTOM_MID, 0, -pad_y);
-            if (asset->label_obj) {
-                lv_obj_align(asset->label_obj, LV_ALIGN_TOP_MID, 0, pad_y);
-            }
-        } else {
-            lv_obj_align(asset->obj, LV_ALIGN_TOP_MID, 0, pad_y);
-            if (asset->label_obj) {
-                lv_obj_align(asset->label_obj, LV_ALIGN_BOTTOM_MID, 0, -pad_y);
-            }
-        }
+        lv_obj_align(asset->obj, LV_ALIGN_LEFT_MID, bar_x, 0);
     } else {
-        if (cfg->orientation == ORIENTATION_LEFT) {
-            int bar_x = pad_x + effective_label_width + gap;
-            if (asset->label_obj) {
-                lv_obj_align(asset->label_obj, LV_ALIGN_LEFT_MID, pad_x, 0);
-            }
-            lv_obj_align(asset->obj, LV_ALIGN_LEFT_MID, bar_x, 0);
-        } else {
-            int label_x = pad_x + bar_width + gap;
-            lv_obj_align(asset->obj, LV_ALIGN_LEFT_MID, pad_x, 0);
-            if (asset->label_obj) {
-                lv_obj_align(asset->label_obj, LV_ALIGN_LEFT_MID, label_x, 0);
-            }
+        int label_x = pad_x + bar_width + gap;
+        lv_obj_align(asset->obj, LV_ALIGN_LEFT_MID, pad_x, 0);
+        if (asset->label_obj) {
+            lv_obj_align(asset->label_obj, LV_ALIGN_LEFT_MID, label_x, 0);
         }
     }
 }

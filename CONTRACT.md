@@ -42,7 +42,7 @@ Each on-screen asset binds to one `values[i]` entry via `value_index`. For bar a
     - `text_indices` (array<int>, text only): render multiple UDP text entries; empty strings are skipped.
     - `text_inline` (bool, text only): when `true`, joins `text_indices` on a single line with spaces; otherwise stacks them on new lines. Default `false`.
     - `label` (string, optional, bars/text): static text descriptor. Used when no UDP text is present.
-    - `orientation` (string, bars only): `"right"` (default) keeps the bar horizontal with the label to the right; `"left"` mirrors the layout with the label on the left; `"up"` rotates the stack vertically with a bottom-up bar and a vertical label above; `"down"` rotates vertically with a top-down bar and a vertical label below.
+     - `orientation` (string, bars only): `"right"` (default) keeps the bar horizontal with the label to the right; `"left"` mirrors the layout with the label on the left and flips the fill so the bar grows from right-to-left.
     - `x`, `y` (int): position relative to the OSD top-left.
     - `width`, `height` (int): size in pixels. For text, enables wrapping.
     - `min`, `max` (float): input range mapped to 0–100% for bars.
