@@ -404,6 +404,7 @@ static void apply_asset_styles(asset_t *asset)
             style_bar_container(asset, lv_color_hex(0x222222), LV_OPA_40);
             if (asset->obj) {
                 int thickness = cfg->height > 0 ? cfg->height : (cfg->type == ASSET_BAR ? 32 : 20);
+                lv_obj_set_style_bg_opa(asset->obj, LV_OPA_TRANSP, LV_PART_MAIN);
                 lv_obj_set_style_border_color(asset->obj, lv_color_hex(cfg->color), 0);
                 lv_obj_set_style_bg_color(asset->obj, lv_color_hex(cfg->color), LV_PART_INDICATOR);
                 lv_obj_set_style_bg_opa(asset->obj, LV_OPA_COVER, LV_PART_INDICATOR);
