@@ -478,7 +478,11 @@ static void layout_bar_asset(asset_t *asset)
     int container_width = pad_x + bar_width + gap + label_width + tail_pad;
 
     lv_obj_set_size(asset->container_obj, container_width, container_height);
-    lv_obj_set_pos(asset->container_obj, cfg->x, cfg->y);
+    int container_x = cfg->x;
+    if (cfg->orientation == ORIENTATION_LEFT) {
+        container_x -= container_width;
+    }
+    lv_obj_set_pos(asset->container_obj, container_x, cfg->y);
     int base_radius_height = bar_height + pad_y * 2 + extra_height;
     int container_radius = base_radius_height / 2;
     if (container_radius < 6) container_radius = 6;
