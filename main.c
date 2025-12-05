@@ -116,6 +116,7 @@ static MI_RGN_HANDLE hRgnHandle;
 static MI_RGN_ChnPort_t stVpeChnPort;
 static MI_RGN_Attr_t stRgnAttr;
 static MI_RGN_ChnPortParam_t stRgnChnAttr;
+static bool region_initialized = false;
 
 // UI
 static lv_obj_t *stats_label = NULL;
@@ -1243,6 +1244,7 @@ void mi_region_init(void)
     stRgnChnAttr.unPara.stOsdChnPort.stOsdAlphaAttr.eAlphaMode = E_MI_RGN_PIXEL_ALPHA;
 
     MI_RGN_AttachToChn(hRgnHandle, &stVpeChnPort, &stRgnChnAttr);
+    region_initialized = true;
 }
 
 // -------------------------
@@ -1489,22 +1491,37 @@ static void reload_config_runtime(void)
 
 static void cleanup_resources(void)
 {
+    fprintf(stderr, "cleanup: destroying assets\n");
     destroy_assets();
 
     if (stats_timer) {
+        fprintf(stderr, "cleanup: deleting stats timer\n");
         lv_timer_del(stats_timer);
         stats_timer = NULL;
     }
 
-    // Tear down OSD region cleanly
-    MI_RGN_DetachFromChn(hRgnHandle, &stVpeChnPort);
-    MI_RGN_Destroy(hRgnHandle);
+    if (region_initialized) {
+        fprintf(stderr, "cleanup: detaching OSD region\n");
+        MI_S32 ret = MI_RGN_DetachFromChn(hRgnHandle, &stVpeChnPort);
+        fprintf(stderr, "cleanup: MI_RGN_DetachFromChn ret=%d\n", ret);
+
+        fprintf(stderr, "cleanup: destroying OSD region\n");
+        ret = MI_RGN_Destroy(hRgnHandle);
+        fprintf(stderr, "cleanup: MI_RGN_Destroy ret=%d\n", ret);
+
+        fprintf(stderr, "cleanup: deinitializing RGN driver\n");
+        ret = MI_RGN_DeInit();
+        fprintf(stderr, "cleanup: MI_RGN_DeInit ret=%d\n", ret);
+        region_initialized = false;
+    }
 
     if (udp_sock >= 0) {
+        fprintf(stderr, "cleanup: closing UDP socket\n");
         close(udp_sock);
         udp_sock = -1;
     }
 
+    fprintf(stderr, "cleanup: freeing display buffers\n");
     free(buf1);
     free(buf2);
 }
