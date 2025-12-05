@@ -1,4 +1,5 @@
 #include <arpa/inet.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -7,7 +8,7 @@
 // Simple UDP generator that animates a full 8-value payload at ~10 Hz.
 // value[0]: 0..1 triangle wave (bar)
 // value[1]: 1..0 triangle wave (example_bar_2)
-// value[2]: 98..195 ramp (spare/lottie)
+// value[2]: 98..195 ramp (spare)
 // value[3]: 0..100 ramp (spare bar)
 // value[4]: -50..50 triangle (spare bar)
 // value[5]: 0..360 wrap (e.g. degrees)
@@ -59,11 +60,22 @@ int main(int argc, char **argv)
         "TEXTCH_07_SAMPLE",
     };
 
+    uint32_t last_bar_color = 0;
+
     while (1) {
         char buf[512];
+        uint32_t bar_color = 0xFF0000;
+        if (v[0] >= 0.75) {
+            bar_color = 0x00FF00; // green
+        } else if (v[0] >= 0.5) {
+            bar_color = 0xFFFF00; // yellow
+        } else if (v[0] >= 0.25) {
+            bar_color = 0xFFA500; // orange
+        }
+
         int len = snprintf(buf, sizeof(buf),
                            "{\"values\":[%.3f,%.3f,%.1f,%.1f,%.1f,%.1f,%.3f,%.3f],"
-                           "\"texts\":[\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\"]}",
+                           "\"texts\":[\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\"]",
                            v[0], v[1], v[2], v3, v4, v5, 0.5, 0.0,
                            texts[0], texts[1], texts[2], texts[3],
                            texts[4], texts[5], texts[6], texts[7]);
@@ -71,6 +83,26 @@ int main(int argc, char **argv)
             fprintf(stderr, "Failed to format payload\n");
             break;
         }
+
+        if (bar_color != last_bar_color) {
+            int extra = snprintf(buf + len, sizeof(buf) - (size_t)len,
+                                  ",\"asset_updates\":[{\"id\":0,\"bar_color\":%u}]",
+                                  bar_color);
+            if (extra < 0 || len + extra >= (int)sizeof(buf)) {
+                fprintf(stderr, "Failed to append asset update\n");
+                break;
+            }
+            len += extra;
+            last_bar_color = bar_color;
+        }
+
+        if (len >= (int)sizeof(buf) - 1) {
+            fprintf(stderr, "Buffer too small for payload\n");
+            break;
+        }
+
+        buf[len++] = '}';
+        buf[len] = '\0';
 
         ssize_t sent = sendto(sock, buf, (size_t)len, 0,
                               (struct sockaddr *)&addr, sizeof(addr));
