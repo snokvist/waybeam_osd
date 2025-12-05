@@ -117,6 +117,7 @@ static MI_RGN_ChnPort_t stVpeChnPort;
 static MI_RGN_Attr_t stRgnAttr;
 static MI_RGN_ChnPortParam_t stRgnChnAttr;
 static bool region_initialized = false;
+static bool skip_rgn_deinit = false;
 static volatile sig_atomic_t rgn_deinit_in_progress = 0;
 
 // UI
@@ -1519,24 +1520,28 @@ static void cleanup_resources(void)
         ret = MI_RGN_Destroy(hRgnHandle);
         fprintf(stderr, "cleanup: MI_RGN_Destroy ret=%d\n", ret);
 
-        uint64_t deinit_start = monotonic_ms64();
-        fprintf(stderr,
-                "cleanup: deinitializing RGN driver (start handle=%u dev=%d chn=%d port=%d "
-                "size=%ux%u fmt=%d)\n",
-                hRgnHandle, stVpeChnPort.s32DevId, stVpeChnPort.s32ChnId,
-                stVpeChnPort.s32OutputPortId,
-                stRgnAttr.stOsdInitParam.stSize.u32Width,
-                stRgnAttr.stOsdInitParam.stSize.u32Height,
-                stRgnAttr.stOsdInitParam.ePixelFmt);
-        fflush(stderr);
-        rgn_deinit_in_progress = 1;
-        alarm(1);
-        ret = MI_RGN_DeInit();
-        rgn_deinit_in_progress = 0;
-        alarm(0);
-        uint64_t deinit_elapsed = monotonic_ms64() - deinit_start;
-        fprintf(stderr, "cleanup: MI_RGN_DeInit ret=%d elapsed=%llums\n", ret,
-                (unsigned long long)deinit_elapsed);
+        if (skip_rgn_deinit) {
+            fprintf(stderr, "cleanup: skipping MI_RGN_DeInit (requested)\n");
+        } else {
+            uint64_t deinit_start = monotonic_ms64();
+            fprintf(stderr,
+                    "cleanup: deinitializing RGN driver (start handle=%u dev=%d chn=%d port=%d "
+                    "size=%ux%u fmt=%d)\n",
+                    hRgnHandle, stVpeChnPort.s32DevId, stVpeChnPort.s32ChnId,
+                    stVpeChnPort.s32OutputPortId,
+                    stRgnAttr.stOsdInitParam.stSize.u32Width,
+                    stRgnAttr.stOsdInitParam.stSize.u32Height,
+                    stRgnAttr.stOsdInitParam.ePixelFmt);
+            fflush(stderr);
+            rgn_deinit_in_progress = 1;
+            alarm(1);
+            ret = MI_RGN_DeInit();
+            rgn_deinit_in_progress = 0;
+            alarm(0);
+            uint64_t deinit_elapsed = monotonic_ms64() - deinit_start;
+            fprintf(stderr, "cleanup: MI_RGN_DeInit ret=%d elapsed=%llums\n", ret,
+                    (unsigned long long)deinit_elapsed);
+        }
         region_initialized = false;
     }
 
@@ -1620,6 +1625,9 @@ static void stats_timer_cb(lv_timer_t *timer)
 // -------------------------
 int main(void)
 {
+    const char *skip_env = getenv("LVGLTEST_SKIP_RGN_DEINIT");
+    skip_rgn_deinit = skip_env && skip_env[0] && skip_env[0] != '0';
+
     load_config();
     osd_width = g_cfg.width;
     osd_height = g_cfg.height;

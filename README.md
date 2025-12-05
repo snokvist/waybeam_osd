@@ -5,6 +5,7 @@
 - Single stats widget in the top-left (gated by `show_stats`) shows OSD/display resolution, asset count, FPS, and timing. When `udp_stats` is true, it also lists all 8 numeric values and text channels vertically to avoid width overflow. (`main.c`, `config.json`)
 - Size-first build: `-Os`, section folding, no unwind tables, linker GC/strip, LVGL demos/examples excluded by default. (`Makefile`, `lvgl/lvgl.mk`, `lv_conf.h`, `build.sh`)
 - Clean signal handling: SIGINT shuts down cleanly (timers, UDP socket, LVGL buffers, and RGN), and SIGHUP reloads `config.json` at runtime to rebuild assets, toggle stats, and apply the new idle wait without restarting. (`main.c`)
+- If `MI_RGN_DeInit` stalls on some firmware, set environment variable `LVGLTEST_SKIP_RGN_DEINIT=1` before launching to bypass the driver deinit step during cleanup and exit immediately after detach/destroy. (`main.c`)
 
 ## Build
 ```
