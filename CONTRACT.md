@@ -7,7 +7,7 @@
 - Keep payloads under 512 bytes (anything larger is dropped).
 - The UDP socket is drained whenever it becomes readable so only the latest datagram drives the screen; older queued packets are discarded. Incoming packets trigger an immediate refresh when received, while `idle_ms` only caps the sleep when no data arrives.
 - Optional `texts` array (up to 8 strings, max 16 chars each) can be sent alongside `values`. These map to `text_index` on bar assets and override a static `label` if present. Missing or empty entries fall back to the asset’s `label`.
-- Optional `asset_updates` array lets senders retint, reposition, enable/disable, or fully reconfigure assets at runtime. Each object must contain an `id`; if the ID does not exist yet and there is room (max 8 assets), the asset slot is created on the fly. Valid keys include: `enabled` (bool), `type` (`"bar"`, `"example_bar_2"`, or `"text"`), `value_index`, `text_index`, `text_indices` (array), `text_inline`, `label`, `orientation`, `x`, `y`, `width`, `height`, `min`, `max`, `bar_color` (bars only), `text_color`, `background`, and `background_opacity`. Only valid values that differ from the current config are applied; disabled assets are removed from the screen immediately.
+- Optional `asset_updates` array lets senders retint, reposition, enable/disable, or fully reconfigure assets at runtime. Each object must contain an `id`; if the ID does not exist yet and there is room (max 8 assets), the asset slot is created on the fly. Valid keys include: `enabled` (bool), `type` (`"bar"` or `"text"`; `"example_bar_2"` is accepted as a compatibility alias that also toggles `rounded_outline`), `value_index`, `text_index`, `text_indices` (array), `text_inline`, `label`, `orientation`, `x`, `y`, `width`, `height`, `min`, `max`, `bar_color` (bars only), `text_color`, `background`, `background_opacity`, and `rounded_outline` (bars only). Only valid values that differ from the current config are applied; disabled assets are removed from the screen immediately.
 
 Example:
 ```json
@@ -34,7 +34,7 @@ Each on-screen asset binds to one `values[i]` entry via `value_index`. For bar a
   - `idle_ms` (int): maximum idle wait between UDP polls and screen refreshes in milliseconds (clamped 10–1000); default 100 ms. Legacy configs may still specify `refresh_ms`, which is treated the same way for compatibility.
   - `assets` (array, max 8): list of objects defining what to render and which UDP value to consume.
   - Asset fields:
-    - `type`: `"bar"`, `"example_bar_2"`, or `"text"`.
+    - `type`: `"bar"` or `"text"`. Legacy `"example_bar_2"` still works and simply sets `rounded_outline` on a bar.
     - `enabled` (bool, optional): when `false`, the asset stays hidden until enabled by config reload or UDP `asset_updates`. Defaults to `true`.
     - `id` (int, optional): unique asset identifier for UDP `asset_updates`. Defaults to the array index when omitted.
     - `value_index` (int): which UDP `values[i]` drives this asset (0–7).
@@ -47,8 +47,9 @@ Each on-screen asset binds to one `values[i]` entry via `value_index`. For bar a
     - `width`, `height` (int): size in pixels. For text, enables wrapping.
     - `min`, `max` (float): input range mapped to 0–100% for bars.
     - `bar_color` (int): RGB hex value as a number; used by bar styles.
+    - `rounded_outline` (bool, bars only): enables the outlined capsule look that matches the previous `example_bar_2` type. Defaults to `false`.
     - `text_color` (int, optional): RGB hex value for labels/text content. Default white.
-    - `background` (int, optional): index of a predefined palette of 11 background swatches (including a fully transparent entry and tinted fills). `-1` or omission keeps the default transparent look. For bars (including the `lv_example_bar_2` style), the background is applied to a rounded container that extends across the bar and its label for a unified pill.
+    - `background` (int, optional): index of a predefined palette of 11 background swatches (including a fully transparent entry and tinted fills). `-1` or omission keeps the default transparent look. For bars, the background is applied to a rounded container that extends across the bar and its label for a unified pill.
     - `background_opacity` (int, optional): percent opacity (0–100) to apply to the chosen background swatch. When omitted, the default palette opacity is used (0%, 50%, 50%, 70%, 90%, 60%, 60%, 60%, 70%, 60%, 70% by index as listed below).
     - Background palette indices:
       - `0`: transparent (0%)
@@ -72,7 +73,7 @@ Example:
   "udp_stats": false,
   "assets": [
     { "type": "bar", "value_index": 0, "text_index": 0, "label": "BAR CH0", "x": 40, "y": 200, "width": 320, "height": 32, "min": 0.0, "max": 1.0, "orientation": "right", "bar_color": 2254540, "text_color": 16777215, "background": 4, "background_opacity": 70 },
-    { "type": "example_bar_2", "value_index": 1, "text_index": 1, "label": "BAR CH1", "x": 420, "y": 140, "width": 220, "height": 24, "min": 0.0, "max": 1.0, "orientation": "left", "bar_color": 2254540, "text_color": 0, "background": 2, "background_opacity": 60 },
+    { "type": "bar", "value_index": 1, "text_index": 1, "label": "BAR CH1", "x": 420, "y": 140, "width": 220, "height": 24, "min": 0.0, "max": 1.0, "orientation": "left", "bar_color": 2254540, "text_color": 0, "background": 2, "background_opacity": 60, "rounded_outline": true },
     { "type": "text", "text_indices": [2, 3, 4], "text_inline": false, "label": "Status", "x": 40, "y": 260, "width": 320, "height": 80, "background": 1, "background_opacity": 50, "text_color": 16777215 }
   ]
 }

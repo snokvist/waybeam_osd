@@ -40,7 +40,6 @@ typedef struct {
 
 typedef enum {
     ASSET_BAR = 0,
-    ASSET_BAR2,
     ASSET_TEXT,
 } asset_type_t;
 
@@ -69,6 +68,7 @@ typedef struct {
     int text_indices[8];
     int text_indices_count;
     int text_inline;
+    int rounded_outline;
     asset_orientation_t orientation;
 } asset_cfg_t;
 
@@ -361,6 +361,7 @@ static void init_asset_defaults(asset_t *a, int id)
     a->cfg.text_inline = 0;
     a->cfg.text_index = -1;
     a->cfg.orientation = ORIENTATION_RIGHT;
+    a->cfg.rounded_outline = 0;
     a->cfg.label[0] = '\0';
     a->last_pct = -1;
     a->last_label_text[0] = '\0';
@@ -389,29 +390,21 @@ static void apply_asset_styles(asset_t *asset)
     const asset_cfg_t *cfg = &asset->cfg;
 
     switch (cfg->type) {
-        case ASSET_BAR:
+        case ASSET_BAR: {
             style_bar_container(asset, lv_color_hex(0x222222), LV_OPA_40);
             if (asset->obj) {
-                int thickness = cfg->height > 0 ? cfg->height : (cfg->type == ASSET_BAR ? 32 : 20);
+                int thickness = cfg->height > 0 ? cfg->height : (cfg->rounded_outline ? 20 : 32);
                 lv_obj_set_style_bg_opa(asset->obj, LV_OPA_TRANSP, LV_PART_MAIN);
                 lv_obj_set_style_bg_color(asset->obj, lv_color_hex(cfg->color), LV_PART_INDICATOR);
                 lv_obj_set_style_bg_opa(asset->obj, LV_OPA_COVER, LV_PART_INDICATOR);
                 lv_obj_set_style_radius(asset->obj, thickness / 2, LV_PART_MAIN);
                 lv_obj_set_style_radius(asset->obj, thickness / 2, LV_PART_INDICATOR);
-            }
-            break;
-        case ASSET_BAR2:
-            style_bar_container(asset, lv_color_hex(0x222222), LV_OPA_40);
-            if (asset->obj) {
-                int thickness = cfg->height > 0 ? cfg->height : (cfg->type == ASSET_BAR ? 32 : 20);
-                lv_obj_set_style_bg_opa(asset->obj, LV_OPA_TRANSP, LV_PART_MAIN);
+                lv_obj_set_style_border_width(asset->obj, cfg->rounded_outline ? 2 : 0, 0);
                 lv_obj_set_style_border_color(asset->obj, lv_color_hex(cfg->color), 0);
-                lv_obj_set_style_bg_color(asset->obj, lv_color_hex(cfg->color), LV_PART_INDICATOR);
-                lv_obj_set_style_bg_opa(asset->obj, LV_OPA_COVER, LV_PART_INDICATOR);
-                lv_obj_set_style_radius(asset->obj, thickness / 2, LV_PART_MAIN);
-                lv_obj_set_style_radius(asset->obj, thickness / 2, LV_PART_INDICATOR);
+                lv_obj_set_style_pad_all(asset->obj, cfg->rounded_outline ? 6 : 0, 0);
             }
             break;
+        }
         case ASSET_TEXT:
             if (asset->obj) {
                 apply_background_style(asset->obj, cfg->bg_style, cfg->bg_opacity_pct, 0);
@@ -457,8 +450,8 @@ static void layout_bar_asset(asset_t *asset)
     const asset_cfg_t *cfg = &asset->cfg;
     int pad_x = 8;
     int pad_y = 6;
-    int bar_width = cfg->width > 0 ? cfg->width : (cfg->type == ASSET_BAR ? 320 : 200);
-    int bar_height = cfg->height > 0 ? cfg->height : (cfg->type == ASSET_BAR ? 32 : 20);
+    int bar_width = cfg->width > 0 ? cfg->width : (cfg->rounded_outline ? 200 : 320);
+    int bar_height = cfg->height > 0 ? cfg->height : (cfg->rounded_outline ? 20 : 32);
     int label_width = 0;
     int label_height = 0;
 
@@ -476,7 +469,7 @@ static void layout_bar_asset(asset_t *asset)
         }
     }
 
-    int extra_height = (cfg->type == ASSET_BAR2) ? 4 : 0;
+    int extra_height = cfg->rounded_outline ? 4 : 0;
     int container_height = bar_height;
     if (label_height > container_height) container_height = label_height;
     container_height += pad_y * 2 + extra_height;
@@ -576,7 +569,8 @@ static void parse_assets_array(const char *json)
         char type_buf[32];
         if (json_get_string_range(obj_start, obj_end, "type", type_buf, sizeof(type_buf)) == 0) {
             if (strcmp(type_buf, "example_bar_2") == 0 || strcmp(type_buf, "example_bar2") == 0) {
-                a.cfg.type = ASSET_BAR2;
+                a.cfg.rounded_outline = 1;
+                a.cfg.type = ASSET_BAR;
             } else if (strcmp(type_buf, "text") == 0) {
                 a.cfg.type = ASSET_TEXT;
             } else {
@@ -602,6 +596,7 @@ static void parse_assets_array(const char *json)
         if (json_get_int_range(obj_start, obj_end, "text_index", &v) == 0) a.cfg.text_index = clamp_int(v, -1, 7);
         json_get_int_array_range(obj_start, obj_end, "text_indices", a.cfg.text_indices, 8, &a.cfg.text_indices_count);
         if (json_get_bool_range(obj_start, obj_end, "text_inline", &v) == 0) a.cfg.text_inline = v;
+        if (json_get_bool_range(obj_start, obj_end, "rounded_outline", &v) == 0) a.cfg.rounded_outline = v;
         json_get_string_range(obj_start, obj_end, "label", a.cfg.label, sizeof(a.cfg.label));
         char orient_buf[16];
         if (json_get_string_range(obj_start, obj_end, "orientation", orient_buf, sizeof(orient_buf)) == 0) {
@@ -779,15 +774,19 @@ static void parse_udp_asset_updates(const char *buf)
         char type_buf[32];
         if (json_get_string_range(obj_start, obj_end, "type", type_buf, sizeof(type_buf)) == 0) {
             asset_type_t new_type = asset->cfg.type;
+            int new_outline = asset->cfg.rounded_outline;
             if (strcmp(type_buf, "example_bar_2") == 0 || strcmp(type_buf, "example_bar2") == 0) {
-                new_type = ASSET_BAR2;
+                new_type = ASSET_BAR;
+                new_outline = 1;
             } else if (strcmp(type_buf, "text") == 0) {
                 new_type = ASSET_TEXT;
             } else {
                 new_type = ASSET_BAR;
+                new_outline = asset->cfg.rounded_outline;
             }
-            if (new_type != asset->cfg.type) {
+            if (new_type != asset->cfg.type || new_outline != asset->cfg.rounded_outline) {
                 asset->cfg.type = new_type;
+                asset->cfg.rounded_outline = new_outline;
                 recreate = 1;
             }
         }
@@ -823,6 +822,14 @@ static void parse_udp_asset_updates(const char *buf)
             if (inline_flag != asset->cfg.text_inline) {
                 asset->cfg.text_inline = inline_flag;
                 text_change = 1;
+            }
+        }
+
+        if (json_get_bool_range(obj_start, obj_end, "rounded_outline", &v) == 0) {
+            int outline_flag = v ? 1 : 0;
+            if (outline_flag != asset->cfg.rounded_outline) {
+                asset->cfg.rounded_outline = outline_flag;
+                recreate = 1;
             }
         }
 
@@ -934,7 +941,7 @@ static void parse_udp_asset_updates(const char *buf)
                 }
             }
 
-            if (rerange && (asset->cfg.type == ASSET_BAR || asset->cfg.type == ASSET_BAR2)) {
+            if (rerange && asset->cfg.type == ASSET_BAR) {
                 lv_bar_set_range(asset->obj, 0, 100);
                 asset->last_pct = -1;
             }
@@ -1161,25 +1168,7 @@ void init_lvgl(void)
 }
 
 
-static lv_obj_t *create_simple_bar(asset_t *asset)
-{
-    if (!asset) return NULL;
-    const asset_cfg_t *cfg = &asset->cfg;
-    asset->container_obj = lv_obj_create(lv_scr_act());
-    lv_obj_remove_style_all(asset->container_obj);
-    lv_obj_clear_flag(asset->container_obj, LV_OBJ_FLAG_SCROLLABLE);
-
-    lv_obj_t *bar = lv_bar_create(asset->container_obj);
-    lv_obj_set_style_bg_opa(bar, LV_OPA_TRANSP, LV_PART_MAIN);
-    lv_obj_set_style_radius(bar, cfg->height > 0 ? cfg->height / 2 : 16, LV_PART_MAIN);
-    lv_obj_set_style_radius(bar, 3, LV_PART_INDICATOR);
-    lv_obj_set_style_bg_color(bar, lv_color_hex(cfg->color), LV_PART_INDICATOR);
-    lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, LV_PART_INDICATOR);
-    lv_bar_set_range(bar, 0, 100);
-    return bar;
-}
-
-static lv_obj_t *create_example_bar2(asset_t *asset)
+static lv_obj_t *create_bar(asset_t *asset)
 {
     if (!asset) return NULL;
     const asset_cfg_t *cfg = &asset->cfg;
@@ -1189,14 +1178,19 @@ static lv_obj_t *create_example_bar2(asset_t *asset)
 
     lv_obj_t *bar = lv_bar_create(asset->container_obj);
     lv_obj_remove_style_all(bar);
-    lv_obj_set_style_border_width(bar, 2, 0);
-    lv_obj_set_style_border_color(bar, lv_color_hex(cfg->color), 0);
-    lv_obj_set_style_pad_all(bar, 6, 0);
-    lv_obj_set_style_radius(bar, 6, 0);
-    lv_obj_set_style_anim_duration(bar, 1000, 0);
-    lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, LV_PART_INDICATOR);
-    lv_obj_set_style_bg_color(bar, lv_color_hex(cfg->color), LV_PART_INDICATOR);
+    if (cfg->rounded_outline) {
+        lv_obj_set_style_border_width(bar, 2, 0);
+        lv_obj_set_style_border_color(bar, lv_color_hex(cfg->color), 0);
+        lv_obj_set_style_pad_all(bar, 6, 0);
+        lv_obj_set_style_radius(bar, 6, 0);
+        lv_obj_set_style_anim_duration(bar, 1000, 0);
+    } else {
+        lv_obj_set_style_bg_opa(bar, LV_OPA_TRANSP, LV_PART_MAIN);
+        lv_obj_set_style_radius(bar, cfg->height > 0 ? cfg->height / 2 : 16, LV_PART_MAIN);
+    }
     lv_obj_set_style_radius(bar, 3, LV_PART_INDICATOR);
+    lv_obj_set_style_bg_color(bar, lv_color_hex(cfg->color), LV_PART_INDICATOR);
+    lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, LV_PART_INDICATOR);
     lv_bar_set_range(bar, 0, 100);
     return bar;
 }
@@ -1243,18 +1237,14 @@ static void create_asset_visual(asset_t *asset)
     destroy_asset_visual(asset);
     switch (asset->cfg.type) {
         case ASSET_BAR:
-            asset->obj = create_simple_bar(asset);
-            maybe_attach_asset_label(asset);
-            break;
-        case ASSET_BAR2:
-            asset->obj = create_example_bar2(asset);
+            asset->obj = create_bar(asset);
             maybe_attach_asset_label(asset);
             break;
         case ASSET_TEXT:
             asset->obj = create_text_asset(asset);
             break;
         default:
-            asset->obj = create_simple_bar(asset);
+            asset->obj = create_bar(asset);
             maybe_attach_asset_label(asset);
             break;
     }
@@ -1323,7 +1313,6 @@ static void update_assets_from_udp(void)
 
         switch (cfg->type) {
             case ASSET_BAR:
-            case ASSET_BAR2:
                 if (assets[i].obj && assets[i].last_pct != pct) {
                     lv_bar_set_value(assets[i].obj, pct, LV_ANIM_OFF);
                     assets[i].last_pct = pct;

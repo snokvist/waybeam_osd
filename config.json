@@ -25,7 +25,7 @@
       "text_color": 16777215
     },
     {
-      "type": "example_bar_2",
+      "type": "bar",
       "enabled": true,
       "id": 1,
       "value_index": 1,
@@ -37,6 +37,7 @@
       "height": 24,
       "min": 0.0,
       "max": 1.0,
+      "rounded_outline": true,
       "background": 2,
       "background_opacity": 60,
       "bar_color": 2254540,
