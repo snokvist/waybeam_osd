@@ -351,6 +351,22 @@ static void init_asset_defaults(asset_t *a, int id)
     a->last_label_text[0] = '\0';
 }
 
+static void style_bar_container(asset_t *asset, lv_color_t fallback_color, lv_opa_t fallback_opa)
+{
+    if (!asset || !asset->container_obj) return;
+
+    if (asset->cfg.bg_style >= 0) {
+        apply_background_style(asset->container_obj, asset->cfg.bg_style, asset->cfg.bg_opacity_pct, 0);
+    } else {
+        lv_obj_set_style_bg_color(asset->container_obj, fallback_color, 0);
+        lv_obj_set_style_bg_opa(asset->container_obj, fallback_opa, 0);
+    }
+
+    int radius = lv_obj_get_height(asset->container_obj) / 2;
+    if (radius < 6) radius = 6;
+    lv_obj_set_style_radius(asset->container_obj, radius, 0);
+}
+
 static void apply_asset_styles(asset_t *asset)
 {
     if (!asset) return;
@@ -359,14 +375,7 @@ static void apply_asset_styles(asset_t *asset)
 
     switch (cfg->type) {
         case ASSET_BAR:
-            if (asset->container_obj) {
-                if (cfg->bg_style >= 0) {
-                    apply_background_style(asset->container_obj, cfg->bg_style, cfg->bg_opacity_pct, 0);
-                } else {
-                    lv_obj_set_style_bg_color(asset->container_obj, lv_color_hex(0x222222), 0);
-                    lv_obj_set_style_bg_opa(asset->container_obj, LV_OPA_40, 0);
-                }
-            }
+            style_bar_container(asset, lv_color_hex(0x222222), LV_OPA_40);
             if (asset->obj) {
                 lv_obj_set_style_bg_opa(asset->obj, LV_OPA_TRANSP, LV_PART_MAIN);
                 lv_obj_set_style_bg_color(asset->obj, lv_color_hex(cfg->color), LV_PART_INDICATOR);
@@ -374,14 +383,7 @@ static void apply_asset_styles(asset_t *asset)
             }
             break;
         case ASSET_BAR2:
-            if (asset->container_obj) {
-                if (cfg->bg_style >= 0) {
-                    apply_background_style(asset->container_obj, cfg->bg_style, cfg->bg_opacity_pct, 0);
-                } else {
-                    lv_obj_set_style_bg_color(asset->container_obj, lv_color_hex(0x111111), 0);
-                    lv_obj_set_style_bg_opa(asset->container_obj, LV_OPA_30, 0);
-                }
-            }
+            style_bar_container(asset, lv_color_hex(0x222222), LV_OPA_40);
             if (asset->obj) {
                 lv_obj_set_style_border_color(asset->obj, lv_color_hex(cfg->color), 0);
                 lv_obj_set_style_bg_color(asset->obj, lv_color_hex(cfg->color), LV_PART_INDICATOR);
