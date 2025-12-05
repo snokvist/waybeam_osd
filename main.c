@@ -447,12 +447,11 @@ static void layout_bar_asset(asset_t *asset)
     int container_height = bar_height;
     if (label_height > container_height) container_height = label_height;
     container_height += pad_y * 2;
-    int container_width = bar_width + pad_x * 2;
-    int label_x = bar_width + pad_x * 2;
-    if (label_width > 0) {
-        container_width += label_width + pad_x;
-        label_x += pad_x;
-    }
+    int gap = label_width > 0 ? pad_x : 0;
+    int tail_pad = pad_x;
+    if (label_width > 0) tail_pad += 8;
+    int container_width = pad_x + bar_width + gap + label_width + tail_pad;
+    int label_x = pad_x + bar_width + gap;
 
     lv_obj_set_size(asset->container_obj, container_width, container_height);
     lv_obj_set_pos(asset->container_obj, cfg->x, cfg->y);
@@ -1185,6 +1184,8 @@ static void create_asset_visual(asset_t *asset)
     if (asset->container_obj && asset->cfg.type != ASSET_TEXT) {
         layout_bar_asset(asset);
     }
+
+    apply_asset_styles(asset);
 }
 
 static void maybe_attach_asset_label(asset_t *asset)
