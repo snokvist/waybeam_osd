@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/time.h>
 #include <poll.h>
 #include <signal.h>
@@ -13,6 +14,7 @@
 #include <ctype.h>
 #include <time.h>
 #include <stdbool.h>
+#include <limits.h>
 
 #include "lvgl/lvgl.h"
 #include "lvgl/src/draw/lv_draw_private.h"
@@ -42,6 +44,7 @@ typedef struct {
 typedef enum {
     ASSET_BAR = 0,
     ASSET_TEXT,
+    ASSET_IMAGE,
 } asset_type_t;
 
 typedef enum {
@@ -64,7 +67,9 @@ typedef struct {
     uint32_t text_color;
     int bg_style;
     int bg_opacity_pct;
+    int image_opacity_pct;
     char label[64];
+    char image_path[256];
     int text_index;
     int text_indices[8];
     int text_indices_count;
@@ -81,6 +86,7 @@ typedef struct {
     lv_obj_t *label_obj;
     int last_pct;
     char last_label_text[128];
+    char image_src[288];
 } asset_t;
 
 typedef struct {
@@ -107,6 +113,15 @@ static int osd_width = DEFAULT_SCREEN_WIDTH;
 static int osd_height = DEFAULT_SCREEN_HEIGHT;
 static asset_t assets[8];
 static int asset_count = 0;
+typedef struct {
+    int enabled;
+    int duration_ms;
+    asset_cfg_t cfg;
+} splash_cfg_t;
+
+static splash_cfg_t g_splash_cfg;
+static asset_t splash_asset;
+static lv_timer_t *splash_timer = NULL;
 
 #define MAX_ASSETS (int)(sizeof(assets) / sizeof(assets[0]))
 
@@ -180,6 +195,88 @@ static int read_file(const char *path, char **out_buf, size_t *out_len)
     *out_buf = buf;
     if (out_len) *out_len = r;
     return 0;
+}
+
+// Minimal FS bridge so LVGL's SVG decoder can read POSIX paths
+typedef struct {
+    FILE *f;
+} fs_file_t;
+
+static void *fs_open_cb(lv_fs_drv_t *drv, const char *path, lv_fs_mode_t mode)
+{
+    (void)drv;
+    const char *flags = (mode & LV_FS_MODE_WR) ? "wb" : "rb";
+    FILE *f = fopen(path, flags);
+    if (!f) return NULL;
+    fs_file_t *file = (fs_file_t *)malloc(sizeof(fs_file_t));
+    if (!file) {
+        fclose(f);
+        return NULL;
+    }
+    file->f = f;
+    return file;
+}
+
+static lv_fs_res_t fs_close_cb(lv_fs_drv_t *drv, void *file_p)
+{
+    (void)drv;
+    fs_file_t *file = (fs_file_t *)file_p;
+    if (!file) return LV_FS_RES_INV_PARAM;
+    fclose(file->f);
+    free(file);
+    return LV_FS_RES_OK;
+}
+
+static lv_fs_res_t fs_read_cb(lv_fs_drv_t *drv, void *file_p, void *buf, uint32_t btr, uint32_t *br)
+{
+    (void)drv;
+    fs_file_t *file = (fs_file_t *)file_p;
+    if (!file || !file->f) return LV_FS_RES_INV_PARAM;
+    size_t r = fread(buf, 1, btr, file->f);
+    if (br) *br = (uint32_t)r;
+    return LV_FS_RES_OK;
+}
+
+static lv_fs_res_t fs_seek_cb(lv_fs_drv_t *drv, void *file_p, uint32_t pos, lv_fs_whence_t whence)
+{
+    (void)drv;
+    fs_file_t *file = (fs_file_t *)file_p;
+    if (!file || !file->f) return LV_FS_RES_INV_PARAM;
+    int origin = SEEK_SET;
+    if (whence == LV_FS_SEEK_CUR) origin = SEEK_CUR;
+    else if (whence == LV_FS_SEEK_END) origin = SEEK_END;
+    if (fseek(file->f, (long)pos, origin) != 0) return LV_FS_RES_FS_ERR;
+    return LV_FS_RES_OK;
+}
+
+static lv_fs_res_t fs_tell_cb(lv_fs_drv_t *drv, void *file_p, uint32_t *pos)
+{
+    (void)drv;
+    fs_file_t *file = (fs_file_t *)file_p;
+    if (!file || !file->f || !pos) return LV_FS_RES_INV_PARAM;
+    long p = ftell(file->f);
+    if (p < 0) return LV_FS_RES_FS_ERR;
+    *pos = (uint32_t)p;
+    return LV_FS_RES_OK;
+}
+
+static void register_simple_fs_driver(void)
+{
+#if LV_USE_SVG
+    static int registered = 0;
+    if (registered) return;
+    lv_fs_drv_t drv;
+    lv_fs_drv_init(&drv);
+    drv.letter = 'S';
+    drv.open_cb = fs_open_cb;
+    drv.close_cb = fs_close_cb;
+    drv.read_cb = fs_read_cb;
+    drv.seek_cb = fs_seek_cb;
+    drv.tell_cb = fs_tell_cb;
+    lv_fs_drv_register(&drv);
+    lv_svg_decoder_init();
+    registered = 1;
+#endif
 }
 
 static const char *find_key(const char *json, const char *key)
@@ -333,6 +430,9 @@ static void bar_draw_event_cb(lv_event_t *e);
 static void destroy_asset_visual(asset_t *asset);
 static void create_asset_visual(asset_t *asset);
 static void maybe_attach_asset_label(asset_t *asset);
+static void splash_timer_cb(lv_timer_t *timer);
+static void clear_splashscreen(void);
+static void maybe_show_splashscreen(void);
 
 static asset_t *find_asset_by_id(int id)
 {
@@ -360,6 +460,7 @@ static void init_asset_defaults(asset_t *a, int id)
     a->cfg.text_color = 0xFFFFFF;
     a->cfg.bg_style = -1;
     a->cfg.bg_opacity_pct = -1;
+    a->cfg.image_opacity_pct = 100;
     a->cfg.text_indices_count = 0;
     a->cfg.text_inline = 0;
     a->cfg.text_index = -1;
@@ -367,8 +468,12 @@ static void init_asset_defaults(asset_t *a, int id)
     a->cfg.rounded_outline = 0;
     a->cfg.segments = 0;
     a->cfg.label[0] = '\0';
+    a->cfg.image_path[0] = '\0';
     a->last_pct = -1;
     a->last_label_text[0] = '\0';
+    a->image_buf = NULL;
+    a->image_buf_size = 0;
+    a->image_src[0] = '\0';
 }
 
 static void style_bar_container(asset_t *asset, lv_color_t fallback_color, lv_opa_t fallback_opa)
@@ -414,6 +519,13 @@ static void apply_asset_styles(asset_t *asset)
                 apply_background_style(asset->obj, cfg->bg_style, cfg->bg_opacity_pct, 0);
                 lv_obj_set_style_text_color(asset->obj, lv_color_hex(cfg->text_color), 0);
                 lv_obj_set_style_text_opa(asset->obj, LV_OPA_COVER, 0);
+            }
+            break;
+        case ASSET_IMAGE:
+            if (asset->obj) {
+                apply_background_style(asset->obj, cfg->bg_style, cfg->bg_opacity_pct, 0);
+                lv_opa_t opa = cfg->image_opacity_pct >= 0 ? pct_to_opa(cfg->image_opacity_pct) : LV_OPA_COVER;
+                lv_obj_set_style_opa(asset->obj, opa, 0);
             }
             break;
         default:
@@ -636,6 +748,18 @@ static void set_defaults(void)
     memset(assets, 0, sizeof(assets));
     asset_count = 1;
     init_asset_defaults(&assets[0], 0);
+
+    memset(&splash_asset, 0, sizeof(splash_asset));
+    init_asset_defaults(&splash_asset, -1);
+    memset(&g_splash_cfg, 0, sizeof(g_splash_cfg));
+    g_splash_cfg.enabled = 0;
+    g_splash_cfg.duration_ms = 0;
+    g_splash_cfg.cfg = splash_asset.cfg;
+    g_splash_cfg.cfg.type = ASSET_IMAGE;
+    g_splash_cfg.cfg.bg_style = -1;
+    g_splash_cfg.cfg.bg_opacity_pct = -1;
+    g_splash_cfg.cfg.image_opacity_pct = 100;
+    g_splash_cfg.cfg.enabled = 1;
 }
 
 static void parse_assets_array(const char *json)
@@ -668,6 +792,8 @@ static void parse_assets_array(const char *json)
         if (json_get_string_range(obj_start, obj_end, "type", type_buf, sizeof(type_buf)) == 0) {
             if (strcmp(type_buf, "text") == 0) {
                 a.cfg.type = ASSET_TEXT;
+            } else if (strcmp(type_buf, "image") == 0) {
+                a.cfg.type = ASSET_IMAGE;
             } else {
                 a.cfg.type = ASSET_BAR;
             }
@@ -693,7 +819,12 @@ static void parse_assets_array(const char *json)
         json_get_int_array_range(obj_start, obj_end, "text_indices", a.cfg.text_indices, 8, &a.cfg.text_indices_count);
         if (json_get_bool_range(obj_start, obj_end, "text_inline", &v) == 0) a.cfg.text_inline = v;
         if (json_get_bool_range(obj_start, obj_end, "rounded_outline", &v) == 0) a.cfg.rounded_outline = v;
+        if (json_get_int_range(obj_start, obj_end, "image_opacity", &v) == 0) a.cfg.image_opacity_pct = clamp_int(v, 0, 100);
         json_get_string_range(obj_start, obj_end, "label", a.cfg.label, sizeof(a.cfg.label));
+        json_get_string_range(obj_start, obj_end, "image_path", a.cfg.image_path, sizeof(a.cfg.image_path));
+        if (a.cfg.image_path[0] == '\0') {
+            json_get_string_range(obj_start, obj_end, "source", a.cfg.image_path, sizeof(a.cfg.image_path));
+        }
         char orient_buf[16];
         if (json_get_string_range(obj_start, obj_end, "orientation", orient_buf, sizeof(orient_buf)) == 0) {
             a.cfg.orientation = parse_orientation_string(orient_buf, ORIENTATION_RIGHT);
@@ -711,6 +842,44 @@ static void parse_assets_array(const char *json)
         asset_count = 1;
         init_asset_defaults(&assets[0], 0);
     }
+}
+
+static void parse_splashscreen(const char *json)
+{
+    const char *p = strstr(json, "\"splashscreen\"");
+    if (!p) return;
+    const char *obj = strchr(p, '{');
+    if (!obj) return;
+    const char *cursor = obj + 1;
+    int depth = 1;
+    while (*cursor && depth > 0) {
+        if (*cursor == '{') depth++;
+        else if (*cursor == '}') depth--;
+        cursor++;
+    }
+    if (depth != 0) return;
+    const char *obj_end = cursor;
+
+    int v = 0;
+    float fv = 0.0f;
+    asset_cfg_t *cfg = &g_splash_cfg.cfg;
+    if (json_get_bool_range(obj, obj_end, "enabled", &v) == 0) g_splash_cfg.enabled = v;
+    if (json_get_int_range(obj, obj_end, "duration_ms", &v) == 0) g_splash_cfg.duration_ms = clamp_int(v, 0, 60000);
+    if (json_get_int_range(obj, obj_end, "x", &v) == 0) cfg->x = v;
+    if (json_get_int_range(obj, obj_end, "y", &v) == 0) cfg->y = v;
+    if (json_get_int_range(obj, obj_end, "width", &v) == 0) cfg->width = v;
+    if (json_get_int_range(obj, obj_end, "height", &v) == 0) cfg->height = v;
+    if (json_get_int_range(obj, obj_end, "background", &v) == 0) cfg->bg_style = clamp_int(v, -1, (int)(sizeof(g_bg_styles) / sizeof(g_bg_styles[0])) - 1);
+    if (json_get_int_range(obj, obj_end, "background_opacity", &v) == 0) cfg->bg_opacity_pct = clamp_int(v, 0, 100);
+    if (json_get_int_range(obj, obj_end, "image_opacity", &v) == 0) cfg->image_opacity_pct = clamp_int(v, 0, 100);
+    if (json_get_float_range(obj, obj_end, "min", &fv) == 0) cfg->min = fv;
+    if (json_get_float_range(obj, obj_end, "max", &fv) == 0) cfg->max = fv;
+    json_get_string_range(obj, obj_end, "image_path", cfg->image_path, sizeof(cfg->image_path));
+    if (cfg->image_path[0] == '\0') {
+        json_get_string_range(obj, obj_end, "source", cfg->image_path, sizeof(cfg->image_path));
+    }
+    cfg->type = ASSET_IMAGE;
+    cfg->enabled = 1;
 }
 
 static void load_config(void)
@@ -746,6 +915,9 @@ static void load_config(void)
 
     // Preferred structured assets list
     parse_assets_array(json);
+
+    // Optional splashscreen block (ARGB or SVG image)
+    parse_splashscreen(json);
 
     free(json);
 }
@@ -872,6 +1044,8 @@ static void parse_udp_asset_updates(const char *buf)
             asset_type_t new_type = asset->cfg.type;
             if (strcmp(type_buf, "text") == 0) {
                 new_type = ASSET_TEXT;
+            } else if (strcmp(type_buf, "image") == 0) {
+                new_type = ASSET_IMAGE;
             } else {
                 new_type = ASSET_BAR;
             }
@@ -921,6 +1095,20 @@ static void parse_udp_asset_updates(const char *buf)
                 asset->cfg.rounded_outline = outline_flag;
                 recreate = 1;
             }
+        }
+
+        if (json_get_int_range(obj_start, obj_end, "image_opacity", &v) == 0) {
+            int opacity = clamp_int(v, 0, 100);
+            if (opacity != asset->cfg.image_opacity_pct) {
+                asset->cfg.image_opacity_pct = opacity;
+                restyle = 1;
+            }
+        }
+
+        if (json_get_string_range(obj_start, obj_end, "image_path", asset->cfg.image_path, sizeof(asset->cfg.image_path)) == 0) {
+            recreate = 1;
+        } else if (json_get_string_range(obj_start, obj_end, "source", asset->cfg.image_path, sizeof(asset->cfg.image_path)) == 0) {
+            recreate = 1;
         }
 
         if (json_get_string_range(obj_start, obj_end, "label", asset->cfg.label, sizeof(asset->cfg.label)) == 0) {
@@ -1252,6 +1440,8 @@ void init_lvgl(void)
 {
     lv_init();
 
+    register_simple_fs_driver();
+
     // Set LVGL tick callback
     lv_tick_set_cb(my_get_milliseconds);
 
@@ -1293,6 +1483,28 @@ static lv_obj_t *create_bar(asset_t *asset)
     lv_obj_add_event_cb(bar, bar_draw_event_cb, LV_EVENT_DRAW_TASK_ADDED, asset);
     lv_bar_set_range(bar, 0, 100);
     return bar;
+}
+
+static lv_obj_t *create_image_asset(asset_t *asset)
+{
+    if (!asset) return NULL;
+    if (asset->cfg.image_path[0] == '\0') return NULL;
+    register_simple_fs_driver();
+    const char *src = asset->cfg.image_path;
+    if (asset->cfg.image_path[1] != ':' && asset->cfg.image_path[0] != '/') {
+        snprintf(asset->image_src, sizeof(asset->image_src), "S:%s", asset->cfg.image_path);
+        src = asset->image_src;
+    }
+    lv_obj_t *img = lv_image_create(lv_scr_act());
+    lv_image_set_src(img, src);
+    if (asset->cfg.width > 0 || asset->cfg.height > 0) {
+        int width = asset->cfg.width > 0 ? asset->cfg.width : LV_SIZE_CONTENT;
+        int height = asset->cfg.height > 0 ? asset->cfg.height : LV_SIZE_CONTENT;
+        lv_obj_set_size(img, width, height);
+    }
+    lv_obj_align(img, LV_ALIGN_TOP_LEFT, asset->cfg.x, asset->cfg.y);
+    lv_obj_clear_flag(img, LV_OBJ_FLAG_SCROLLABLE);
+    return img;
 }
 
 static void destroy_asset_visual(asset_t *asset)
@@ -1342,6 +1554,9 @@ static void create_asset_visual(asset_t *asset)
             break;
         case ASSET_TEXT:
             asset->obj = create_text_asset(asset);
+            break;
+        case ASSET_IMAGE:
+            asset->obj = create_image_asset(asset);
             break;
         default:
             asset->obj = create_bar(asset);
@@ -1465,6 +1680,7 @@ static void handle_sighup(int sig)
 static void reload_config_runtime(void)
 {
     printf("Reloading config...\n");
+    clear_splashscreen();
 
     destroy_assets();
     load_config();
@@ -1485,10 +1701,12 @@ static void reload_config_runtime(void)
 
     fps_start_ms = monotonic_ms64();
     fps_frames = 0;
+    maybe_show_splashscreen();
 }
 
 static void cleanup_resources(void)
 {
+    clear_splashscreen();
     destroy_assets();
 
     if (stats_timer) {
@@ -1507,6 +1725,37 @@ static void cleanup_resources(void)
 
     free(buf1);
     free(buf2);
+}
+
+static void splash_timer_cb(lv_timer_t *timer)
+{
+    (void)timer;
+    if (splash_timer) {
+        lv_timer_del(splash_timer);
+        splash_timer = NULL;
+    }
+    destroy_asset_visual(&splash_asset);
+}
+
+static void clear_splashscreen(void)
+{
+    if (splash_timer) {
+        lv_timer_del(splash_timer);
+        splash_timer = NULL;
+    }
+    destroy_asset_visual(&splash_asset);
+}
+
+static void maybe_show_splashscreen(void)
+{
+    clear_splashscreen();
+    if (!g_splash_cfg.enabled || g_splash_cfg.duration_ms <= 0) return;
+    splash_asset.cfg = g_splash_cfg.cfg;
+    create_asset_visual(&splash_asset);
+    if (splash_asset.obj) {
+        lv_obj_move_foreground(splash_asset.obj);
+        splash_timer = lv_timer_create(splash_timer_cb, g_splash_cfg.duration_ms, NULL);
+    }
 }
 
 static void stats_timer_cb(lv_timer_t *timer)
@@ -1611,6 +1860,8 @@ int main(void)
     stats_timer = lv_timer_create(stats_timer_cb, 250, NULL);
 
     update_assets_from_udp();
+
+    maybe_show_splashscreen();
 
     idle_cap_ms = clamp_int(g_cfg.idle_ms, 10, 1000);
     idle_ms_applied = idle_cap_ms;

@@ -4,6 +4,16 @@
   "show_stats": true,
   "udp_stats": false,
   "idle_ms": 100,
+  "splashscreen": {
+    "enabled": false,
+    "duration_ms": 2000,
+    "x": 480,
+    "y": 200,
+    "width": 180,
+    "height": 180,
+    "image_path": "extras_chatgpt/sample_logo.svg",
+    "image_opacity": 90
+  },
   "assets": [
     {
       "type": "bar",
@@ -91,6 +101,17 @@
       "background": 3,
       "background_opacity": 50,
       "text_color": 16777215
+    },
+    {
+      "type": "image",
+      "enabled": false,
+      "id": 8,
+      "x": 700,
+      "y": 40,
+      "width": 140,
+      "height": 140,
+      "image_path": "extras_chatgpt/sample_logo.svg",
+      "image_opacity": 80
     }
   ]
 }
