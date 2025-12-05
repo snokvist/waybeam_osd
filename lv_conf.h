@@ -317,7 +317,7 @@
 #define LV_USE_DRAW_SDL 0
 
 /** Use VG-Lite GPU. */
-#define LV_USE_DRAW_VG_LITE 1
+#define LV_USE_DRAW_VG_LITE 0
 
 #if LV_USE_DRAW_VG_LITE
     /** Enable VG-Lite custom external 'gpu_init()' function */
@@ -978,7 +978,7 @@
 #define LV_USE_VECTOR_GRAPHIC  1
 
 /** Enable ThorVG (vector graphics library) from the src/libs folder */
-#define LV_USE_THORVG_INTERNAL 0
+#define LV_USE_THORVG_INTERNAL 1
 
 /** Enable ThorVG by assuming that its installed and linked to the project */
 #define LV_USE_THORVG_EXTERNAL 0
