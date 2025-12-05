@@ -317,7 +317,7 @@
 #define LV_USE_DRAW_SDL 0
 
 /** Use VG-Lite GPU. */
-#define LV_USE_DRAW_VG_LITE 0
+#define LV_USE_DRAW_VG_LITE 1
 
 #if LV_USE_DRAW_VG_LITE
     /** Enable VG-Lite custom external 'gpu_init()' function */
