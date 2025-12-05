@@ -5,17 +5,11 @@
 #include <string.h>
 #include <unistd.h>
 
-// Simple UDP generator that animates a full 8-value payload at ~10 Hz.
-// value[0]: 0..1 triangle wave (bar)
-// value[1]: 1..0 triangle wave (example_bar_2)
-// value[2]: 98..195 ramp (spare)
-// value[3]: 0..100 ramp (spare bar)
-// value[4]: -50..50 triangle (spare bar)
-// value[5]: 0..360 wrap (e.g. degrees)
-// value[6]: steady 0.5
-// value[7]: steady 0.0
-// texts[i]: 16-char sample descriptors for each channel
-// Usage: ./bar_generator [ip] [port] [ms]
+// UDP generator that animates values/texts and exercises runtime asset_updates.
+// - Asset 0 bar color shifts through red/orange/yellow/green based on value.
+// - Asset 6 is enabled on the fly as a bar bound to value[6].
+// - Asset 7 is enabled on the fly as a text widget showing texts[7].
+// Usage: ./osd_generator [ip] [port] [ms]
 // Defaults: 127.0.0.1 7777 100
 int main(int argc, char **argv)
 {
@@ -63,7 +57,11 @@ int main(int argc, char **argv)
     uint32_t last_bar_color = 0;
 
     while (1) {
-        char buf[512];
+        char buf[768];
+        char updates[512];
+        int uoff = 0;
+        int first_update = 1;
+
         uint32_t bar_color = 0xFF0000;
         if (v[0] >= 0.75) {
             bar_color = 0x00FF00; // green
@@ -72,6 +70,37 @@ int main(int argc, char **argv)
         } else if (v[0] >= 0.25) {
             bar_color = 0xFFA500; // orange
         }
+
+#define APPEND_UPDATE(fmt, ...) \
+        do { \
+            int add = snprintf(updates + uoff, sizeof(updates) - (size_t)uoff, \
+                               first_update ? fmt : "," fmt, __VA_ARGS__); \
+            if (add < 0 || add >= (int)(sizeof(updates) - (size_t)uoff)) { \
+                fprintf(stderr, "Asset update buffer overflow\n"); \
+                close(sock); \
+                return 1; \
+            } \
+            uoff += add; \
+            first_update = 0; \
+        } while (0)
+
+        // Enable asset 6 as a bar and bind it to value[6]
+        APPEND_UPDATE("{\"id\":6,\"enabled\":true,\"type\":\"bar\",\"value_index\":6,\"label\":\"UDP BAR 6\","
+                      "\"x\":10,\"y\":200,\"width\":300,\"height\":24,\"min\":0,\"max\":1,"
+                      "\"bar_color\":%u,\"text_color\":16777215,\"background\":1,\"background_opacity\":60}",
+                      0x00AA00u);
+
+        // Enable asset 7 as a text widget fed by texts[7]
+        APPEND_UPDATE("{\"id\":7,\"enabled\":true,\"type\":\"text\",\"text_indices\":[7],"
+                      "\"text_inline\":true,\"label\":\"UDP TEXT 7\",\"x\":360,\"y\":200,\"width\":320,\"height\":60,"
+                      "\"background\":3,\"background_opacity\":50,\"text_color\":16777215}");
+
+        if (bar_color != last_bar_color) {
+            APPEND_UPDATE("{\"id\":0,\"bar_color\":%u}", bar_color);
+            last_bar_color = bar_color;
+        }
+
+#undef APPEND_UPDATE
 
         int len = snprintf(buf, sizeof(buf),
                            "{\"values\":[%.3f,%.3f,%.1f,%.1f,%.1f,%.1f,%.3f,%.3f],"
@@ -84,16 +113,13 @@ int main(int argc, char **argv)
             break;
         }
 
-        if (bar_color != last_bar_color) {
-            int extra = snprintf(buf + len, sizeof(buf) - (size_t)len,
-                                  ",\"asset_updates\":[{\"id\":0,\"bar_color\":%u}]",
-                                  bar_color);
+        if (uoff > 0) {
+            int extra = snprintf(buf + len, sizeof(buf) - (size_t)len, ",\"asset_updates\":[%s]", updates);
             if (extra < 0 || len + extra >= (int)sizeof(buf)) {
-                fprintf(stderr, "Failed to append asset update\n");
+                fprintf(stderr, "Failed to append asset updates\n");
                 break;
             }
             len += extra;
-            last_bar_color = bar_color;
         }
 
         if (len >= (int)sizeof(buf) - 1) {
