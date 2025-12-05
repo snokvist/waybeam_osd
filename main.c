@@ -15,6 +15,7 @@
 #include <stdbool.h>
 
 #include "lvgl/lvgl.h"
+#include "lvgl/src/draw/lv_draw_private.h"
 #include "mi_sys.h"
 #include "mi_rgn.h"
 #include "mi_vpe.h"
@@ -40,7 +41,6 @@ typedef struct {
 
 typedef enum {
     ASSET_BAR = 0,
-    ASSET_BAR2,
     ASSET_TEXT,
 } asset_type_t;
 
@@ -69,6 +69,8 @@ typedef struct {
     int text_indices[8];
     int text_indices_count;
     int text_inline;
+    int rounded_outline;
+    int segments;
     asset_orientation_t orientation;
 } asset_cfg_t;
 
@@ -327,6 +329,7 @@ static lv_opa_t pct_to_opa(int pct)
 
 static void apply_background_style(lv_obj_t *obj, int bg_style, int bg_opacity_pct, lv_part_t part);
 static void layout_bar_asset(asset_t *asset);
+static void bar_draw_event_cb(lv_event_t *e);
 static void destroy_asset_visual(asset_t *asset);
 static void create_asset_visual(asset_t *asset);
 static void maybe_attach_asset_label(asset_t *asset);
@@ -361,6 +364,8 @@ static void init_asset_defaults(asset_t *a, int id)
     a->cfg.text_inline = 0;
     a->cfg.text_index = -1;
     a->cfg.orientation = ORIENTATION_RIGHT;
+    a->cfg.rounded_outline = 0;
+    a->cfg.segments = 0;
     a->cfg.label[0] = '\0';
     a->last_pct = -1;
     a->last_label_text[0] = '\0';
@@ -389,28 +394,21 @@ static void apply_asset_styles(asset_t *asset)
     const asset_cfg_t *cfg = &asset->cfg;
 
     switch (cfg->type) {
-        case ASSET_BAR:
+        case ASSET_BAR: {
             style_bar_container(asset, lv_color_hex(0x222222), LV_OPA_40);
             if (asset->obj) {
-                int thickness = cfg->height > 0 ? cfg->height : (cfg->type == ASSET_BAR ? 32 : 20);
+                int thickness = cfg->height > 0 ? cfg->height : (cfg->rounded_outline ? 20 : 32);
                 lv_obj_set_style_bg_opa(asset->obj, LV_OPA_TRANSP, LV_PART_MAIN);
                 lv_obj_set_style_bg_color(asset->obj, lv_color_hex(cfg->color), LV_PART_INDICATOR);
                 lv_obj_set_style_bg_opa(asset->obj, LV_OPA_COVER, LV_PART_INDICATOR);
                 lv_obj_set_style_radius(asset->obj, thickness / 2, LV_PART_MAIN);
                 lv_obj_set_style_radius(asset->obj, thickness / 2, LV_PART_INDICATOR);
-            }
-            break;
-        case ASSET_BAR2:
-            style_bar_container(asset, lv_color_hex(0x222222), LV_OPA_40);
-            if (asset->obj) {
-                int thickness = cfg->height > 0 ? cfg->height : (cfg->type == ASSET_BAR ? 32 : 20);
+                lv_obj_set_style_border_width(asset->obj, cfg->rounded_outline ? 2 : 0, 0);
                 lv_obj_set_style_border_color(asset->obj, lv_color_hex(cfg->color), 0);
-                lv_obj_set_style_bg_color(asset->obj, lv_color_hex(cfg->color), LV_PART_INDICATOR);
-                lv_obj_set_style_bg_opa(asset->obj, LV_OPA_COVER, LV_PART_INDICATOR);
-                lv_obj_set_style_radius(asset->obj, thickness / 2, LV_PART_MAIN);
-                lv_obj_set_style_radius(asset->obj, thickness / 2, LV_PART_INDICATOR);
+                lv_obj_set_style_pad_all(asset->obj, cfg->rounded_outline ? 6 : 0, 0);
             }
             break;
+        }
         case ASSET_TEXT:
             if (asset->obj) {
                 apply_background_style(asset->obj, cfg->bg_style, cfg->bg_opacity_pct, 0);
@@ -450,24 +448,122 @@ static void apply_background_style(lv_obj_t *obj, int bg_style, int bg_opacity_p
     lv_obj_set_style_bg_opa(obj, opa, part);
 }
 
+/*
+ * LVGL v9 draw task hook that replaces the indicator fill with segmented
+ * rectangles when asset->cfg.segments > 1.
+ */
+static void bar_draw_event_cb(lv_event_t *e)
+{
+    asset_t *asset = (asset_t *)lv_event_get_user_data(e);
+    if (!asset || asset->cfg.segments <= 1) return;
+
+    lv_draw_task_t *task = (lv_draw_task_t *)lv_event_get_param(e);
+    if (!task) return;
+
+    lv_draw_dsc_base_t *base = (lv_draw_dsc_base_t *)task->draw_dsc;
+    if (!base || base->part != LV_PART_INDICATOR) return;
+
+    lv_draw_fill_dsc_t *fill_dsc = lv_draw_task_get_fill_dsc(task);
+    if (fill_dsc) fill_dsc->opa = LV_OPA_TRANSP;
+    lv_draw_border_dsc_t *border_dsc = lv_draw_task_get_border_dsc(task);
+    if (border_dsc) border_dsc->opa = LV_OPA_TRANSP;
+
+    int pct = asset->last_pct;
+    if (pct < 0) pct = 0;
+    if (pct > 100) pct = 100;
+
+    int segs = asset->cfg.segments;
+    lv_area_t track_area;
+    lv_obj_get_content_coords(base->obj, &track_area);
+
+    int total_w = lv_area_get_width(&track_area);
+    int total_h = lv_area_get_height(&task->area);
+    if (total_w <= 0 || total_h <= 0) return;
+
+    int seg_w = segs > 0 ? total_w / segs : total_w;
+    if (seg_w <= 0) {
+        segs = 1;
+        seg_w = total_w;
+    }
+    int remainder = total_w - seg_w * segs;
+    int gap = seg_w >= 14 ? 3 : (seg_w >= 8 ? 2 : (seg_w >= 5 ? 1 : 0));
+    int filled = (pct * segs + 99) / 100;
+    if (pct == 0) filled = 0;
+    if (filled > segs) filled = segs;
+
+    lv_draw_rect_dsc_t seg_dsc;
+    lv_draw_rect_dsc_init(&seg_dsc);
+    lv_obj_init_draw_rect_dsc(base->obj, LV_PART_INDICATOR, &seg_dsc);
+    seg_dsc.bg_opa = LV_OPA_COVER;
+    seg_dsc.border_opa = LV_OPA_TRANSP;
+    if (lv_color_to_int(seg_dsc.bg_color) == 0) {
+        seg_dsc.bg_color = lv_color_hex(asset->cfg.color);
+    }
+    seg_dsc.radius = total_h / 3;
+    if (seg_dsc.radius > total_h / 2) seg_dsc.radius = total_h / 2;
+
+    lv_base_dir_t dir = lv_obj_get_style_base_dir(base->obj, LV_PART_INDICATOR);
+    if (dir == LV_BASE_DIR_RTL) {
+        int x = track_area.x2 + 1;
+        for (int i = 0; i < filled; i++) {
+            int w = seg_w + (i < remainder ? 1 : 0);
+            int draw_w = w;
+            if (i < segs - 1 && gap < draw_w) draw_w -= gap;
+            if (draw_w <= 0) {
+                x -= w;
+                continue;
+            }
+            lv_area_t seg_area = task->area;
+            seg_area.x2 = x - 1;
+            seg_area.x1 = seg_area.x2 - draw_w + 1;
+            lv_draw_rect(base->layer, &seg_dsc, &seg_area);
+            x -= w;
+        }
+    } else {
+        int x = track_area.x1;
+        for (int i = 0; i < filled; i++) {
+            int w = seg_w + (i < remainder ? 1 : 0);
+            int draw_w = w;
+            if (i < segs - 1 && gap < draw_w) draw_w -= gap;
+            if (draw_w <= 0) {
+                x += w;
+                continue;
+            }
+            lv_area_t seg_area = task->area;
+            seg_area.x1 = x;
+            seg_area.x2 = x + draw_w - 1;
+            lv_draw_rect(base->layer, &seg_dsc, &seg_area);
+            x += w;
+        }
+    }
+}
+
 static void layout_bar_asset(asset_t *asset)
 {
     if (!asset || !asset->container_obj || !asset->obj) return;
     const asset_cfg_t *cfg = &asset->cfg;
     int pad_x = 8;
     int pad_y = 6;
-    int bar_width = cfg->width > 0 ? cfg->width : (cfg->type == ASSET_BAR ? 320 : 200);
-    int bar_height = cfg->height > 0 ? cfg->height : (cfg->type == ASSET_BAR ? 32 : 20);
+    int bar_width = cfg->width > 0 ? cfg->width : (cfg->rounded_outline ? 200 : 320);
+    int bar_height = cfg->height > 0 ? cfg->height : (cfg->rounded_outline ? 20 : 32);
     int label_width = 0;
     int label_height = 0;
 
     if (asset->label_obj) {
-        lv_obj_update_layout(asset->label_obj);
+        // Avoid a full layout pass when we already have cached label dimensions, but
+        // fall back to calculating them if they haven't been resolved yet. This keeps
+        // orientation changes from degenerating into repeated layouts while still
+        // giving left/right placement accurate sizing data.
         label_width = lv_obj_get_width(asset->label_obj);
         label_height = lv_obj_get_height(asset->label_obj);
+        if (label_width == 0 || label_height == 0) {
+            lv_obj_update_layout(asset->label_obj);
+            label_width = lv_obj_get_width(asset->label_obj);
+            label_height = lv_obj_get_height(asset->label_obj);
+        }
     }
 
-    int extra_height = (cfg->type == ASSET_BAR2) ? 4 : 0;
+    int extra_height = cfg->rounded_outline ? 4 : 0;
     int container_height = bar_height;
     if (label_height > container_height) container_height = label_height;
     container_height += pad_y * 2 + extra_height;
@@ -476,23 +572,26 @@ static void layout_bar_asset(asset_t *asset)
     int container_width = pad_x + bar_width + gap + label_width + tail_pad;
 
     lv_obj_set_size(asset->container_obj, container_width, container_height);
-    lv_obj_set_pos(asset->container_obj, cfg->x, cfg->y);
-    int container_radius = container_height / 2;
+    int container_x = cfg->x;
+    if (cfg->orientation == ORIENTATION_LEFT) {
+        container_x -= container_width;
+    }
+    lv_obj_set_pos(asset->container_obj, container_x, cfg->y);
+    int base_radius_height = bar_height + pad_y * 2 + extra_height;
+    int container_radius = base_radius_height / 2;
+    if (container_radius < 6) container_radius = 6;
+    if (container_radius > container_height / 2) container_radius = container_height / 2;
     lv_obj_set_style_radius(asset->container_obj, container_radius, 0);
 
     lv_obj_set_size(asset->obj, bar_width, bar_height);
     lv_obj_set_style_radius(asset->obj, bar_height / 2, LV_PART_MAIN);
     lv_obj_set_style_radius(asset->obj, bar_height / 2, LV_PART_INDICATOR);
-    lv_obj_set_style_transform_angle(asset->obj, 0, LV_PART_MAIN);
-    lv_obj_set_style_transform_angle(asset->obj, 0, LV_PART_INDICATOR);
-    lv_obj_set_style_transform_pivot_x(asset->obj, bar_width / 2, LV_PART_MAIN);
-    lv_obj_set_style_transform_pivot_y(asset->obj, bar_height / 2, LV_PART_MAIN);
-    lv_obj_set_style_transform_pivot_x(asset->obj, bar_width / 2, LV_PART_INDICATOR);
-    lv_obj_set_style_transform_pivot_y(asset->obj, bar_height / 2, LV_PART_INDICATOR);
+    lv_obj_set_style_base_dir(asset->obj, LV_BASE_DIR_LTR, LV_PART_MAIN);
+    lv_obj_set_style_base_dir(asset->obj, LV_BASE_DIR_LTR, LV_PART_INDICATOR);
 
     if (cfg->orientation == ORIENTATION_LEFT) {
-        lv_obj_set_style_transform_angle(asset->obj, 1800, LV_PART_MAIN);
-        lv_obj_set_style_transform_angle(asset->obj, 1800, LV_PART_INDICATOR);
+        lv_obj_set_style_base_dir(asset->obj, LV_BASE_DIR_RTL, LV_PART_MAIN);
+        lv_obj_set_style_base_dir(asset->obj, LV_BASE_DIR_RTL, LV_PART_INDICATOR);
         int bar_x = pad_x + label_width + gap;
         if (asset->label_obj) {
             lv_obj_align(asset->label_obj, LV_ALIGN_LEFT_MID, pad_x, 0);
@@ -567,9 +666,7 @@ static void parse_assets_array(const char *json)
 
         char type_buf[32];
         if (json_get_string_range(obj_start, obj_end, "type", type_buf, sizeof(type_buf)) == 0) {
-            if (strcmp(type_buf, "example_bar_2") == 0 || strcmp(type_buf, "example_bar2") == 0) {
-                a.cfg.type = ASSET_BAR2;
-            } else if (strcmp(type_buf, "text") == 0) {
+            if (strcmp(type_buf, "text") == 0) {
                 a.cfg.type = ASSET_TEXT;
             } else {
                 a.cfg.type = ASSET_BAR;
@@ -591,9 +688,11 @@ static void parse_assets_array(const char *json)
         if (json_get_int_range(obj_start, obj_end, "text_color", &v) == 0) a.cfg.text_color = (uint32_t)v;
         if (json_get_int_range(obj_start, obj_end, "background", &v) == 0) a.cfg.bg_style = clamp_int(v, -1, (int)(sizeof(g_bg_styles) / sizeof(g_bg_styles[0])) - 1);
         if (json_get_int_range(obj_start, obj_end, "background_opacity", &v) == 0) a.cfg.bg_opacity_pct = clamp_int(v, 0, 100);
+        if (json_get_int_range(obj_start, obj_end, "segments", &v) == 0) a.cfg.segments = clamp_int(v, 0, 64);
         if (json_get_int_range(obj_start, obj_end, "text_index", &v) == 0) a.cfg.text_index = clamp_int(v, -1, 7);
         json_get_int_array_range(obj_start, obj_end, "text_indices", a.cfg.text_indices, 8, &a.cfg.text_indices_count);
         if (json_get_bool_range(obj_start, obj_end, "text_inline", &v) == 0) a.cfg.text_inline = v;
+        if (json_get_bool_range(obj_start, obj_end, "rounded_outline", &v) == 0) a.cfg.rounded_outline = v;
         json_get_string_range(obj_start, obj_end, "label", a.cfg.label, sizeof(a.cfg.label));
         char orient_buf[16];
         if (json_get_string_range(obj_start, obj_end, "orientation", orient_buf, sizeof(orient_buf)) == 0) {
@@ -771,9 +870,7 @@ static void parse_udp_asset_updates(const char *buf)
         char type_buf[32];
         if (json_get_string_range(obj_start, obj_end, "type", type_buf, sizeof(type_buf)) == 0) {
             asset_type_t new_type = asset->cfg.type;
-            if (strcmp(type_buf, "example_bar_2") == 0 || strcmp(type_buf, "example_bar2") == 0) {
-                new_type = ASSET_BAR2;
-            } else if (strcmp(type_buf, "text") == 0) {
+            if (strcmp(type_buf, "text") == 0) {
                 new_type = ASSET_TEXT;
             } else {
                 new_type = ASSET_BAR;
@@ -818,6 +915,14 @@ static void parse_udp_asset_updates(const char *buf)
             }
         }
 
+        if (json_get_bool_range(obj_start, obj_end, "rounded_outline", &v) == 0) {
+            int outline_flag = v ? 1 : 0;
+            if (outline_flag != asset->cfg.rounded_outline) {
+                asset->cfg.rounded_outline = outline_flag;
+                recreate = 1;
+            }
+        }
+
         if (json_get_string_range(obj_start, obj_end, "label", asset->cfg.label, sizeof(asset->cfg.label)) == 0) {
             text_change = 1;
         }
@@ -858,6 +963,14 @@ static void parse_udp_asset_updates(const char *buf)
             if (asset->cfg.bg_opacity_pct != opa) {
                 asset->cfg.bg_opacity_pct = opa;
                 restyle = 1;
+            }
+        }
+
+        if (json_get_int_range(obj_start, obj_end, "segments", &v) == 0) {
+            int segs = clamp_int(v, 0, 64);
+            if (asset->cfg.segments != segs) {
+                asset->cfg.segments = segs;
+                if (asset->obj) lv_obj_invalidate(asset->obj);
             }
         }
 
@@ -926,7 +1039,7 @@ static void parse_udp_asset_updates(const char *buf)
                 }
             }
 
-            if (rerange && (asset->cfg.type == ASSET_BAR || asset->cfg.type == ASSET_BAR2)) {
+            if (rerange && asset->cfg.type == ASSET_BAR) {
                 lv_bar_set_range(asset->obj, 0, 100);
                 asset->last_pct = -1;
             }
@@ -937,7 +1050,22 @@ static void parse_udp_asset_updates(const char *buf)
         }
 
         if (text_change) {
+            int wants_label = (asset->cfg.label[0] != '\0') || (asset->cfg.text_index >= 0);
+            int label_created = 0;
+            if (asset->cfg.type != ASSET_TEXT) {
+                if (wants_label && !asset->label_obj) {
+                    maybe_attach_asset_label(asset);
+                    label_created = asset->label_obj != NULL;
+                } else if (!wants_label && asset->label_obj) {
+                    lv_obj_del(asset->label_obj);
+                    asset->label_obj = NULL;
+                    layout_bar_asset(asset);
+                }
+            }
             asset->last_label_text[0] = '\0';
+            if (label_created) {
+                apply_asset_styles(asset);
+            }
         }
     }
 }
@@ -1138,25 +1266,7 @@ void init_lvgl(void)
 }
 
 
-static lv_obj_t *create_simple_bar(asset_t *asset)
-{
-    if (!asset) return NULL;
-    const asset_cfg_t *cfg = &asset->cfg;
-    asset->container_obj = lv_obj_create(lv_scr_act());
-    lv_obj_remove_style_all(asset->container_obj);
-    lv_obj_clear_flag(asset->container_obj, LV_OBJ_FLAG_SCROLLABLE);
-
-    lv_obj_t *bar = lv_bar_create(asset->container_obj);
-    lv_obj_set_style_bg_opa(bar, LV_OPA_TRANSP, LV_PART_MAIN);
-    lv_obj_set_style_radius(bar, cfg->height > 0 ? cfg->height / 2 : 16, LV_PART_MAIN);
-    lv_obj_set_style_radius(bar, 3, LV_PART_INDICATOR);
-    lv_obj_set_style_bg_color(bar, lv_color_hex(cfg->color), LV_PART_INDICATOR);
-    lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, LV_PART_INDICATOR);
-    lv_bar_set_range(bar, 0, 100);
-    return bar;
-}
-
-static lv_obj_t *create_example_bar2(asset_t *asset)
+static lv_obj_t *create_bar(asset_t *asset)
 {
     if (!asset) return NULL;
     const asset_cfg_t *cfg = &asset->cfg;
@@ -1166,14 +1276,21 @@ static lv_obj_t *create_example_bar2(asset_t *asset)
 
     lv_obj_t *bar = lv_bar_create(asset->container_obj);
     lv_obj_remove_style_all(bar);
-    lv_obj_set_style_border_width(bar, 2, 0);
-    lv_obj_set_style_border_color(bar, lv_color_hex(cfg->color), 0);
-    lv_obj_set_style_pad_all(bar, 6, 0);
-    lv_obj_set_style_radius(bar, 6, 0);
-    lv_obj_set_style_anim_duration(bar, 1000, 0);
-    lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, LV_PART_INDICATOR);
-    lv_obj_set_style_bg_color(bar, lv_color_hex(cfg->color), LV_PART_INDICATOR);
+    if (cfg->rounded_outline) {
+        lv_obj_set_style_border_width(bar, 2, 0);
+        lv_obj_set_style_border_color(bar, lv_color_hex(cfg->color), 0);
+        lv_obj_set_style_pad_all(bar, 6, 0);
+        lv_obj_set_style_radius(bar, 6, 0);
+        lv_obj_set_style_anim_duration(bar, 1000, 0);
+    } else {
+        lv_obj_set_style_bg_opa(bar, LV_OPA_TRANSP, LV_PART_MAIN);
+        lv_obj_set_style_radius(bar, cfg->height > 0 ? cfg->height / 2 : 16, LV_PART_MAIN);
+    }
     lv_obj_set_style_radius(bar, 3, LV_PART_INDICATOR);
+    lv_obj_set_style_bg_color(bar, lv_color_hex(cfg->color), LV_PART_INDICATOR);
+    lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, LV_PART_INDICATOR);
+    lv_obj_add_flag(bar, LV_OBJ_FLAG_SEND_DRAW_TASK_EVENTS);
+    lv_obj_add_event_cb(bar, bar_draw_event_cb, LV_EVENT_DRAW_TASK_ADDED, asset);
     lv_bar_set_range(bar, 0, 100);
     return bar;
 }
@@ -1220,18 +1337,14 @@ static void create_asset_visual(asset_t *asset)
     destroy_asset_visual(asset);
     switch (asset->cfg.type) {
         case ASSET_BAR:
-            asset->obj = create_simple_bar(asset);
-            maybe_attach_asset_label(asset);
-            break;
-        case ASSET_BAR2:
-            asset->obj = create_example_bar2(asset);
+            asset->obj = create_bar(asset);
             maybe_attach_asset_label(asset);
             break;
         case ASSET_TEXT:
             asset->obj = create_text_asset(asset);
             break;
         default:
-            asset->obj = create_simple_bar(asset);
+            asset->obj = create_bar(asset);
             maybe_attach_asset_label(asset);
             break;
     }
@@ -1300,7 +1413,6 @@ static void update_assets_from_udp(void)
 
         switch (cfg->type) {
             case ASSET_BAR:
-            case ASSET_BAR2:
                 if (assets[i].obj && assets[i].last_pct != pct) {
                     lv_bar_set_value(assets[i].obj, pct, LV_ANIM_OFF);
                     assets[i].last_pct = pct;
@@ -1327,6 +1439,7 @@ static void update_assets_from_udp(void)
             compose_asset_text(&assets[i], text_buf, sizeof(text_buf));
             if (strncmp(text_buf, assets[i].last_label_text, sizeof(assets[i].last_label_text) - 1) != 0) {
                 lv_label_set_text(assets[i].label_obj, text_buf);
+                lv_obj_update_layout(assets[i].label_obj);
                 strncpy(assets[i].last_label_text, text_buf, sizeof(assets[i].last_label_text) - 1);
                 assets[i].last_label_text[sizeof(assets[i].last_label_text) - 1] = '\0';
                 if (assets[i].container_obj) {
