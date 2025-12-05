@@ -1331,6 +1331,7 @@ static void update_assets_from_udp(void)
             compose_asset_text(&assets[i], text_buf, sizeof(text_buf));
             if (strncmp(text_buf, assets[i].last_label_text, sizeof(assets[i].last_label_text) - 1) != 0) {
                 lv_label_set_text(assets[i].label_obj, text_buf);
+                lv_obj_update_layout(assets[i].label_obj);
                 strncpy(assets[i].last_label_text, text_buf, sizeof(assets[i].last_label_text) - 1);
                 assets[i].last_label_text[sizeof(assets[i].last_label_text) - 1] = '\0';
                 if (assets[i].container_obj) {
