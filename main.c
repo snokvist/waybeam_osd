@@ -941,7 +941,22 @@ static void parse_udp_asset_updates(const char *buf)
         }
 
         if (text_change) {
+            int wants_label = (asset->cfg.label[0] != '\0') || (asset->cfg.text_index >= 0);
+            int label_created = 0;
+            if (asset->cfg.type != ASSET_TEXT) {
+                if (wants_label && !asset->label_obj) {
+                    maybe_attach_asset_label(asset);
+                    label_created = asset->label_obj != NULL;
+                } else if (!wants_label && asset->label_obj) {
+                    lv_obj_del(asset->label_obj);
+                    asset->label_obj = NULL;
+                    layout_bar_asset(asset);
+                }
+            }
             asset->last_label_text[0] = '\0';
+            if (label_created) {
+                apply_asset_styles(asset);
+            }
         }
     }
 }
