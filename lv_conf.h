@@ -27,7 +27,7 @@
  *====================*/
 
 /** Color depth: 1 (I1), 8 (L8), 16 (RGB565), 24 (RGB888), 32 (XRGB8888) */
-#define LV_COLOR_DEPTH 16
+#define LV_COLOR_DEPTH 32
 
 /*=========================
    STDLIB WRAPPER SETTINGS
@@ -1368,7 +1368,7 @@
     #define LV_USE_DEMO_RENDER 0
 
     /** Stress test for LVGL */
-    #define LV_USE_DEMO_STRESS 0
+    #define LV_USE_DEMO_STRESS 1
 
     /** Music player demo */
     #define LV_USE_DEMO_MUSIC 1

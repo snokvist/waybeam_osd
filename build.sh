@@ -22,5 +22,5 @@ if [ ! -d lvgl ]; then
 fi
 
 DRV=$PWD/firmware/general/package/sigmastar-osdrv-infinity6e/files/lib
-make -j8 -B CC=$GCC DRV=$DRV TOOLCHAIN=$PWD/toolchain/$CC OUTPUT=$OUT
-
+make -j8 -B CC=$GCC DRV=$DRV TOOLCHAIN=$PWD/toolchain/$CC OUTPUT=$OUT \
+    LVGL_INCLUDE_DEMOS=0 LVGL_INCLUDE_EXAMPLES=0
