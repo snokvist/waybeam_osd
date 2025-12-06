@@ -1214,7 +1214,7 @@ static uint64_t monotonic_ms64(void)
 // -------------------------
 void my_flush_cb(lv_display_t * disp, const lv_area_t * area, uint8_t * px_map)
 {
-    if (!g_ui_canvas_valid || !g_ui_canvas_info.virtAddr) {
+    if (!g_ui_canvas_valid || !g_ui_canvas_info.virtAddr || g_ui_canvas_info.u32Stride == 0) {
         lv_display_flush_ready(disp);
         return;
     }
@@ -1304,8 +1304,13 @@ void mi_region_init(void)
 
     memset(&g_ui_canvas_info, 0, sizeof(g_ui_canvas_info));
     ret = MI_RGN_GetCanvasInfo(hUiRgnHandle, &g_ui_canvas_info);
-    if (ret == 0 && g_ui_canvas_info.virtAddr) {
+    if (ret == 0 && g_ui_canvas_info.virtAddr && g_ui_canvas_info.u32Stride > 0) {
         g_ui_canvas_valid = true;
+        printf("UI canvas ready: %ux%u stride=%u addr=%p\n",
+               g_ui_canvas_info.stCanvas.u32Width,
+               g_ui_canvas_info.stCanvas.u32Height,
+               g_ui_canvas_info.u32Stride,
+               g_ui_canvas_info.virtAddr);
     } else {
         printf("UI canvas info unavailable (ret=%d, addr=%p)\n", ret, g_ui_canvas_info.virtAddr);
     }
@@ -1344,8 +1349,13 @@ void mi_region_init(void)
 
     memset(&g_icon_canvas_info, 0, sizeof(g_icon_canvas_info));
     ret = MI_RGN_GetCanvasInfo(hIconRgnHandle, &g_icon_canvas_info);
-    if (ret == 0 && g_icon_canvas_info.virtAddr) {
+    if (ret == 0 && g_icon_canvas_info.virtAddr && g_icon_canvas_info.u32Stride > 0) {
         g_icon_canvas_valid = true;
+        printf("Icon canvas ready: %ux%u stride=%u addr=%p\n",
+               g_icon_canvas_info.stCanvas.u32Width,
+               g_icon_canvas_info.stCanvas.u32Height,
+               g_icon_canvas_info.u32Stride,
+               g_icon_canvas_info.virtAddr);
     } else {
         printf("Icon canvas info unavailable (ret=%d, addr=%p)\n", ret, g_icon_canvas_info.virtAddr);
     }
@@ -1353,13 +1363,19 @@ void mi_region_init(void)
 
 static void blit_icon_argb4444(const uint16_t *src, int src_w, int src_h, int dst_x, int dst_y)
 {
-    if (!src || !g_icon_region_ready || !g_icon_canvas_valid || !g_icon_canvas_info.virtAddr) return;
+    if (!src || !g_icon_region_ready || !g_icon_canvas_valid || !g_icon_canvas_info.virtAddr || g_icon_canvas_info.u32Stride == 0) return;
+
+    if (dst_x < 0 || dst_y < 0 || dst_x >= ICON_LAYER_WIDTH || dst_y >= ICON_LAYER_HEIGHT) return;
 
     uint8_t *base = (uint8_t *)g_icon_canvas_info.virtAddr;
     for (int y = 0; y < src_h; y++) {
         if (dst_y + y >= ICON_LAYER_HEIGHT) break;
+        int safe_w = src_w;
+        if (dst_x + safe_w > ICON_LAYER_WIDTH) {
+            safe_w = ICON_LAYER_WIDTH - dst_x;
+        }
         uint16_t *dest = (uint16_t *)(base + (dst_y + y) * g_icon_canvas_info.u32Stride + dst_x * 2);
-        memcpy(dest, src + y * src_w, (size_t)src_w * sizeof(uint16_t));
+        memcpy(dest, src + y * src_w, (size_t)safe_w * sizeof(uint16_t));
     }
 
     MI_RGN_UpdateCanvas(hIconRgnHandle);
