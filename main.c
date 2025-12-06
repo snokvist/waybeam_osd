@@ -146,6 +146,7 @@ static bool g_icon_canvas_valid = false;
 static bool g_ui_canvas_dirty = false;
 static bool g_ui_region_ready = false;
 static bool g_icon_region_ready = false;
+static void clear_icon_canvas(void);
 
 // UI
 static lv_obj_t *stats_label = NULL;
