@@ -27,7 +27,6 @@
 #define CONFIG_PATH "config.json"
 #define UDP_PORT 7777
 #define UDP_MAX_PACKET 512
-#define DEFAULT_OSD_PADDING 12
 
 #define ICON_LAYER_WIDTH 256
 #define ICON_LAYER_HEIGHT 64
@@ -41,10 +40,8 @@ static lv_color_t *buf2 = NULL;
 typedef struct {
     int width;
     int height;
-    int auto_size_osd;
     int osd_x;
     int osd_y;
-    int osd_padding;
     int show_stats;
     int idle_ms;
     int udp_stats;
@@ -138,6 +135,8 @@ static MI_RGN_CanvasInfo_t g_icon_canvas_info;
 static bool g_ui_canvas_valid = false;
 static bool g_icon_canvas_valid = false;
 static bool g_ui_canvas_dirty = false;
+static bool g_ui_region_ready = false;
+static bool g_icon_region_ready = false;
 
 // UI
 static lv_obj_t *stats_label = NULL;
@@ -662,10 +661,8 @@ static void set_defaults(void)
 {
     g_cfg.width = DEFAULT_SCREEN_WIDTH;
     g_cfg.height = DEFAULT_SCREEN_HEIGHT;
-    g_cfg.auto_size_osd = 0;
     g_cfg.osd_x = 0;
     g_cfg.osd_y = 0;
-    g_cfg.osd_padding = DEFAULT_OSD_PADDING;
     g_cfg.show_stats = 1;
     g_cfg.idle_ms = 100;
     g_cfg.udp_stats = 0;
@@ -752,76 +749,10 @@ static void parse_assets_array(const char *json)
 
 static void compute_osd_region_bounds(void)
 {
-    if (!g_cfg.auto_size_osd) {
-        osd_origin_x = g_cfg.osd_x >= 0 ? g_cfg.osd_x : 0;
-        osd_origin_y = g_cfg.osd_y >= 0 ? g_cfg.osd_y : 0;
-        osd_width = g_cfg.width > 0 ? g_cfg.width : DEFAULT_SCREEN_WIDTH;
-        osd_height = g_cfg.height > 0 ? g_cfg.height : DEFAULT_SCREEN_HEIGHT;
-        return;
-    }
-
-    int padding = clamp_int(g_cfg.osd_padding, 0, 512);
-    int min_x = INT_MAX;
-    int min_y = INT_MAX;
-    int max_x = 0;
-    int max_y = 0;
-
-    if (g_cfg.show_stats) {
-        int stats_w = 320;
-        int stats_h = g_cfg.udp_stats ? 220 : 140;
-        int sx1 = 4;
-        int sy1 = 4;
-        int sx2 = sx1 + stats_w;
-        int sy2 = sy1 + stats_h;
-        if (sx1 < min_x) min_x = sx1;
-        if (sy1 < min_y) min_y = sy1;
-        if (sx2 > max_x) max_x = sx2;
-        if (sy2 > max_y) max_y = sy2;
-    }
-
-    for (int i = 0; i < asset_count; i++) {
-        const asset_cfg_t *cfg = &assets[i].cfg;
-        if (!cfg->enabled) continue;
-        int base_w = cfg->width > 0 ? cfg->width : (cfg->type == ASSET_TEXT ? 200 : 320);
-        int base_h = cfg->height > 0 ? cfg->height : (cfg->type == ASSET_TEXT ? 40 : 24);
-        int label_extra = 0;
-        if (cfg->type != ASSET_TEXT && (cfg->label[0] != '\0' || cfg->text_index >= 0 || cfg->text_indices_count > 0)) {
-            label_extra = 140;
-        }
-        int container_w = base_w + label_extra + 24;
-        int container_h = base_h + 16;
-        int start_x = cfg->x;
-        if (cfg->orientation == ORIENTATION_LEFT && cfg->type != ASSET_TEXT) {
-            start_x -= container_w;
-        }
-        int end_x = start_x + container_w;
-        int start_y = cfg->y;
-        int end_y = start_y + container_h;
-
-        if (start_x < min_x) min_x = start_x;
-        if (start_y < min_y) min_y = start_y;
-        if (end_x > max_x) max_x = end_x;
-        if (end_y > max_y) max_y = end_y;
-    }
-
-    if (min_x == INT_MAX || min_y == INT_MAX) {
-        osd_origin_x = 0;
-        osd_origin_y = 0;
-        osd_width = g_cfg.width > 0 ? g_cfg.width : DEFAULT_SCREEN_WIDTH;
-        osd_height = g_cfg.height > 0 ? g_cfg.height : DEFAULT_SCREEN_HEIGHT;
-        return;
-    }
-
-    osd_origin_x = min_x > padding ? min_x - padding : 0;
-    osd_origin_y = min_y > padding ? min_y - padding : 0;
-
-    int width = max_x + padding - osd_origin_x;
-    int height = max_y + padding - osd_origin_y;
-    if (width <= 0) width = g_cfg.width > 0 ? g_cfg.width : DEFAULT_SCREEN_WIDTH;
-    if (height <= 0) height = g_cfg.height > 0 ? g_cfg.height : DEFAULT_SCREEN_HEIGHT;
-
-    osd_width = width;
-    osd_height = height;
+    osd_origin_x = g_cfg.osd_x >= 0 ? g_cfg.osd_x : 0;
+    osd_origin_y = g_cfg.osd_y >= 0 ? g_cfg.osd_y : 0;
+    osd_width = g_cfg.width > 0 ? g_cfg.width : DEFAULT_SCREEN_WIDTH;
+    osd_height = g_cfg.height > 0 ? g_cfg.height : DEFAULT_SCREEN_HEIGHT;
 }
 
 static void load_config(void)
@@ -837,14 +768,8 @@ static void load_config(void)
     float fv = 0.0f;
     if (json_get_int(json, "width", &v) == 0) g_cfg.width = v;
     if (json_get_int(json, "height", &v) == 0) g_cfg.height = v;
-    if (json_get_bool(json, "auto_size_osd", &v) == 0 || json_get_bool(json, "auto_size", &v) == 0) {
-        g_cfg.auto_size_osd = v;
-    }
     if (json_get_int(json, "osd_x", &v) == 0) g_cfg.osd_x = clamp_int(v, 0, 4096);
     if (json_get_int(json, "osd_y", &v) == 0) g_cfg.osd_y = clamp_int(v, 0, 4096);
-    if (json_get_int(json, "osd_padding", &v) == 0) {
-        g_cfg.osd_padding = clamp_int(v, 0, 512);
-    }
     if (json_get_bool(json, "show_stats", &v) == 0) g_cfg.show_stats = v;
     if (json_get_bool(json, "udp_stats", &v) == 0) g_cfg.udp_stats = v;
     if (json_get_int(json, "idle_ms", &v) == 0) {
@@ -1321,7 +1246,7 @@ void my_flush_cb(lv_display_t * disp, const lv_area_t * area, uint8_t * px_map)
 
 static void maybe_flush_ui_canvas(void)
 {
-    if (!g_ui_canvas_dirty || !g_ui_canvas_valid) return;
+    if (!g_ui_region_ready || !g_ui_canvas_dirty || !g_ui_canvas_valid) return;
     MI_RGN_UpdateCanvas(hUiRgnHandle);
     g_ui_canvas_dirty = false;
 }
@@ -1331,7 +1256,17 @@ static void maybe_flush_ui_canvas(void)
 // -------------------------
 void mi_region_init(void)
 {
-    MI_RGN_Init(&g_stPaletteTable);
+    MI_S32 ret = MI_RGN_Init(&g_stPaletteTable);
+    if (ret != 0) {
+        printf("MI_RGN_Init failed: %d\n", ret);
+    }
+
+    g_ui_region_ready = false;
+    g_icon_region_ready = false;
+    g_ui_canvas_valid = false;
+    g_icon_canvas_valid = false;
+    g_ui_canvas_dirty = false;
+
     hUiRgnHandle = 0;
     hIconRgnHandle = 1;
 
@@ -1341,7 +1276,11 @@ void mi_region_init(void)
     stUiRgnAttr.stOsdInitParam.stSize.u32Width = osd_width;
     stUiRgnAttr.stOsdInitParam.stSize.u32Height = osd_height;
 
-    MI_RGN_Create(hUiRgnHandle, &stUiRgnAttr);
+    ret = MI_RGN_Create(hUiRgnHandle, &stUiRgnAttr);
+    if (ret != 0) {
+        printf("UI RGN create failed: %d\n", ret);
+        return;
+    }
 
     stUiChnPort.eModId = E_MI_RGN_MODID_VPE;
     stUiChnPort.s32DevId = 0;
@@ -1355,12 +1294,21 @@ void mi_region_init(void)
     stUiRgnChnAttr.unPara.stOsdChnPort.u32Layer = 0;
     stUiRgnChnAttr.unPara.stOsdChnPort.stOsdAlphaAttr.eAlphaMode = E_MI_RGN_PIXEL_ALPHA;
 
-    MI_RGN_AttachToChn(hUiRgnHandle, &stUiChnPort, &stUiRgnChnAttr);
+    ret = MI_RGN_AttachToChn(hUiRgnHandle, &stUiChnPort, &stUiRgnChnAttr);
+    if (ret != 0) {
+        printf("UI RGN attach failed: %d\n", ret);
+        return;
+    }
+
+    g_ui_region_ready = true;
 
     memset(&g_ui_canvas_info, 0, sizeof(g_ui_canvas_info));
-    MI_RGN_GetCanvasInfo(hUiRgnHandle, &g_ui_canvas_info);
-    g_ui_canvas_valid = g_ui_canvas_info.virtAddr != NULL;
-    g_ui_canvas_dirty = false;
+    ret = MI_RGN_GetCanvasInfo(hUiRgnHandle, &g_ui_canvas_info);
+    if (ret == 0 && g_ui_canvas_info.virtAddr) {
+        g_ui_canvas_valid = true;
+    } else {
+        printf("UI canvas info unavailable (ret=%d, addr=%p)\n", ret, g_ui_canvas_info.virtAddr);
+    }
 
     memset(&stIconRgnAttr, 0, sizeof(MI_RGN_Attr_t));
     stIconRgnAttr.eType = E_MI_RGN_TYPE_OSD;
@@ -1368,7 +1316,11 @@ void mi_region_init(void)
     stIconRgnAttr.stOsdInitParam.stSize.u32Width = ICON_LAYER_WIDTH;
     stIconRgnAttr.stOsdInitParam.stSize.u32Height = ICON_LAYER_HEIGHT;
 
-    MI_RGN_Create(hIconRgnHandle, &stIconRgnAttr);
+    ret = MI_RGN_Create(hIconRgnHandle, &stIconRgnAttr);
+    if (ret != 0) {
+        printf("Icon RGN create failed: %d\n", ret);
+        return;
+    }
 
     stIconChnPort.eModId = E_MI_RGN_MODID_VPE;
     stIconChnPort.s32DevId = 0;
@@ -1382,16 +1334,26 @@ void mi_region_init(void)
     stIconRgnChnAttr.unPara.stOsdChnPort.u32Layer = 1;
     stIconRgnChnAttr.unPara.stOsdChnPort.stOsdAlphaAttr.eAlphaMode = E_MI_RGN_PIXEL_ALPHA;
 
-    MI_RGN_AttachToChn(hIconRgnHandle, &stIconChnPort, &stIconRgnChnAttr);
+    ret = MI_RGN_AttachToChn(hIconRgnHandle, &stIconChnPort, &stIconRgnChnAttr);
+    if (ret != 0) {
+        printf("Icon RGN attach failed: %d\n", ret);
+        return;
+    }
+
+    g_icon_region_ready = true;
 
     memset(&g_icon_canvas_info, 0, sizeof(g_icon_canvas_info));
-    MI_RGN_GetCanvasInfo(hIconRgnHandle, &g_icon_canvas_info);
-    g_icon_canvas_valid = g_icon_canvas_info.virtAddr != NULL;
+    ret = MI_RGN_GetCanvasInfo(hIconRgnHandle, &g_icon_canvas_info);
+    if (ret == 0 && g_icon_canvas_info.virtAddr) {
+        g_icon_canvas_valid = true;
+    } else {
+        printf("Icon canvas info unavailable (ret=%d, addr=%p)\n", ret, g_icon_canvas_info.virtAddr);
+    }
 }
 
 static void blit_icon_argb4444(const uint16_t *src, int src_w, int src_h, int dst_x, int dst_y)
 {
-    if (!src || !g_icon_canvas_valid || !g_icon_canvas_info.virtAddr) return;
+    if (!src || !g_icon_region_ready || !g_icon_canvas_valid || !g_icon_canvas_info.virtAddr) return;
 
     uint8_t *base = (uint8_t *)g_icon_canvas_info.virtAddr;
     for (int y = 0; y < src_h; y++) {
@@ -1655,11 +1617,19 @@ static void cleanup_resources(void)
     }
 
     // Tear down OSD regions cleanly
-    MI_RGN_DetachFromChn(hUiRgnHandle, &stUiChnPort);
-    MI_RGN_Destroy(hUiRgnHandle);
+    if (g_ui_region_ready) {
+        MI_RGN_DetachFromChn(hUiRgnHandle, &stUiChnPort);
+        MI_RGN_Destroy(hUiRgnHandle);
+        g_ui_region_ready = false;
+        g_ui_canvas_valid = false;
+    }
 
-    MI_RGN_DetachFromChn(hIconRgnHandle, &stIconChnPort);
-    MI_RGN_Destroy(hIconRgnHandle);
+    if (g_icon_region_ready) {
+        MI_RGN_DetachFromChn(hIconRgnHandle, &stIconChnPort);
+        MI_RGN_Destroy(hIconRgnHandle);
+        g_icon_region_ready = false;
+        g_icon_canvas_valid = false;
+    }
 
     if (udp_sock >= 0) {
         close(udp_sock);

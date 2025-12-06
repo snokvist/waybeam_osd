@@ -30,8 +30,6 @@ Each on-screen asset binds to one `values[i]` entry via `value_index`. For bar a
 - Top-level fields:
   - `width`, `height` (int): OSD canvas resolution. Default 1280x720. Position is defined by `osd_x`/`osd_y` (defaults 0/0).
   - `osd_x`, `osd_y` (int, optional): top-left position of the OSD canvas on screen. Defaults to `0`/`0` and clamped to 0–4096.
-  - `auto_size_osd` (bool, optional): when `true`, shrink the canvas to the bounding box of visible assets + stats and shift the region origin accordingly using the `osd_padding` halo. Default `false`.
-  - `osd_padding` (int, optional): halo padding in pixels applied to the auto-sized canvas. Defaults to `12` and is clamped 0–512.
   - `show_stats` (bool): show/hide the top-left stats overlay. Default `true`.
   - `udp_stats` (bool): when `true`, the stats overlay also lists the latest 8 numeric values and text channels. Default `false`.
   - `idle_ms` (int): maximum idle wait between UDP polls and screen refreshes in milliseconds (clamped 10–1000); default 100 ms. Legacy configs may still specify `refresh_ms`, which is treated the same way for compatibility.
