@@ -1490,16 +1490,36 @@ static void render_icon_asset(asset_t *asset)
 // -------------------------
 void init_lvgl(void)
 {
+    printf("LVGL: init...\n");
     lv_init();
 
     // Set LVGL tick callback
     lv_tick_set_cb(my_get_milliseconds);
 
-    size_t buf_size = (size_t)osd_width * BUF_ROWS * sizeof(lv_color_t);
+    int safe_width = osd_width > 0 ? osd_width : DEFAULT_SCREEN_WIDTH;
+    int safe_height = osd_height > 0 ? osd_height : DEFAULT_SCREEN_HEIGHT;
+    size_t buf_size = (size_t)safe_width * BUF_ROWS * sizeof(lv_color_t);
+
     buf1 = (lv_color_t *)malloc(buf_size);
     buf2 = (lv_color_t *)malloc(buf_size);
+    if (!buf1 || !buf2) {
+        printf("LVGL: buffer alloc failed (size=%zu) buf1=%p buf2=%p\n", buf_size, buf1, buf2);
+        free(buf1);
+        free(buf2);
+        buf1 = buf2 = NULL;
+        return;
+    }
 
-    g_disp = lv_display_create(osd_width, osd_height);
+    printf("LVGL: creating display %dx%d buffer=%zu bytes\n", safe_width, safe_height, buf_size);
+    g_disp = lv_display_create(safe_width, safe_height);
+    if (!g_disp) {
+        printf("LVGL: display create failed\n");
+        free(buf1);
+        free(buf2);
+        buf1 = buf2 = NULL;
+        return;
+    }
+
     lv_display_set_color_format(g_disp, LV_COLOR_FORMAT_ARGB8888);
     lv_display_set_buffers(g_disp, buf1, buf2, buf_size, LV_DISPLAY_RENDER_MODE_PARTIAL);
     lv_display_set_flush_cb(g_disp, my_flush_cb);
