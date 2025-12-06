@@ -24,7 +24,7 @@
 #define DEFAULT_SCREEN_WIDTH 1280   // fallback resolution if config is absent
 #define DEFAULT_SCREEN_HEIGHT 720
 #define BUF_ROWS 60  // partial buffer height
-#define CONFIG_PATH "config.json"
+#define CONFIG_PATH "/etc/config.json"
 #define UDP_PORT 7777
 #define UDP_MAX_PACKET 512
 
