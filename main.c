@@ -28,10 +28,10 @@
 #define UDP_PORT 7777
 #define UDP_MAX_PACKET 512
 
-#define ICON_LAYER_WIDTH 256
-#define ICON_LAYER_HEIGHT 64
-#define ICON_LAYER_X 960
-#define ICON_LAYER_Y 20
+#define ICON_LAYER_WIDTH_DEFAULT 256
+#define ICON_LAYER_HEIGHT_DEFAULT 64
+#define ICON_LAYER_X_DEFAULT 960
+#define ICON_LAYER_Y_DEFAULT 20
 
 // LVGL buffers - allocated at runtime for ARGB8888 (32-bit per pixel)
 static lv_color_t *buf1 = NULL;
@@ -45,11 +45,17 @@ typedef struct {
     int show_stats;
     int idle_ms;
     int udp_stats;
+    int icon_layer_enabled;
+    int icon_layer_x;
+    int icon_layer_y;
+    int icon_layer_width;
+    int icon_layer_height;
 } app_config_t;
 
 typedef enum {
     ASSET_BAR = 0,
     ASSET_TEXT,
+    ASSET_ICON,
 } asset_type_t;
 
 typedef enum {
@@ -80,6 +86,7 @@ typedef struct {
     int rounded_outline;
     int segments;
     asset_orientation_t orientation;
+    char path[128];
 } asset_cfg_t;
 
 typedef struct {
@@ -89,6 +96,8 @@ typedef struct {
     lv_obj_t *label_obj;
     int last_pct;
     char last_label_text[128];
+    uint16_t *icon_pixels;
+    size_t icon_buf_bytes;
 } asset_t;
 
 typedef struct {
@@ -399,8 +408,11 @@ static void init_asset_defaults(asset_t *a, int id)
     a->cfg.rounded_outline = 0;
     a->cfg.segments = 0;
     a->cfg.label[0] = '\0';
+    a->cfg.path[0] = '\0';
     a->last_pct = -1;
     a->last_label_text[0] = '\0';
+    a->icon_pixels = NULL;
+    a->icon_buf_bytes = 0;
 }
 
 static void style_bar_container(asset_t *asset, lv_color_t fallback_color, lv_opa_t fallback_opa)
@@ -448,6 +460,8 @@ static void apply_asset_styles(asset_t *asset)
                 lv_obj_set_style_text_opa(asset->obj, LV_OPA_COVER, 0);
             }
             break;
+        case ASSET_ICON:
+            return;
         default:
             break;
     }
@@ -666,6 +680,11 @@ static void set_defaults(void)
     g_cfg.show_stats = 1;
     g_cfg.idle_ms = 100;
     g_cfg.udp_stats = 0;
+    g_cfg.icon_layer_enabled = 0;
+    g_cfg.icon_layer_x = ICON_LAYER_X_DEFAULT;
+    g_cfg.icon_layer_y = ICON_LAYER_Y_DEFAULT;
+    g_cfg.icon_layer_width = ICON_LAYER_WIDTH_DEFAULT;
+    g_cfg.icon_layer_height = ICON_LAYER_HEIGHT_DEFAULT;
 
     memset(assets, 0, sizeof(assets));
     asset_count = 1;
@@ -702,6 +721,8 @@ static void parse_assets_array(const char *json)
         if (json_get_string_range(obj_start, obj_end, "type", type_buf, sizeof(type_buf)) == 0) {
             if (strcmp(type_buf, "text") == 0) {
                 a.cfg.type = ASSET_TEXT;
+            } else if (strcmp(type_buf, "icon") == 0) {
+                a.cfg.type = ASSET_ICON;
             } else {
                 a.cfg.type = ASSET_BAR;
             }
@@ -728,6 +749,7 @@ static void parse_assets_array(const char *json)
         if (json_get_bool_range(obj_start, obj_end, "text_inline", &v) == 0) a.cfg.text_inline = v;
         if (json_get_bool_range(obj_start, obj_end, "rounded_outline", &v) == 0) a.cfg.rounded_outline = v;
         json_get_string_range(obj_start, obj_end, "label", a.cfg.label, sizeof(a.cfg.label));
+        json_get_string_range(obj_start, obj_end, "path", a.cfg.path, sizeof(a.cfg.path));
         char orient_buf[16];
         if (json_get_string_range(obj_start, obj_end, "orientation", orient_buf, sizeof(orient_buf)) == 0) {
             a.cfg.orientation = parse_orientation_string(orient_buf, ORIENTATION_RIGHT);
@@ -778,6 +800,11 @@ static void load_config(void)
         // Backward compatibility with older configs
         g_cfg.idle_ms = clamp_int(v, 10, 1000);
     }
+    if (json_get_bool(json, "icon_layer_enabled", &v) == 0) g_cfg.icon_layer_enabled = v;
+    if (json_get_int(json, "icon_layer_x", &v) == 0) g_cfg.icon_layer_x = clamp_int(v, 0, 4096);
+    if (json_get_int(json, "icon_layer_y", &v) == 0) g_cfg.icon_layer_y = clamp_int(v, 0, 4096);
+    if (json_get_int(json, "icon_layer_width", &v) == 0) g_cfg.icon_layer_width = clamp_int(v, 1, 4096);
+    if (json_get_int(json, "icon_layer_height", &v) == 0) g_cfg.icon_layer_height = clamp_int(v, 1, 4096);
 
     // Backwards-compatible single bar fields (used only if no assets array)
     if (json_get_int(json, "bar_x", &v) == 0) assets[0].cfg.x = v;
@@ -916,6 +943,8 @@ static void parse_udp_asset_updates(const char *buf)
             asset_type_t new_type = asset->cfg.type;
             if (strcmp(type_buf, "text") == 0) {
                 new_type = ASSET_TEXT;
+            } else if (strcmp(type_buf, "icon") == 0) {
+                new_type = ASSET_ICON;
             } else {
                 new_type = ASSET_BAR;
             }
@@ -963,6 +992,15 @@ static void parse_udp_asset_updates(const char *buf)
             int outline_flag = v ? 1 : 0;
             if (outline_flag != asset->cfg.rounded_outline) {
                 asset->cfg.rounded_outline = outline_flag;
+                recreate = 1;
+            }
+        }
+
+        char path_buf[128];
+        if (json_get_string_range(obj_start, obj_end, "path", path_buf, sizeof(path_buf)) == 0) {
+            if (strncmp(path_buf, asset->cfg.path, sizeof(asset->cfg.path) - 1) != 0) {
+                strncpy(asset->cfg.path, path_buf, sizeof(asset->cfg.path) - 1);
+                asset->cfg.path[sizeof(asset->cfg.path) - 1] = '\0';
                 recreate = 1;
             }
         }
@@ -1307,19 +1345,23 @@ void mi_region_init(void)
     if (ret == 0 && g_ui_canvas_info.virtAddr && g_ui_canvas_info.u32Stride > 0) {
         g_ui_canvas_valid = true;
         printf("UI canvas ready: %ux%u stride=%u addr=%p\n",
-               g_ui_canvas_info.stCanvas.u32Width,
-               g_ui_canvas_info.stCanvas.u32Height,
+               g_ui_canvas_info.stSize.u32Width,
+               g_ui_canvas_info.stSize.u32Height,
                g_ui_canvas_info.u32Stride,
                g_ui_canvas_info.virtAddr);
     } else {
         printf("UI canvas info unavailable (ret=%d, addr=%p)\n", ret, g_ui_canvas_info.virtAddr);
     }
 
+    if (!g_cfg.icon_layer_enabled) {
+        return;
+    }
+
     memset(&stIconRgnAttr, 0, sizeof(MI_RGN_Attr_t));
     stIconRgnAttr.eType = E_MI_RGN_TYPE_OSD;
     stIconRgnAttr.stOsdInitParam.ePixelFmt = E_MI_RGN_PIXEL_FORMAT_ARGB4444;
-    stIconRgnAttr.stOsdInitParam.stSize.u32Width = ICON_LAYER_WIDTH;
-    stIconRgnAttr.stOsdInitParam.stSize.u32Height = ICON_LAYER_HEIGHT;
+    stIconRgnAttr.stOsdInitParam.stSize.u32Width = g_cfg.icon_layer_width;
+    stIconRgnAttr.stOsdInitParam.stSize.u32Height = g_cfg.icon_layer_height;
 
     ret = MI_RGN_Create(hIconRgnHandle, &stIconRgnAttr);
     if (ret != 0) {
@@ -1334,8 +1376,8 @@ void mi_region_init(void)
 
     memset(&stIconRgnChnAttr, 0, sizeof(MI_RGN_ChnPortParam_t));
     stIconRgnChnAttr.bShow = 1;
-    stIconRgnChnAttr.stPoint.u32X = ICON_LAYER_X;
-    stIconRgnChnAttr.stPoint.u32Y = ICON_LAYER_Y;
+    stIconRgnChnAttr.stPoint.u32X = (MI_U32)g_cfg.icon_layer_x;
+    stIconRgnChnAttr.stPoint.u32Y = (MI_U32)g_cfg.icon_layer_y;
     stIconRgnChnAttr.unPara.stOsdChnPort.u32Layer = 1;
     stIconRgnChnAttr.unPara.stOsdChnPort.stOsdAlphaAttr.eAlphaMode = E_MI_RGN_PIXEL_ALPHA;
 
@@ -1352,10 +1394,11 @@ void mi_region_init(void)
     if (ret == 0 && g_icon_canvas_info.virtAddr && g_icon_canvas_info.u32Stride > 0) {
         g_icon_canvas_valid = true;
         printf("Icon canvas ready: %ux%u stride=%u addr=%p\n",
-               g_icon_canvas_info.stCanvas.u32Width,
-               g_icon_canvas_info.stCanvas.u32Height,
+               g_icon_canvas_info.stSize.u32Width,
+               g_icon_canvas_info.stSize.u32Height,
                g_icon_canvas_info.u32Stride,
                g_icon_canvas_info.virtAddr);
+        clear_icon_canvas();
     } else {
         printf("Icon canvas info unavailable (ret=%d, addr=%p)\n", ret, g_icon_canvas_info.virtAddr);
     }
@@ -1365,20 +1408,80 @@ static void blit_icon_argb4444(const uint16_t *src, int src_w, int src_h, int ds
 {
     if (!src || !g_icon_region_ready || !g_icon_canvas_valid || !g_icon_canvas_info.virtAddr || g_icon_canvas_info.u32Stride == 0) return;
 
-    if (dst_x < 0 || dst_y < 0 || dst_x >= ICON_LAYER_WIDTH || dst_y >= ICON_LAYER_HEIGHT) return;
+    int layer_w = g_cfg.icon_layer_width > 0 ? g_cfg.icon_layer_width : ICON_LAYER_WIDTH_DEFAULT;
+    int layer_h = g_cfg.icon_layer_height > 0 ? g_cfg.icon_layer_height : ICON_LAYER_HEIGHT_DEFAULT;
+
+    if (dst_x < 0 || dst_y < 0 || dst_x >= layer_w || dst_y >= layer_h) return;
 
     uint8_t *base = (uint8_t *)g_icon_canvas_info.virtAddr;
     for (int y = 0; y < src_h; y++) {
-        if (dst_y + y >= ICON_LAYER_HEIGHT) break;
+        if (dst_y + y >= layer_h) break;
         int safe_w = src_w;
-        if (dst_x + safe_w > ICON_LAYER_WIDTH) {
-            safe_w = ICON_LAYER_WIDTH - dst_x;
+        if (dst_x + safe_w > layer_w) {
+            safe_w = layer_w - dst_x;
         }
         uint16_t *dest = (uint16_t *)(base + (dst_y + y) * g_icon_canvas_info.u32Stride + dst_x * 2);
         memcpy(dest, src + y * src_w, (size_t)safe_w * sizeof(uint16_t));
     }
 
     MI_RGN_UpdateCanvas(hIconRgnHandle);
+}
+
+static void clear_icon_canvas(void)
+{
+    if (!g_icon_region_ready || !g_icon_canvas_valid || !g_icon_canvas_info.virtAddr || g_icon_canvas_info.u32Stride == 0) return;
+
+    size_t bytes = (size_t)g_icon_canvas_info.u32Stride * g_icon_canvas_info.stSize.u32Height;
+    memset((void *)g_icon_canvas_info.virtAddr, 0, bytes);
+    MI_RGN_UpdateCanvas(hIconRgnHandle);
+}
+
+static int load_icon_pixels(asset_t *asset)
+{
+    if (!asset || asset->cfg.type != ASSET_ICON) return -1;
+    if (asset->cfg.path[0] == '\0') return -1;
+    if (asset->cfg.width <= 0 || asset->cfg.height <= 0) return -1;
+
+    char *buf = NULL;
+    size_t len = 0;
+    if (read_file(asset->cfg.path, &buf, &len) != 0) {
+        printf("Failed to read icon asset %s\n", asset->cfg.path);
+        return -1;
+    }
+
+    size_t expected = (size_t)asset->cfg.width * asset->cfg.height * sizeof(uint16_t);
+    if (len < expected) {
+        printf("Icon asset too small (%zu < %zu)\n", len, expected);
+        free(buf);
+        return -1;
+    }
+
+    free(asset->icon_pixels);
+    asset->icon_pixels = (uint16_t *)malloc(expected);
+    if (!asset->icon_pixels) {
+        free(buf);
+        asset->icon_buf_bytes = 0;
+        return -1;
+    }
+
+    memcpy(asset->icon_pixels, buf, expected);
+    asset->icon_buf_bytes = expected;
+    free(buf);
+    return 0;
+}
+
+static void render_icon_asset(asset_t *asset)
+{
+    if (!asset || asset->cfg.type != ASSET_ICON) return;
+    if (!g_cfg.icon_layer_enabled || !g_icon_region_ready || !g_icon_canvas_valid) return;
+    if (asset->cfg.width <= 0 || asset->cfg.height <= 0) return;
+
+    size_t expected = (size_t)asset->cfg.width * asset->cfg.height * sizeof(uint16_t);
+    if (!asset->icon_pixels || asset->icon_buf_bytes < expected) {
+        if (load_icon_pixels(asset) != 0) return;
+    }
+
+    blit_icon_argb4444(asset->icon_pixels, asset->cfg.width, asset->cfg.height, asset->cfg.x, asset->cfg.y);
 }
 
 // -------------------------
@@ -1445,6 +1548,9 @@ static void destroy_asset_visual(asset_t *asset)
     asset->obj = NULL;
     asset->last_pct = -1;
     asset->last_label_text[0] = '\0';
+    free(asset->icon_pixels);
+    asset->icon_pixels = NULL;
+    asset->icon_buf_bytes = 0;
 }
 
 static lv_obj_t *create_text_asset(asset_t *asset)
@@ -1478,6 +1584,10 @@ static void create_asset_visual(asset_t *asset)
             break;
         case ASSET_TEXT:
             asset->obj = create_text_asset(asset);
+            break;
+        case ASSET_ICON:
+            asset->obj = NULL;
+            render_icon_asset(asset);
             break;
         default:
             asset->obj = create_bar(asset);
@@ -1517,6 +1627,9 @@ static void maybe_attach_asset_label(asset_t *asset)
 
 static void create_assets(void)
 {
+    if (g_cfg.icon_layer_enabled && g_icon_region_ready && g_icon_canvas_valid) {
+        clear_icon_canvas();
+    }
     for (int i = 0; i < asset_count; i++) {
         create_asset_visual(&assets[i]);
     }
@@ -1524,6 +1637,9 @@ static void create_assets(void)
 
 static void destroy_assets(void)
 {
+    if (g_cfg.icon_layer_enabled && g_icon_region_ready && g_icon_canvas_valid) {
+        clear_icon_canvas();
+    }
     for (int i = 0; i < asset_count; i++) {
         destroy_asset_visual(&assets[i]);
     }
@@ -1566,6 +1682,8 @@ static void update_assets_from_udp(void)
                 }
                 continue;
             }
+            case ASSET_ICON:
+                continue;
             default:
                 break;
         }

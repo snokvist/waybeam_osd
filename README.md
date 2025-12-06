@@ -1,7 +1,7 @@
 # LVGL OSD (UDP-driven)
 
 - Transparent LVGL OSD that renders up to 8 configurable assets (bars with optional rounded outlines or text blocks sourced from UDP `texts[]`) defined in `config.json` and driven by a UDP payload. Optional descriptors live to the right of bars (static `label` or live `texts[]` channel). Assets can start disabled and be enabled on demand over UDP; background stays fully transparent unless an asset-specific background swatch is selected. (`main.c`, `config.json`)
-- OSD canvas stays at the user-defined resolution and origin (`width`, `height`, `osd_x`, `osd_y`) unless optional auto-sizing is explicitly enabled. The flush path converts ARGB8888 -> ARGB4444 and only calls `MI_RGN_UpdateCanvas` once per LVGL tick; a second ARGB4444 RGN layer is reserved for pre-converted icons blitted via row copies. (`main.c`, `config.json`)
+- OSD canvas always honors the user-defined resolution and origin (`width`, `height`, `osd_x`, `osd_y`). The flush path converts ARGB8888 -> ARGB4444 and only calls `MI_RGN_UpdateCanvas` once per LVGL tick; a second ARGB4444 RGN layer can be toggled via config and positioned independently for pre-converted icons blitted via row copies. (`main.c`, `config.json`)
 - UDP listener on port `7777` consumes JSON payloads documented in `CONTRACT.md` (`values[]` + optional `texts[]`). Incoming packets are drained whenever the socket is readable so only the latest datagram drives the screen and trigger an immediate refresh; `idle_ms` (default 100 ms, clamped 10–1000) only sets the maximum idle wait between UDP polls when no new data arrives. (`main.c`, `CONTRACT.md`)
 - Single stats widget in the top-left (gated by `show_stats`) shows OSD/display resolution, asset count, FPS, and timing. When `udp_stats` is true, it also lists all 8 numeric values and text channels vertically to avoid width overflow. (`main.c`, `config.json`)
 - Size-first build: `-Os`, section folding, no unwind tables, linker GC/strip, LVGL demos/examples excluded by default. (`Makefile`, `lvgl/lvgl.mk`, `lv_conf.h`, `build.sh`)
@@ -37,6 +37,8 @@ The generator emits both `values[]` and sample 16-char `texts[]` for all 8 chann
 For schema details and examples, read `CONTRACT.md`.
 
 ## Icon layer
-- A second OSD region (layer 1) stays reserved for icons that are pre-converted to ARGB4444. Copy rows into it with
-  `blit_icon_argb4444()` (fast memcpy per row) and update the canvas once per icon change. The default icon surface is 256x64 at
-  `(960,20)` so it remains bandwidth-light and independent from the LVGL-driven bar/text layer.
+- Toggle the dedicated icon surface with `icon_layer_enabled` in `config.json` and set its placement/size via `icon_layer_x`,
+  `icon_layer_y`, `icon_layer_width`, and `icon_layer_height`. It defaults to a 256x64 ARGB4444 region at `(960,20)`.
+- Icon assets (`type: "icon"`) blit raw ARGB4444 data directly onto layer 1. Provide a pre-converted binary via `path` plus
+  `width`/`height` and the desired `x`/`y` position within the icon layer. The sample config points at
+  `assets/sample_icon_16x16.argb4444` (a 16x16 checker) to demonstrate placement.

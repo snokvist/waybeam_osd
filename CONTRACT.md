@@ -7,7 +7,7 @@
 - Keep payloads under 512 bytes (anything larger is dropped).
 - The UDP socket is drained whenever it becomes readable so only the latest datagram drives the screen; older queued packets are discarded. Incoming packets trigger an immediate refresh when received, while `idle_ms` only caps the sleep when no data arrives.
 - Optional `texts` array (up to 8 strings, max 16 chars each) can be sent alongside `values`. These map to `text_index` on bar assets and override a static `label` if present. Missing or empty entries fall back to the asset’s `label`.
-- Optional `asset_updates` array lets senders retint, reposition, enable/disable, or fully reconfigure assets at runtime. Each object must contain an `id`; if the ID does not exist yet and there is room (max 8 assets), the asset slot is created on the fly. Valid keys include: `enabled` (bool), `type` (`"bar"` or `"text"`), `value_index`, `text_index`, `text_indices` (array), `text_inline`, `label`, `orientation`, `x`, `y`, `width`, `height`, `min`, `max`, `bar_color` (bars only), `text_color`, `background`, `background_opacity`, `segments` (bars only), and `rounded_outline` (bars only). Only valid values that differ from the current config are applied; disabled assets are removed from the screen immediately.
+- Optional `asset_updates` array lets senders retint, reposition, enable/disable, or fully reconfigure assets at runtime. Each object must contain an `id`; if the ID does not exist yet and there is room (max 8 assets), the asset slot is created on the fly. Valid keys include: `enabled` (bool), `type` (`"bar"`, `"text"`, or `"icon"`), `value_index`, `text_index`, `text_indices` (array), `text_inline`, `label`, `orientation`, `x`, `y`, `width`, `height`, `min`, `max`, `bar_color` (bars only), `text_color`, `background`, `background_opacity`, `segments` (bars only), `rounded_outline` (bars only), and `path` (icons only). Only valid values that differ from the current config are applied; disabled assets are removed from the screen immediately.
 
 Example:
 ```json
@@ -30,12 +30,15 @@ Each on-screen asset binds to one `values[i]` entry via `value_index`. For bar a
 - Top-level fields:
   - `width`, `height` (int): OSD canvas resolution. Default 1280x720. Position is defined by `osd_x`/`osd_y` (defaults 0/0).
   - `osd_x`, `osd_y` (int, optional): top-left position of the OSD canvas on screen. Defaults to `0`/`0` and clamped to 0–4096.
+  - `icon_layer_enabled` (bool): when `true`, creates a second ARGB4444 icon layer (RGN layer 1) for manual blits. Default `false`.
+  - `icon_layer_x`, `icon_layer_y` (int, optional): placement of the icon layer on screen. Defaults to `960`/`20`, clamped 0–4096.
+  - `icon_layer_width`, `icon_layer_height` (int, optional): size of the icon layer. Defaults to `256`x`64`, clamped to 1–4096.
   - `show_stats` (bool): show/hide the top-left stats overlay. Default `true`.
   - `udp_stats` (bool): when `true`, the stats overlay also lists the latest 8 numeric values and text channels. Default `false`.
   - `idle_ms` (int): maximum idle wait between UDP polls and screen refreshes in milliseconds (clamped 10–1000); default 100 ms. Legacy configs may still specify `refresh_ms`, which is treated the same way for compatibility.
   - `assets` (array, max 8): list of objects defining what to render and which UDP value to consume.
   - Asset fields:
-    - `type`: `"bar"` or `"text"`.
+    - `type`: `"bar"`, `"text"`, or `"icon"`.
     - `enabled` (bool, optional): when `false`, the asset stays hidden until enabled by config reload or UDP `asset_updates`. Defaults to `true`.
     - `id` (int, optional): unique asset identifier for UDP `asset_updates`. Defaults to the array index when omitted.
     - `value_index` (int): which UDP `values[i]` drives this asset (0–7).
@@ -53,6 +56,10 @@ Each on-screen asset binds to one `values[i]` entry via `value_index`. For bar a
     - `text_color` (int, optional): RGB hex value for labels/text content. Default white.
     - `background` (int, optional): index of a predefined palette of 11 background swatches (including a fully transparent entry and tinted fills). `-1` or omission keeps the default transparent look. For bars, the background is applied to a rounded container that extends across the bar and its label for a unified pill.
     - `background_opacity` (int, optional): percent opacity (0–100) to apply to the chosen background swatch. When omitted, the default palette opacity is used (0%, 50%, 50%, 70%, 90%, 60%, 60%, 60%, 70%, 60%, 70% by index as listed below).
+    - Icon assets:
+      - `path` (string): filesystem path to a raw ARGB4444 icon. Expected size is `width * height * 2` bytes.
+      - `x`, `y` (int): placement inside the icon layer. `icon_layer_enabled` must be true for icons to show.
+      - `width`, `height` (int): icon dimensions in pixels.
     - Background palette indices:
       - `0`: transparent (0%)
       - `1`: black (defaults to 50%)
@@ -73,12 +80,18 @@ Example:
   "height": 720,
   "osd_x": 0,
   "osd_y": 0,
+  "icon_layer_enabled": true,
+  "icon_layer_x": 960,
+  "icon_layer_y": 20,
+  "icon_layer_width": 256,
+  "icon_layer_height": 64,
   "show_stats": true,
   "udp_stats": false,
   "assets": [
     { "type": "bar", "value_index": 0, "text_index": 0, "label": "BAR CH0", "x": 40, "y": 200, "width": 320, "height": 32, "min": 0.0, "max": 1.0, "orientation": "right", "segments": 8, "bar_color": 2254540, "text_color": 16777215, "background": 4, "background_opacity": 70 },
     { "type": "bar", "value_index": 1, "text_index": 1, "label": "BAR CH1", "x": 420, "y": 140, "width": 220, "height": 24, "min": 0.0, "max": 1.0, "orientation": "left", "bar_color": 2254540, "text_color": 0, "background": 2, "background_opacity": 60, "rounded_outline": true },
-    { "type": "text", "text_indices": [2, 3, 4], "text_inline": false, "label": "Status", "x": 40, "y": 260, "width": 320, "height": 80, "background": 1, "background_opacity": 50, "text_color": 16777215 }
+    { "type": "text", "text_indices": [2, 3, 4], "text_inline": false, "label": "Status", "x": 40, "y": 260, "width": 320, "height": 80, "background": 1, "background_opacity": 50, "text_color": 16777215 },
+    { "type": "icon", "id": 10, "enabled": true, "path": "assets/sample_icon_16x16.argb4444", "x": 8, "y": 8, "width": 16, "height": 16 }
   ]
 }
 ```

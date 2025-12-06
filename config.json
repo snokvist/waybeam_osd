@@ -3,6 +3,11 @@
   "height": 720,
   "osd_x": 0,
   "osd_y": 0,
+  "icon_layer_enabled": true,
+  "icon_layer_x": 960,
+  "icon_layer_y": 20,
+  "icon_layer_width": 256,
+  "icon_layer_height": 64,
   "show_stats": true,
   "udp_stats": false,
   "idle_ms": 100,
@@ -112,6 +117,16 @@
       "background": 3,
       "background_opacity": 50,
       "text_color": 16777215
+    },
+    {
+      "type": "icon",
+      "enabled": true,
+      "id": 10,
+      "path": "assets/sample_icon_16x16.argb4444",
+      "x": 8,
+      "y": 8,
+      "width": 16,
+      "height": 16
     }
   ]
 }
