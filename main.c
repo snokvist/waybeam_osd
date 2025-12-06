@@ -1398,6 +1398,9 @@ void mi_region_init(void)
     MI_RGN_Init(&g_stPaletteTable);
     hRgnHandle = 0;
 
+    g_canvas_info_valid = 0;
+    memset(&g_cached_canvas_info, 0, sizeof(g_cached_canvas_info));
+
     memset(&stRgnAttr, 0, sizeof(MI_RGN_Attr_t));
     stRgnAttr.eType = E_MI_RGN_TYPE_OSD;
     stRgnAttr.stOsdInitParam.ePixelFmt = E_MI_RGN_PIXEL_FORMAT_ARGB4444;  // Changed to ARGB4444
@@ -1828,6 +1831,8 @@ int main(void)
         if (g_canvas_dirty) {
             MI_RGN_UpdateCanvas(hRgnHandle);
             g_canvas_dirty = 0;
+            g_canvas_info_valid = 0;
+            memset(&g_cached_canvas_info, 0, sizeof(g_cached_canvas_info));
         }
         fps_frames++;
         last_frame_ms = (uint32_t)(monotonic_ms64() - frame_start);
