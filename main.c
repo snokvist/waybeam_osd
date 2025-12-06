@@ -42,6 +42,8 @@ typedef struct {
     int width;
     int height;
     int auto_size_osd;
+    int osd_x;
+    int osd_y;
     int osd_padding;
     int show_stats;
     int idle_ms;
@@ -660,7 +662,9 @@ static void set_defaults(void)
 {
     g_cfg.width = DEFAULT_SCREEN_WIDTH;
     g_cfg.height = DEFAULT_SCREEN_HEIGHT;
-    g_cfg.auto_size_osd = 1;
+    g_cfg.auto_size_osd = 0;
+    g_cfg.osd_x = 0;
+    g_cfg.osd_y = 0;
     g_cfg.osd_padding = DEFAULT_OSD_PADDING;
     g_cfg.show_stats = 1;
     g_cfg.idle_ms = 100;
@@ -749,8 +753,8 @@ static void parse_assets_array(const char *json)
 static void compute_osd_region_bounds(void)
 {
     if (!g_cfg.auto_size_osd) {
-        osd_origin_x = 0;
-        osd_origin_y = 0;
+        osd_origin_x = g_cfg.osd_x >= 0 ? g_cfg.osd_x : 0;
+        osd_origin_y = g_cfg.osd_y >= 0 ? g_cfg.osd_y : 0;
         osd_width = g_cfg.width > 0 ? g_cfg.width : DEFAULT_SCREEN_WIDTH;
         osd_height = g_cfg.height > 0 ? g_cfg.height : DEFAULT_SCREEN_HEIGHT;
         return;
@@ -836,6 +840,8 @@ static void load_config(void)
     if (json_get_bool(json, "auto_size_osd", &v) == 0 || json_get_bool(json, "auto_size", &v) == 0) {
         g_cfg.auto_size_osd = v;
     }
+    if (json_get_int(json, "osd_x", &v) == 0) g_cfg.osd_x = clamp_int(v, 0, 4096);
+    if (json_get_int(json, "osd_y", &v) == 0) g_cfg.osd_y = clamp_int(v, 0, 4096);
     if (json_get_int(json, "osd_padding", &v) == 0) {
         g_cfg.osd_padding = clamp_int(v, 0, 512);
     }
@@ -1295,17 +1301,17 @@ void my_flush_cb(lv_display_t * disp, const lv_area_t * area, uint8_t * px_map)
     for (int y = 0; y < h; y++) {
         uint16_t *dest = (uint16_t *)((uint8_t *)g_ui_canvas_info.virtAddr +
                                       (area->y1 + y) * g_ui_canvas_info.u32Stride +
-                                      area->x1 * 2);  // Dest is ARGB1555 (16-bit)
+                                      area->x1 * 2);  // Dest is ARGB4444 (16-bit)
 
         for (int x = 0; x < w; x++) {
             uint32_t argb8888 = src[y * w + x];
 
-            uint16_t a1 = (argb8888 >> 31) & 0x01;  // 1-bit alpha
-            uint16_t r5 = (argb8888 >> 19) & 0x1F;  // 5-bit red
-            uint16_t g5 = (argb8888 >> 11) & 0x1F;  // 5-bit green
-            uint16_t b5 = (argb8888 >> 3) & 0x1F;   // 5-bit blue
+            uint16_t a4 = (uint16_t)((argb8888 >> 28) & 0x0F);  // 4-bit alpha
+            uint16_t r4 = (uint16_t)((argb8888 >> 20) & 0x0F);  // 4-bit red
+            uint16_t g4 = (uint16_t)((argb8888 >> 12) & 0x0F);  // 4-bit green
+            uint16_t b4 = (uint16_t)((argb8888 >> 4) & 0x0F);   // 4-bit blue
 
-            dest[x] = (uint16_t)((a1 << 15) | (r5 << 10) | (g5 << 5) | b5);
+            dest[x] = (uint16_t)((a4 << 12) | (r4 << 8) | (g4 << 4) | b4);
         }
     }
 
@@ -1331,7 +1337,7 @@ void mi_region_init(void)
 
     memset(&stUiRgnAttr, 0, sizeof(MI_RGN_Attr_t));
     stUiRgnAttr.eType = E_MI_RGN_TYPE_OSD;
-    stUiRgnAttr.stOsdInitParam.ePixelFmt = E_MI_RGN_PIXEL_FORMAT_ARGB1555;
+    stUiRgnAttr.stOsdInitParam.ePixelFmt = E_MI_RGN_PIXEL_FORMAT_ARGB4444;
     stUiRgnAttr.stOsdInitParam.stSize.u32Width = osd_width;
     stUiRgnAttr.stOsdInitParam.stSize.u32Height = osd_height;
 
@@ -1358,7 +1364,7 @@ void mi_region_init(void)
 
     memset(&stIconRgnAttr, 0, sizeof(MI_RGN_Attr_t));
     stIconRgnAttr.eType = E_MI_RGN_TYPE_OSD;
-    stIconRgnAttr.stOsdInitParam.ePixelFmt = E_MI_RGN_PIXEL_FORMAT_ARGB1555;
+    stIconRgnAttr.stOsdInitParam.ePixelFmt = E_MI_RGN_PIXEL_FORMAT_ARGB4444;
     stIconRgnAttr.stOsdInitParam.stSize.u32Width = ICON_LAYER_WIDTH;
     stIconRgnAttr.stOsdInitParam.stSize.u32Height = ICON_LAYER_HEIGHT;
 
@@ -1383,7 +1389,7 @@ void mi_region_init(void)
     g_icon_canvas_valid = g_icon_canvas_info.virtAddr != NULL;
 }
 
-static void blit_icon_argb1555(const uint16_t *src, int src_w, int src_h, int dst_x, int dst_y)
+static void blit_icon_argb4444(const uint16_t *src, int src_w, int src_h, int dst_x, int dst_y)
 {
     if (!src || !g_icon_canvas_valid || !g_icon_canvas_info.virtAddr) return;
 
