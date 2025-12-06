@@ -28,7 +28,9 @@ Each on-screen asset binds to one `values[i]` entry via `value_index`. For bar a
 ## Local config file (`config.json`)
 - JSON file read at startup; missing keys fall back to defaults. Send `SIGHUP` to the running process to reload the file without restarting (asset layout, stats toggle, and `idle_ms` update in-place; resolution still follows the startup config).
 - Top-level fields:
-  - `width`, `height` (int): OSD canvas resolution. Default 1280x720.
+  - `width`, `height` (int): OSD canvas resolution. Default 1280x720. At startup the UI canvas is automatically shrunk to the bounding box of enabled assets + stats (with padding) and the MI_RGN display point is shifted to that origin, so assets keep their absolute on-screen placement while the LVGL/RGN surface only covers the needed area when `auto_size_osd` is enabled.
+  - `auto_size_osd` (bool, optional): when `true` (default), shrink the canvas to the bounding box of visible assets + stats and shift the region origin accordingly. When `false`, keep the canvas at `width` x `height` anchored at (0,0).
+  - `osd_padding` (int, optional): halo padding in pixels applied to the auto-sized canvas. Defaults to `12` and is clamped 0–512.
   - `show_stats` (bool): show/hide the top-left stats overlay. Default `true`.
   - `udp_stats` (bool): when `true`, the stats overlay also lists the latest 8 numeric values and text channels. Default `false`.
   - `idle_ms` (int): maximum idle wait between UDP polls and screen refreshes in milliseconds (clamped 10–1000); default 100 ms. Legacy configs may still specify `refresh_ms`, which is treated the same way for compatibility.
@@ -70,6 +72,8 @@ Example:
 {
   "width": 1280,
   "height": 720,
+  "auto_size_osd": true,
+  "osd_padding": 12,
   "show_stats": true,
   "udp_stats": false,
   "assets": [

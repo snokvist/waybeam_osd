@@ -13,6 +13,7 @@
 #include <ctype.h>
 #include <time.h>
 #include <stdbool.h>
+#include <limits.h>
 
 #include "lvgl/lvgl.h"
 #include "lvgl/src/draw/lv_draw_private.h"
@@ -26,6 +27,12 @@
 #define CONFIG_PATH "config.json"
 #define UDP_PORT 7777
 #define UDP_MAX_PACKET 512
+#define DEFAULT_OSD_PADDING 12
+
+#define ICON_LAYER_WIDTH 256
+#define ICON_LAYER_HEIGHT 64
+#define ICON_LAYER_X 960
+#define ICON_LAYER_Y 20
 
 // LVGL buffers - allocated at runtime for ARGB8888 (32-bit per pixel)
 static lv_color_t *buf1 = NULL;
@@ -34,6 +41,8 @@ static lv_color_t *buf2 = NULL;
 typedef struct {
     int width;
     int height;
+    int auto_size_osd;
+    int osd_padding;
     int show_stats;
     int idle_ms;
     int udp_stats;
@@ -105,6 +114,8 @@ static const bg_style_t g_bg_styles[] = {
 static app_config_t g_cfg;
 static int osd_width = DEFAULT_SCREEN_WIDTH;
 static int osd_height = DEFAULT_SCREEN_HEIGHT;
+static int osd_origin_x = 0;
+static int osd_origin_y = 0;
 static asset_t assets[8];
 static int asset_count = 0;
 
@@ -112,13 +123,23 @@ static int asset_count = 0;
 
 // Sigmastar RGN
 static MI_RGN_PaletteTable_t g_stPaletteTable = {};
-static MI_RGN_HANDLE hRgnHandle;
-static MI_RGN_ChnPort_t stVpeChnPort;
-static MI_RGN_Attr_t stRgnAttr;
-static MI_RGN_ChnPortParam_t stRgnChnAttr;
+static MI_RGN_HANDLE hUiRgnHandle;
+static MI_RGN_HANDLE hIconRgnHandle;
+static MI_RGN_ChnPort_t stUiChnPort;
+static MI_RGN_ChnPort_t stIconChnPort;
+static MI_RGN_Attr_t stUiRgnAttr;
+static MI_RGN_Attr_t stIconRgnAttr;
+static MI_RGN_ChnPortParam_t stUiRgnChnAttr;
+static MI_RGN_ChnPortParam_t stIconRgnChnAttr;
+static MI_RGN_CanvasInfo_t g_ui_canvas_info;
+static MI_RGN_CanvasInfo_t g_icon_canvas_info;
+static bool g_ui_canvas_valid = false;
+static bool g_icon_canvas_valid = false;
+static bool g_ui_canvas_dirty = false;
 
 // UI
 static lv_obj_t *stats_label = NULL;
+static lv_display_t *g_disp = NULL;
 static uint32_t last_frame_ms = 0;
 static uint32_t last_loop_ms = 0;
 static uint32_t fps_value = 0;
@@ -139,6 +160,16 @@ static int clamp_int(int v, int lo, int hi) {
     if (v < lo) return lo;
     if (v > hi) return hi;
     return v;
+}
+
+static lv_coord_t to_local_x(int x)
+{
+    return (lv_coord_t)(x - osd_origin_x);
+}
+
+static lv_coord_t to_local_y(int y)
+{
+    return (lv_coord_t)(y - osd_origin_y);
 }
 
 static float clamp_float(float v, float lo, float hi) {
@@ -576,7 +607,7 @@ static void layout_bar_asset(asset_t *asset)
     if (cfg->orientation == ORIENTATION_LEFT) {
         container_x -= container_width;
     }
-    lv_obj_set_pos(asset->container_obj, container_x, cfg->y);
+    lv_obj_set_pos(asset->container_obj, to_local_x(container_x), to_local_y(cfg->y));
     int base_radius_height = bar_height + pad_y * 2 + extra_height;
     int container_radius = base_radius_height / 2;
     if (container_radius < 6) container_radius = 6;
@@ -629,6 +660,8 @@ static void set_defaults(void)
 {
     g_cfg.width = DEFAULT_SCREEN_WIDTH;
     g_cfg.height = DEFAULT_SCREEN_HEIGHT;
+    g_cfg.auto_size_osd = 1;
+    g_cfg.osd_padding = DEFAULT_OSD_PADDING;
     g_cfg.show_stats = 1;
     g_cfg.idle_ms = 100;
     g_cfg.udp_stats = 0;
@@ -713,6 +746,80 @@ static void parse_assets_array(const char *json)
     }
 }
 
+static void compute_osd_region_bounds(void)
+{
+    if (!g_cfg.auto_size_osd) {
+        osd_origin_x = 0;
+        osd_origin_y = 0;
+        osd_width = g_cfg.width > 0 ? g_cfg.width : DEFAULT_SCREEN_WIDTH;
+        osd_height = g_cfg.height > 0 ? g_cfg.height : DEFAULT_SCREEN_HEIGHT;
+        return;
+    }
+
+    int padding = clamp_int(g_cfg.osd_padding, 0, 512);
+    int min_x = INT_MAX;
+    int min_y = INT_MAX;
+    int max_x = 0;
+    int max_y = 0;
+
+    if (g_cfg.show_stats) {
+        int stats_w = 320;
+        int stats_h = g_cfg.udp_stats ? 220 : 140;
+        int sx1 = 4;
+        int sy1 = 4;
+        int sx2 = sx1 + stats_w;
+        int sy2 = sy1 + stats_h;
+        if (sx1 < min_x) min_x = sx1;
+        if (sy1 < min_y) min_y = sy1;
+        if (sx2 > max_x) max_x = sx2;
+        if (sy2 > max_y) max_y = sy2;
+    }
+
+    for (int i = 0; i < asset_count; i++) {
+        const asset_cfg_t *cfg = &assets[i].cfg;
+        if (!cfg->enabled) continue;
+        int base_w = cfg->width > 0 ? cfg->width : (cfg->type == ASSET_TEXT ? 200 : 320);
+        int base_h = cfg->height > 0 ? cfg->height : (cfg->type == ASSET_TEXT ? 40 : 24);
+        int label_extra = 0;
+        if (cfg->type != ASSET_TEXT && (cfg->label[0] != '\0' || cfg->text_index >= 0 || cfg->text_indices_count > 0)) {
+            label_extra = 140;
+        }
+        int container_w = base_w + label_extra + 24;
+        int container_h = base_h + 16;
+        int start_x = cfg->x;
+        if (cfg->orientation == ORIENTATION_LEFT && cfg->type != ASSET_TEXT) {
+            start_x -= container_w;
+        }
+        int end_x = start_x + container_w;
+        int start_y = cfg->y;
+        int end_y = start_y + container_h;
+
+        if (start_x < min_x) min_x = start_x;
+        if (start_y < min_y) min_y = start_y;
+        if (end_x > max_x) max_x = end_x;
+        if (end_y > max_y) max_y = end_y;
+    }
+
+    if (min_x == INT_MAX || min_y == INT_MAX) {
+        osd_origin_x = 0;
+        osd_origin_y = 0;
+        osd_width = g_cfg.width > 0 ? g_cfg.width : DEFAULT_SCREEN_WIDTH;
+        osd_height = g_cfg.height > 0 ? g_cfg.height : DEFAULT_SCREEN_HEIGHT;
+        return;
+    }
+
+    osd_origin_x = min_x > padding ? min_x - padding : 0;
+    osd_origin_y = min_y > padding ? min_y - padding : 0;
+
+    int width = max_x + padding - osd_origin_x;
+    int height = max_y + padding - osd_origin_y;
+    if (width <= 0) width = g_cfg.width > 0 ? g_cfg.width : DEFAULT_SCREEN_WIDTH;
+    if (height <= 0) height = g_cfg.height > 0 ? g_cfg.height : DEFAULT_SCREEN_HEIGHT;
+
+    osd_width = width;
+    osd_height = height;
+}
+
 static void load_config(void)
 {
     set_defaults();
@@ -726,6 +833,12 @@ static void load_config(void)
     float fv = 0.0f;
     if (json_get_int(json, "width", &v) == 0) g_cfg.width = v;
     if (json_get_int(json, "height", &v) == 0) g_cfg.height = v;
+    if (json_get_bool(json, "auto_size_osd", &v) == 0 || json_get_bool(json, "auto_size", &v) == 0) {
+        g_cfg.auto_size_osd = v;
+    }
+    if (json_get_int(json, "osd_padding", &v) == 0) {
+        g_cfg.osd_padding = clamp_int(v, 0, 512);
+    }
     if (json_get_bool(json, "show_stats", &v) == 0) g_cfg.show_stats = v;
     if (json_get_bool(json, "udp_stats", &v) == 0) g_cfg.udp_stats = v;
     if (json_get_int(json, "idle_ms", &v) == 0) {
@@ -1033,7 +1146,7 @@ static void parse_udp_asset_updates(const char *buf)
                     int width = asset->cfg.width > 0 ? asset->cfg.width : LV_SIZE_CONTENT;
                     int height = asset->cfg.height > 0 ? asset->cfg.height : LV_SIZE_CONTENT;
                     lv_obj_set_size(asset->obj, width, height);
-                    lv_obj_set_pos(asset->obj, asset->cfg.x, asset->cfg.y);
+                    lv_obj_set_pos(asset->obj, to_local_x(asset->cfg.x), to_local_y(asset->cfg.y));
                 } else {
                     layout_bar_asset(asset);
                 }
@@ -1170,10 +1283,7 @@ static uint64_t monotonic_ms64(void)
 // -------------------------
 void my_flush_cb(lv_display_t * disp, const lv_area_t * area, uint8_t * px_map)
 {
-    MI_RGN_CanvasInfo_t info;
-    MI_RGN_GetCanvasInfo(hRgnHandle, &info);
-
-    if (!info.virtAddr) {
+    if (!g_ui_canvas_valid || !g_ui_canvas_info.virtAddr) {
         lv_display_flush_ready(disp);
         return;
     }
@@ -1183,35 +1293,31 @@ void my_flush_cb(lv_display_t * disp, const lv_area_t * area, uint8_t * px_map)
     uint32_t *src = (uint32_t *)px_map;  // Source is ARGB8888 (32-bit)
 
     for (int y = 0; y < h; y++) {
-        uint16_t *dest = (uint16_t *)(info.virtAddr +
-                                      (area->y1 + y) * info.u32Stride +
-                                      area->x1 * 2);  // Dest is ARGB4444 (16-bit)
+        uint16_t *dest = (uint16_t *)((uint8_t *)g_ui_canvas_info.virtAddr +
+                                      (area->y1 + y) * g_ui_canvas_info.u32Stride +
+                                      area->x1 * 2);  // Dest is ARGB1555 (16-bit)
 
         for (int x = 0; x < w; x++) {
             uint32_t argb8888 = src[y * w + x];
-            
-            // Extract ARGB8888 components (8 bits each)
-            uint8_t a8 = (argb8888 >> 24) & 0xFF;  // Alpha
-            uint8_t r8 = (argb8888 >> 16) & 0xFF;  // Red
-            uint8_t g8 = (argb8888 >> 8) & 0xFF;   // Green
-            uint8_t b8 = argb8888 & 0xFF;          // Blue
-            
-            // Convert 8-bit to 4-bit by taking the upper 4 bits
-            // This is equivalent to: value >> 4
-            uint8_t a4 = (a8 >> 4) & 0x0F;  // 8-bit -> 4-bit alpha
-            uint8_t r4 = (r8 >> 4) & 0x0F;  // 8-bit -> 4-bit red
-            uint8_t g4 = (g8 >> 4) & 0x0F;  // 8-bit -> 4-bit green
-            uint8_t b4 = (b8 >> 4) & 0x0F;  // 8-bit -> 4-bit blue
-            
-            // Pack into ARGB4444 format: AAAA RRRR GGGG BBBB
-            uint16_t argb4444 = (a4 << 12) | (r4 << 8) | (g4 << 4) | b4;
-            
-            dest[x] = argb4444;
+
+            uint16_t a1 = (argb8888 >> 31) & 0x01;  // 1-bit alpha
+            uint16_t r5 = (argb8888 >> 19) & 0x1F;  // 5-bit red
+            uint16_t g5 = (argb8888 >> 11) & 0x1F;  // 5-bit green
+            uint16_t b5 = (argb8888 >> 3) & 0x1F;   // 5-bit blue
+
+            dest[x] = (uint16_t)((a1 << 15) | (r5 << 10) | (g5 << 5) | b5);
         }
     }
 
-    MI_RGN_UpdateCanvas(hRgnHandle);
+    g_ui_canvas_dirty = true;
     lv_display_flush_ready(disp);
+}
+
+static void maybe_flush_ui_canvas(void)
+{
+    if (!g_ui_canvas_dirty || !g_ui_canvas_valid) return;
+    MI_RGN_UpdateCanvas(hUiRgnHandle);
+    g_ui_canvas_dirty = false;
 }
 
 // -------------------------
@@ -1220,29 +1326,75 @@ void my_flush_cb(lv_display_t * disp, const lv_area_t * area, uint8_t * px_map)
 void mi_region_init(void)
 {
     MI_RGN_Init(&g_stPaletteTable);
-    hRgnHandle = 0;
+    hUiRgnHandle = 0;
+    hIconRgnHandle = 1;
 
-    memset(&stRgnAttr, 0, sizeof(MI_RGN_Attr_t));
-    stRgnAttr.eType = E_MI_RGN_TYPE_OSD;
-    stRgnAttr.stOsdInitParam.ePixelFmt = E_MI_RGN_PIXEL_FORMAT_ARGB4444;  // Changed to ARGB4444
-    stRgnAttr.stOsdInitParam.stSize.u32Width = osd_width;
-    stRgnAttr.stOsdInitParam.stSize.u32Height = osd_height;
+    memset(&stUiRgnAttr, 0, sizeof(MI_RGN_Attr_t));
+    stUiRgnAttr.eType = E_MI_RGN_TYPE_OSD;
+    stUiRgnAttr.stOsdInitParam.ePixelFmt = E_MI_RGN_PIXEL_FORMAT_ARGB1555;
+    stUiRgnAttr.stOsdInitParam.stSize.u32Width = osd_width;
+    stUiRgnAttr.stOsdInitParam.stSize.u32Height = osd_height;
 
-    MI_RGN_Create(hRgnHandle, &stRgnAttr);
+    MI_RGN_Create(hUiRgnHandle, &stUiRgnAttr);
 
-    stVpeChnPort.eModId = E_MI_RGN_MODID_VPE;
-    stVpeChnPort.s32DevId = 0;
-    stVpeChnPort.s32ChnId = 0;
-    stVpeChnPort.s32OutputPortId = 0;
+    stUiChnPort.eModId = E_MI_RGN_MODID_VPE;
+    stUiChnPort.s32DevId = 0;
+    stUiChnPort.s32ChnId = 0;
+    stUiChnPort.s32OutputPortId = 0;
 
-    memset(&stRgnChnAttr, 0, sizeof(MI_RGN_ChnPortParam_t));
-    stRgnChnAttr.bShow = 1;
-    stRgnChnAttr.stPoint.u32X = 0;
-    stRgnChnAttr.stPoint.u32Y = 0;
-    stRgnChnAttr.unPara.stOsdChnPort.u32Layer = 0;
-    stRgnChnAttr.unPara.stOsdChnPort.stOsdAlphaAttr.eAlphaMode = E_MI_RGN_PIXEL_ALPHA;
+    memset(&stUiRgnChnAttr, 0, sizeof(MI_RGN_ChnPortParam_t));
+    stUiRgnChnAttr.bShow = 1;
+    stUiRgnChnAttr.stPoint.u32X = (MI_U32)osd_origin_x;
+    stUiRgnChnAttr.stPoint.u32Y = (MI_U32)osd_origin_y;
+    stUiRgnChnAttr.unPara.stOsdChnPort.u32Layer = 0;
+    stUiRgnChnAttr.unPara.stOsdChnPort.stOsdAlphaAttr.eAlphaMode = E_MI_RGN_PIXEL_ALPHA;
 
-    MI_RGN_AttachToChn(hRgnHandle, &stVpeChnPort, &stRgnChnAttr);
+    MI_RGN_AttachToChn(hUiRgnHandle, &stUiChnPort, &stUiRgnChnAttr);
+
+    memset(&g_ui_canvas_info, 0, sizeof(g_ui_canvas_info));
+    MI_RGN_GetCanvasInfo(hUiRgnHandle, &g_ui_canvas_info);
+    g_ui_canvas_valid = g_ui_canvas_info.virtAddr != NULL;
+    g_ui_canvas_dirty = false;
+
+    memset(&stIconRgnAttr, 0, sizeof(MI_RGN_Attr_t));
+    stIconRgnAttr.eType = E_MI_RGN_TYPE_OSD;
+    stIconRgnAttr.stOsdInitParam.ePixelFmt = E_MI_RGN_PIXEL_FORMAT_ARGB1555;
+    stIconRgnAttr.stOsdInitParam.stSize.u32Width = ICON_LAYER_WIDTH;
+    stIconRgnAttr.stOsdInitParam.stSize.u32Height = ICON_LAYER_HEIGHT;
+
+    MI_RGN_Create(hIconRgnHandle, &stIconRgnAttr);
+
+    stIconChnPort.eModId = E_MI_RGN_MODID_VPE;
+    stIconChnPort.s32DevId = 0;
+    stIconChnPort.s32ChnId = 0;
+    stIconChnPort.s32OutputPortId = 0;
+
+    memset(&stIconRgnChnAttr, 0, sizeof(MI_RGN_ChnPortParam_t));
+    stIconRgnChnAttr.bShow = 1;
+    stIconRgnChnAttr.stPoint.u32X = ICON_LAYER_X;
+    stIconRgnChnAttr.stPoint.u32Y = ICON_LAYER_Y;
+    stIconRgnChnAttr.unPara.stOsdChnPort.u32Layer = 1;
+    stIconRgnChnAttr.unPara.stOsdChnPort.stOsdAlphaAttr.eAlphaMode = E_MI_RGN_PIXEL_ALPHA;
+
+    MI_RGN_AttachToChn(hIconRgnHandle, &stIconChnPort, &stIconRgnChnAttr);
+
+    memset(&g_icon_canvas_info, 0, sizeof(g_icon_canvas_info));
+    MI_RGN_GetCanvasInfo(hIconRgnHandle, &g_icon_canvas_info);
+    g_icon_canvas_valid = g_icon_canvas_info.virtAddr != NULL;
+}
+
+static void blit_icon_argb1555(const uint16_t *src, int src_w, int src_h, int dst_x, int dst_y)
+{
+    if (!src || !g_icon_canvas_valid || !g_icon_canvas_info.virtAddr) return;
+
+    uint8_t *base = (uint8_t *)g_icon_canvas_info.virtAddr;
+    for (int y = 0; y < src_h; y++) {
+        if (dst_y + y >= ICON_LAYER_HEIGHT) break;
+        uint16_t *dest = (uint16_t *)(base + (dst_y + y) * g_icon_canvas_info.u32Stride + dst_x * 2);
+        memcpy(dest, src + y * src_w, (size_t)src_w * sizeof(uint16_t));
+    }
+
+    MI_RGN_UpdateCanvas(hIconRgnHandle);
 }
 
 // -------------------------
@@ -1259,10 +1411,10 @@ void init_lvgl(void)
     buf1 = (lv_color_t *)malloc(buf_size);
     buf2 = (lv_color_t *)malloc(buf_size);
 
-    lv_display_t * disp = lv_display_create(osd_width, osd_height);
-    lv_display_set_color_format(disp, LV_COLOR_FORMAT_ARGB8888);
-    lv_display_set_buffers(disp, buf1, buf2, buf_size, LV_DISPLAY_RENDER_MODE_PARTIAL);
-    lv_display_set_flush_cb(disp, my_flush_cb);
+    g_disp = lv_display_create(osd_width, osd_height);
+    lv_display_set_color_format(g_disp, LV_COLOR_FORMAT_ARGB8888);
+    lv_display_set_buffers(g_disp, buf1, buf2, buf_size, LV_DISPLAY_RENDER_MODE_PARTIAL);
+    lv_display_set_flush_cb(g_disp, my_flush_cb);
 }
 
 
@@ -1317,7 +1469,7 @@ static lv_obj_t *create_text_asset(asset_t *asset)
     int width = asset->cfg.width > 0 ? asset->cfg.width : LV_SIZE_CONTENT;
     int height = asset->cfg.height > 0 ? asset->cfg.height : LV_SIZE_CONTENT;
     lv_obj_set_size(label, width, height);
-    lv_obj_align(label, LV_ALIGN_TOP_LEFT, asset->cfg.x, asset->cfg.y);
+    lv_obj_align(label, LV_ALIGN_TOP_LEFT, to_local_x(asset->cfg.x), to_local_y(asset->cfg.y));
     lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
     apply_background_style(label, asset->cfg.bg_style, asset->cfg.bg_opacity_pct, 0);
     lv_obj_set_style_text_color(label, lv_color_hex(asset->cfg.text_color), 0);
@@ -1496,9 +1648,12 @@ static void cleanup_resources(void)
         stats_timer = NULL;
     }
 
-    // Tear down OSD region cleanly
-    MI_RGN_DetachFromChn(hRgnHandle, &stVpeChnPort);
-    MI_RGN_Destroy(hRgnHandle);
+    // Tear down OSD regions cleanly
+    MI_RGN_DetachFromChn(hUiRgnHandle, &stUiChnPort);
+    MI_RGN_Destroy(hUiRgnHandle);
+
+    MI_RGN_DetachFromChn(hIconRgnHandle, &stIconChnPort);
+    MI_RGN_Destroy(hIconRgnHandle);
 
     if (udp_sock >= 0) {
         close(udp_sock);
@@ -1538,10 +1693,10 @@ static void stats_timer_cb(lv_timer_t *timer)
     int disp_h = lv_disp_get_ver_res(NULL);
     int off = 0;
     off += lv_snprintf(buf + off, sizeof(buf) - off,
-                       "OSD %dx%d (disp %dx%d)\n"
+                       "OSD %dx%d @ %d,%d (disp %dx%d)\n"
                        "Assets %d/%d | primary %d,%d\n"
                        "FPS %u | work %ums | loop %ums | idle %dms",
-                       osd_width, osd_height,
+                       osd_width, osd_height, osd_origin_x, osd_origin_y,
                        disp_w, disp_h,
                        active_assets, asset_count, primary_w, primary_h,
                        fps_value, last_frame_ms, last_loop_ms, idle_ms_applied);
@@ -1579,8 +1734,7 @@ static void stats_timer_cb(lv_timer_t *timer)
 int main(void)
 {
     load_config();
-    osd_width = g_cfg.width;
-    osd_height = g_cfg.height;
+    compute_osd_region_bounds();
     signal(SIGINT, handle_sigint);
     signal(SIGHUP, handle_sighup);
 
@@ -1646,6 +1800,7 @@ int main(void)
 
         uint64_t frame_start = monotonic_ms64();
         lv_timer_handler();
+        maybe_flush_ui_canvas();
         fps_frames++;
         last_frame_ms = (uint32_t)(monotonic_ms64() - frame_start);
 
