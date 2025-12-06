@@ -28,7 +28,8 @@ Each on-screen asset binds to one `values[i]` entry via `value_index`. For bar a
 ## Local config file (`config.json`)
 - JSON file read at startup; missing keys fall back to defaults. Send `SIGHUP` to the running process to reload the file without restarting (asset layout, stats toggle, and `idle_ms` update in-place; resolution still follows the startup config).
 - Top-level fields:
-  - `width`, `height` (int): OSD canvas resolution. Default 1280x720.
+- `width`, `height` (int): OSD canvas resolution. Default 1280x720.
+- `osd_x`, `osd_y` (int, optional): On-screen origin for the RGN. Default `0,0`.
   - `show_stats` (bool): show/hide the top-left stats overlay. Default `true`.
   - `udp_stats` (bool): when `true`, the stats overlay also lists the latest 8 numeric values and text channels. Default `false`.
   - `idle_ms` (int): maximum idle wait between UDP polls and screen refreshes in milliseconds (clamped 10–1000); default 100 ms. Legacy configs may still specify `refresh_ms`, which is treated the same way for compatibility.
