@@ -37,8 +37,6 @@ typedef struct {
     int height;
     int osd_x;
     int osd_y;
-    int fit_to_content;
-    int fit_pad;
     int show_stats;
     int idle_ms;
     int udp_stats;
@@ -193,115 +191,15 @@ static int estimate_label_width_px(const asset_cfg_t *cfg)
     return 0;
 }
 
-static void extend_bounds(int *min_x, int *min_y, int *max_x, int *max_y,
-                          int x1, int y1, int x2, int y2, int *has_bounds)
-{
-    if (x2 < x1 || y2 < y1) return;
-    if (!*has_bounds) {
-        *min_x = x1;
-        *min_y = y1;
-        *max_x = x2;
-        *max_y = y2;
-        *has_bounds = 1;
-        return;
-    }
-    if (x1 < *min_x) *min_x = x1;
-    if (y1 < *min_y) *min_y = y1;
-    if (x2 > *max_x) *max_x = x2;
-    if (y2 > *max_y) *max_y = y2;
-}
-
 static void compute_osd_geometry(void)
 {
-    int min_x = 0;
-    int min_y = 0;
-    int max_x = 0;
-    int max_y = 0;
-    int has_bounds = 0;
+    osd_offset_x = 0;
+    osd_offset_y = 0;
+    osd_width = g_cfg.width;
+    osd_height = g_cfg.height;
 
-    for (int i = 0; i < asset_count; i++) {
-        asset_cfg_t *cfg = &assets[i].cfg;
-        if (!cfg->enabled) continue;
-        if (cfg->type == ASSET_BAR) {
-            int pad_x = 8;
-            int pad_y = 6;
-            int bar_width = cfg->width > 0 ? cfg->width : (cfg->rounded_outline ? 200 : 320);
-            int bar_height = cfg->height > 0 ? cfg->height : (cfg->rounded_outline ? 20 : 32);
-            int label_width = estimate_label_width_px(cfg);
-            int label_height = label_width > 0 ? 20 : 0;
-            int gap = (label_width > 0) ? pad_x : 0;
-            int tail_pad = pad_x + (label_width > 0 ? 4 : 0);
-            int container_width = pad_x + bar_width + gap + label_width + tail_pad;
-            int extra_height = cfg->rounded_outline ? 4 : 0;
-            int container_height = bar_height;
-            if (label_height > container_height) container_height = label_height;
-            container_height += pad_y * 2 + extra_height;
-
-            int container_x = cfg->x;
-            if (cfg->orientation == ORIENTATION_LEFT) {
-                container_x -= container_width;
-            }
-            int container_y = cfg->y;
-            extend_bounds(&min_x, &min_y, &max_x, &max_y,
-                          container_x, container_y,
-                          container_x + container_width,
-                          container_y + container_height,
-                          &has_bounds);
-        } else {
-            int text_width = cfg->width > 0 ? cfg->width : 240;
-            int text_height = cfg->height > 0 ? cfg->height : 60;
-            extend_bounds(&min_x, &min_y, &max_x, &max_y,
-                          cfg->x, cfg->y,
-                          cfg->x + text_width,
-                          cfg->y + text_height,
-                          &has_bounds);
-        }
-    }
-
-    if (g_cfg.show_stats) {
-        int stats_width = 320;
-        int stats_height = g_cfg.udp_stats ? 260 : 140;
-        extend_bounds(&min_x, &min_y, &max_x, &max_y,
-                      4, 4,
-                      4 + stats_width,
-                      4 + stats_height,
-                      &has_bounds);
-    }
-
-    int pad = clamp_int(g_cfg.fit_pad, 0, 512);
-    if (!has_bounds) {
-        min_x = 0;
-        min_y = 0;
-        max_x = g_cfg.width;
-        max_y = g_cfg.height;
-    }
-
-    int content_w = max_x - min_x;
-    int content_h = max_y - min_y;
-    if (content_w < 1) content_w = 1;
-    if (content_h < 1) content_h = 1;
-
-    if (g_cfg.fit_to_content) {
-        osd_offset_x = min_x - pad;
-        osd_offset_y = min_y - pad;
-        osd_width = content_w + pad * 2;
-        osd_height = content_h + pad * 2;
-    } else {
-        osd_offset_x = 0;
-        osd_offset_y = 0;
-        osd_width = g_cfg.width;
-        osd_height = g_cfg.height;
-    }
-
-    int min_width = content_w + pad * 2;
-    int min_height = content_h + pad * 2;
-    if (osd_width < min_width) osd_width = min_width;
-    if (osd_height < min_height) osd_height = min_height;
-    if (osd_width < 1) osd_width = 1;
-    if (osd_height < 1) osd_height = 1;
-
-    rgn_pos_x = g_cfg.osd_x + osd_offset_x;
-    rgn_pos_y = g_cfg.osd_y + osd_offset_y;
+    rgn_pos_x = g_cfg.osd_x;
+    rgn_pos_y = g_cfg.osd_y;
     if (rgn_pos_x < 0) {
         osd_offset_x -= rgn_pos_x;
         rgn_pos_x = 0;
@@ -310,6 +208,9 @@ static void compute_osd_geometry(void)
         osd_offset_y -= rgn_pos_y;
         rgn_pos_y = 0;
     }
+
+    if (osd_width < 1) osd_width = 1;
+    if (osd_height < 1) osd_height = 1;
 }
 
 static int read_file(const char *path, char **out_buf, size_t *out_len)
@@ -788,8 +689,6 @@ static void set_defaults(void)
     g_cfg.height = DEFAULT_SCREEN_HEIGHT;
     g_cfg.osd_x = 0;
     g_cfg.osd_y = 0;
-    g_cfg.fit_to_content = 1;
-    g_cfg.fit_pad = 4;
     g_cfg.show_stats = 1;
     g_cfg.idle_ms = 100;
     g_cfg.udp_stats = 0;
@@ -889,8 +788,6 @@ static void load_config(void)
     if (json_get_int(json, "height", &v) == 0) g_cfg.height = v;
     if (json_get_int(json, "osd_x", &v) == 0) g_cfg.osd_x = v;
     if (json_get_int(json, "osd_y", &v) == 0) g_cfg.osd_y = v;
-    if (json_get_bool(json, "fit_to_content", &v) == 0) g_cfg.fit_to_content = v;
-    if (json_get_int(json, "fit_pad", &v) == 0) g_cfg.fit_pad = clamp_int(v, 0, 256);
     if (json_get_bool(json, "show_stats", &v) == 0) g_cfg.show_stats = v;
     if (json_get_bool(json, "udp_stats", &v) == 0) g_cfg.udp_stats = v;
     if (json_get_int(json, "idle_ms", &v) == 0) {

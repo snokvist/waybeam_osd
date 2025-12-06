@@ -3,8 +3,6 @@
   "height": 720,
   "osd_x": 0,
   "osd_y": 0,
-  "fit_to_content": true,
-  "fit_pad": 8,
   "show_stats": true,
   "udp_stats": false,
   "idle_ms": 100,
