@@ -28,7 +28,10 @@ Each on-screen asset binds to one `values[i]` entry via `value_index`. For bar a
 ## Local config file (`config.json`)
 - JSON file read at startup; missing keys fall back to defaults. Send `SIGHUP` to the running process to reload the file without restarting (asset layout, stats toggle, and `idle_ms` update in-place; resolution still follows the startup config).
 - Top-level fields:
-  - `width`, `height` (int): OSD canvas resolution. Default 1280x720.
+- `width`, `height` (int): OSD canvas resolution. Default 1280x720. When `fit_to_content` is enabled (default), the canvas auto-sizes to the bounding box of enabled assets plus padding instead of using this pair directly.
+- `osd_x`, `osd_y` (int, optional): On-screen origin for the RGN when using a smaller canvas. Default `0,0`.
+- `fit_to_content` (bool, optional): When true, shrink the LVGL/RGN canvas to the smallest box that fits enabled assets and the stats widget, then offset asset coordinates so the on-screen layout remains anchored. Default `true`.
+- `fit_pad` (int, optional): Extra pixels of padding to apply around the auto-sized canvas. Default `4`.
   - `show_stats` (bool): show/hide the top-left stats overlay. Default `true`.
   - `udp_stats` (bool): when `true`, the stats overlay also lists the latest 8 numeric values and text channels. Default `false`.
   - `idle_ms` (int): maximum idle wait between UDP polls and screen refreshes in milliseconds (clamped 10–1000); default 100 ms. Legacy configs may still specify `refresh_ms`, which is treated the same way for compatibility.

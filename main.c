@@ -12,6 +12,7 @@
 #include <fcntl.h>
 #include <ctype.h>
 #include <time.h>
+#include <limits.h>
 #include <stdbool.h>
 
 #include "lvgl/lvgl.h"
@@ -34,6 +35,10 @@ static lv_color_t *buf2 = NULL;
 typedef struct {
     int width;
     int height;
+    int osd_x;
+    int osd_y;
+    int fit_to_content;
+    int fit_pad;
     int show_stats;
     int idle_ms;
     int udp_stats;
@@ -105,8 +110,12 @@ static const bg_style_t g_bg_styles[] = {
 static app_config_t g_cfg;
 static int osd_width = DEFAULT_SCREEN_WIDTH;
 static int osd_height = DEFAULT_SCREEN_HEIGHT;
+static int osd_offset_x = 0;
+static int osd_offset_y = 0;
 static asset_t assets[8];
 static int asset_count = 0;
+static int rgn_pos_x = 0;
+static int rgn_pos_y = 0;
 
 #define MAX_ASSETS (int)(sizeof(assets) / sizeof(assets[0]))
 
@@ -116,6 +125,9 @@ static MI_RGN_HANDLE hRgnHandle;
 static MI_RGN_ChnPort_t stVpeChnPort;
 static MI_RGN_Attr_t stRgnAttr;
 static MI_RGN_ChnPortParam_t stRgnChnAttr;
+static MI_RGN_CanvasInfo_t g_cached_canvas_info;
+static int g_canvas_info_valid = 0;
+static int g_canvas_dirty = 0;
 
 // UI
 static lv_obj_t *stats_label = NULL;
@@ -147,12 +159,157 @@ static float clamp_float(float v, float lo, float hi) {
     return v;
 }
 
+static int to_canvas_x(int x)
+{
+    return x - osd_offset_x;
+}
+
+static int to_canvas_y(int y)
+{
+    return y - osd_offset_y;
+}
+
 static asset_orientation_t parse_orientation_string(const char *str, asset_orientation_t def)
 {
     if (!str) return def;
     if (strcmp(str, "left") == 0) return ORIENTATION_LEFT;
     if (strcmp(str, "right") == 0) return ORIENTATION_RIGHT;
     return def;
+}
+
+static int estimate_label_width_px(const asset_cfg_t *cfg)
+{
+    if (!cfg) return 0;
+    if (cfg->label[0] != '\0') {
+        int len = (int)strlen(cfg->label);
+        int px = len * 10;
+        if (px < 48) px = 48;
+        if (px > 240) px = 240;
+        return px;
+    }
+    if (cfg->text_index >= 0 || cfg->text_indices_count > 0) {
+        return 160;
+    }
+    return 0;
+}
+
+static void extend_bounds(int *min_x, int *min_y, int *max_x, int *max_y,
+                          int x1, int y1, int x2, int y2, int *has_bounds)
+{
+    if (x2 < x1 || y2 < y1) return;
+    if (!*has_bounds) {
+        *min_x = x1;
+        *min_y = y1;
+        *max_x = x2;
+        *max_y = y2;
+        *has_bounds = 1;
+        return;
+    }
+    if (x1 < *min_x) *min_x = x1;
+    if (y1 < *min_y) *min_y = y1;
+    if (x2 > *max_x) *max_x = x2;
+    if (y2 > *max_y) *max_y = y2;
+}
+
+static void compute_osd_geometry(void)
+{
+    int min_x = 0;
+    int min_y = 0;
+    int max_x = 0;
+    int max_y = 0;
+    int has_bounds = 0;
+
+    for (int i = 0; i < asset_count; i++) {
+        asset_cfg_t *cfg = &assets[i].cfg;
+        if (!cfg->enabled) continue;
+        if (cfg->type == ASSET_BAR) {
+            int pad_x = 8;
+            int pad_y = 6;
+            int bar_width = cfg->width > 0 ? cfg->width : (cfg->rounded_outline ? 200 : 320);
+            int bar_height = cfg->height > 0 ? cfg->height : (cfg->rounded_outline ? 20 : 32);
+            int label_width = estimate_label_width_px(cfg);
+            int label_height = label_width > 0 ? 20 : 0;
+            int gap = (label_width > 0) ? pad_x : 0;
+            int tail_pad = pad_x + (label_width > 0 ? 4 : 0);
+            int container_width = pad_x + bar_width + gap + label_width + tail_pad;
+            int extra_height = cfg->rounded_outline ? 4 : 0;
+            int container_height = bar_height;
+            if (label_height > container_height) container_height = label_height;
+            container_height += pad_y * 2 + extra_height;
+
+            int container_x = cfg->x;
+            if (cfg->orientation == ORIENTATION_LEFT) {
+                container_x -= container_width;
+            }
+            int container_y = cfg->y;
+            extend_bounds(&min_x, &min_y, &max_x, &max_y,
+                          container_x, container_y,
+                          container_x + container_width,
+                          container_y + container_height,
+                          &has_bounds);
+        } else {
+            int text_width = cfg->width > 0 ? cfg->width : 240;
+            int text_height = cfg->height > 0 ? cfg->height : 60;
+            extend_bounds(&min_x, &min_y, &max_x, &max_y,
+                          cfg->x, cfg->y,
+                          cfg->x + text_width,
+                          cfg->y + text_height,
+                          &has_bounds);
+        }
+    }
+
+    if (g_cfg.show_stats) {
+        int stats_width = 320;
+        int stats_height = g_cfg.udp_stats ? 260 : 140;
+        extend_bounds(&min_x, &min_y, &max_x, &max_y,
+                      4, 4,
+                      4 + stats_width,
+                      4 + stats_height,
+                      &has_bounds);
+    }
+
+    int pad = clamp_int(g_cfg.fit_pad, 0, 512);
+    if (!has_bounds) {
+        min_x = 0;
+        min_y = 0;
+        max_x = g_cfg.width;
+        max_y = g_cfg.height;
+    }
+
+    int content_w = max_x - min_x;
+    int content_h = max_y - min_y;
+    if (content_w < 1) content_w = 1;
+    if (content_h < 1) content_h = 1;
+
+    if (g_cfg.fit_to_content) {
+        osd_offset_x = min_x - pad;
+        osd_offset_y = min_y - pad;
+        osd_width = content_w + pad * 2;
+        osd_height = content_h + pad * 2;
+    } else {
+        osd_offset_x = 0;
+        osd_offset_y = 0;
+        osd_width = g_cfg.width;
+        osd_height = g_cfg.height;
+    }
+
+    int min_width = content_w + pad * 2;
+    int min_height = content_h + pad * 2;
+    if (osd_width < min_width) osd_width = min_width;
+    if (osd_height < min_height) osd_height = min_height;
+    if (osd_width < 1) osd_width = 1;
+    if (osd_height < 1) osd_height = 1;
+
+    rgn_pos_x = g_cfg.osd_x + osd_offset_x;
+    rgn_pos_y = g_cfg.osd_y + osd_offset_y;
+    if (rgn_pos_x < 0) {
+        osd_offset_x -= rgn_pos_x;
+        rgn_pos_x = 0;
+    }
+    if (rgn_pos_y < 0) {
+        osd_offset_y -= rgn_pos_y;
+        rgn_pos_y = 0;
+    }
 }
 
 static int read_file(const char *path, char **out_buf, size_t *out_len)
@@ -572,11 +729,11 @@ static void layout_bar_asset(asset_t *asset)
     int container_width = pad_x + bar_width + gap + label_width + tail_pad;
 
     lv_obj_set_size(asset->container_obj, container_width, container_height);
-    int container_x = cfg->x;
+    int container_x = to_canvas_x(cfg->x);
     if (cfg->orientation == ORIENTATION_LEFT) {
         container_x -= container_width;
     }
-    lv_obj_set_pos(asset->container_obj, container_x, cfg->y);
+    lv_obj_set_pos(asset->container_obj, container_x, to_canvas_y(cfg->y));
     int base_radius_height = bar_height + pad_y * 2 + extra_height;
     int container_radius = base_radius_height / 2;
     if (container_radius < 6) container_radius = 6;
@@ -629,6 +786,10 @@ static void set_defaults(void)
 {
     g_cfg.width = DEFAULT_SCREEN_WIDTH;
     g_cfg.height = DEFAULT_SCREEN_HEIGHT;
+    g_cfg.osd_x = 0;
+    g_cfg.osd_y = 0;
+    g_cfg.fit_to_content = 1;
+    g_cfg.fit_pad = 4;
     g_cfg.show_stats = 1;
     g_cfg.idle_ms = 100;
     g_cfg.udp_stats = 0;
@@ -726,6 +887,10 @@ static void load_config(void)
     float fv = 0.0f;
     if (json_get_int(json, "width", &v) == 0) g_cfg.width = v;
     if (json_get_int(json, "height", &v) == 0) g_cfg.height = v;
+    if (json_get_int(json, "osd_x", &v) == 0) g_cfg.osd_x = v;
+    if (json_get_int(json, "osd_y", &v) == 0) g_cfg.osd_y = v;
+    if (json_get_bool(json, "fit_to_content", &v) == 0) g_cfg.fit_to_content = v;
+    if (json_get_int(json, "fit_pad", &v) == 0) g_cfg.fit_pad = clamp_int(v, 0, 256);
     if (json_get_bool(json, "show_stats", &v) == 0) g_cfg.show_stats = v;
     if (json_get_bool(json, "udp_stats", &v) == 0) g_cfg.udp_stats = v;
     if (json_get_int(json, "idle_ms", &v) == 0) {
@@ -1165,15 +1330,26 @@ static uint64_t monotonic_ms64(void)
     return ((uint64_t)ts.tv_sec * 1000ULL) + (uint64_t)(ts.tv_nsec / 1000000ULL);
 }
 
+static const MI_RGN_CanvasInfo_t *get_cached_canvas(void)
+{
+    if (!g_canvas_info_valid || !g_cached_canvas_info.virtAddr) {
+        if (MI_RGN_GetCanvasInfo(hRgnHandle, &g_cached_canvas_info) != MI_RGN_OK) {
+            g_canvas_info_valid = 0;
+            return NULL;
+        }
+        g_canvas_info_valid = 1;
+    }
+    return &g_cached_canvas_info;
+}
+
 // -------------------------
 // LVGL flush callback
 // -------------------------
 void my_flush_cb(lv_display_t * disp, const lv_area_t * area, uint8_t * px_map)
 {
-    MI_RGN_CanvasInfo_t info;
-    MI_RGN_GetCanvasInfo(hRgnHandle, &info);
+    const MI_RGN_CanvasInfo_t *info = get_cached_canvas();
 
-    if (!info.virtAddr) {
+    if (!info || !info->virtAddr) {
         lv_display_flush_ready(disp);
         return;
     }
@@ -1183,8 +1359,8 @@ void my_flush_cb(lv_display_t * disp, const lv_area_t * area, uint8_t * px_map)
     uint32_t *src = (uint32_t *)px_map;  // Source is ARGB8888 (32-bit)
 
     for (int y = 0; y < h; y++) {
-        uint16_t *dest = (uint16_t *)(info.virtAddr +
-                                      (area->y1 + y) * info.u32Stride +
+        uint16_t *dest = (uint16_t *)(info->virtAddr +
+                                      (area->y1 + y) * info->u32Stride +
                                       area->x1 * 2);  // Dest is ARGB4444 (16-bit)
 
         for (int x = 0; x < w; x++) {
@@ -1210,7 +1386,7 @@ void my_flush_cb(lv_display_t * disp, const lv_area_t * area, uint8_t * px_map)
         }
     }
 
-    MI_RGN_UpdateCanvas(hRgnHandle);
+    g_canvas_dirty = 1;
     lv_display_flush_ready(disp);
 }
 
@@ -1237,12 +1413,16 @@ void mi_region_init(void)
 
     memset(&stRgnChnAttr, 0, sizeof(MI_RGN_ChnPortParam_t));
     stRgnChnAttr.bShow = 1;
-    stRgnChnAttr.stPoint.u32X = 0;
-    stRgnChnAttr.stPoint.u32Y = 0;
+    stRgnChnAttr.stPoint.u32X = (MI_U32)rgn_pos_x;
+    stRgnChnAttr.stPoint.u32Y = (MI_U32)rgn_pos_y;
     stRgnChnAttr.unPara.stOsdChnPort.u32Layer = 0;
     stRgnChnAttr.unPara.stOsdChnPort.stOsdAlphaAttr.eAlphaMode = E_MI_RGN_PIXEL_ALPHA;
 
     MI_RGN_AttachToChn(hRgnHandle, &stVpeChnPort, &stRgnChnAttr);
+
+    if (MI_RGN_GetCanvasInfo(hRgnHandle, &g_cached_canvas_info) == MI_RGN_OK) {
+        g_canvas_info_valid = 1;
+    }
 }
 
 // -------------------------
@@ -1317,7 +1497,7 @@ static lv_obj_t *create_text_asset(asset_t *asset)
     int width = asset->cfg.width > 0 ? asset->cfg.width : LV_SIZE_CONTENT;
     int height = asset->cfg.height > 0 ? asset->cfg.height : LV_SIZE_CONTENT;
     lv_obj_set_size(label, width, height);
-    lv_obj_align(label, LV_ALIGN_TOP_LEFT, asset->cfg.x, asset->cfg.y);
+    lv_obj_align(label, LV_ALIGN_TOP_LEFT, to_canvas_x(asset->cfg.x), to_canvas_y(asset->cfg.y));
     lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
     apply_background_style(label, asset->cfg.bg_style, asset->cfg.bg_opacity_pct, 0);
     lv_obj_set_style_text_color(label, lv_color_hex(asset->cfg.text_color), 0);
@@ -1579,8 +1759,7 @@ static void stats_timer_cb(lv_timer_t *timer)
 int main(void)
 {
     load_config();
-    osd_width = g_cfg.width;
-    osd_height = g_cfg.height;
+    compute_osd_geometry();
     signal(SIGINT, handle_sigint);
     signal(SIGHUP, handle_sighup);
 
@@ -1604,7 +1783,7 @@ int main(void)
     lv_obj_set_style_bg_color(stats_label, lv_color_hex(0x000000), LV_PART_MAIN);
     lv_obj_set_style_bg_opa(stats_label, LV_OPA_70, LV_PART_MAIN);
     lv_obj_set_style_pad_all(stats_label, 4, LV_PART_MAIN);
-    lv_obj_align(stats_label, LV_ALIGN_TOP_LEFT, 4, 4);
+    lv_obj_align(stats_label, LV_ALIGN_TOP_LEFT, to_canvas_x(4), to_canvas_y(4));
     lv_label_set_text(stats_label, "OSD stats");
 
     // Timers (throttled to ~10 Hz)
@@ -1646,6 +1825,10 @@ int main(void)
 
         uint64_t frame_start = monotonic_ms64();
         lv_timer_handler();
+        if (g_canvas_dirty) {
+            MI_RGN_UpdateCanvas(hRgnHandle);
+            g_canvas_dirty = 0;
+        }
         fps_frames++;
         last_frame_ms = (uint32_t)(monotonic_ms64() - frame_start);
 
