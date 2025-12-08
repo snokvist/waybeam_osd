@@ -1036,6 +1036,27 @@ static void usage_watch(const char *prog)
         prog, MAX_PAYLOAD, prog);
 }
 
+
+static double rssi_ma3_update(double hist[3], int *count, int *pos, double sample)
+{
+    hist[*pos] = sample;
+    *pos = (*pos + 1) % 3;
+    if (*count < 3) (*count)++;
+
+    double sum = 0.0;
+    for (int i = 0; i < *count; i++) sum += hist[i];
+    return sum / (double)(*count);
+}
+
+static void rssi_ma3_reset(double hist[3], int *count, int *pos)
+{
+    hist[0] = hist[1] = hist[2] = 0.0;
+    *count = 0;
+    *pos = 0;
+}
+
+
+
 static int cmd_watch(int argc, char **argv, const char *prog)
 {
     const char *dest = NULL;
@@ -1123,6 +1144,11 @@ static int cmd_watch(int argc, char **argv, const char *prog)
 
     long last_debug = -1;
 
+    /* 3-sample moving average for RSSI smoothing */
+    double rssi_hist[3] = {0, 0, 0};
+    int rssi_hist_count = 0;
+    int rssi_hist_pos = 0;
+
         /* One-time asset init push for bar id 0 (per default template)
      * We omit label because contract defines label as string, while the
      * provided template showed label:-1.
@@ -1178,19 +1204,28 @@ static int cmd_watch(int argc, char **argv, const char *prog)
         int ok = read_iw_link(iface, ssid_raw, sizeof(ssid_raw), &signal_dbm);
 
         char ssid16[MAX_TEXT_LEN + 1];
-        if (ok) clamp_text16(ssid_raw, ssid16);
-        else {
+        if (ok) {
+            clamp_text16(ssid_raw, ssid16);
+        } else {
             strncpy(ssid16, "DISCONNECTED", sizeof(ssid16));
             ssid16[MAX_TEXT_LEN] = '\0';
             signal_dbm = 0.0;
+
+            /* reset smoothing on disconnect */
+            rssi_ma3_reset(rssi_hist, &rssi_hist_count, &rssi_hist_pos);
         }
+
+        /* Apply 3-sample moving average when connected */
+        double signal_smooth = ok
+        ? rssi_ma3_update(rssi_hist, &rssi_hist_count, &rssi_hist_pos, signal_dbm)
+        : 0.0;
 
         PayloadBuilder pb;
         pb_init(&pb);
 
         /* Populate only requested indices */
         for (int i = 0; i < 8; i++) {
-            if (value_idx_set[i] && ok) pb_set_value(&pb, i, signal_dbm);
+            if (value_idx_set[i] && ok) pb_set_value(&pb, i, signal_smooth);
             else if (value_idx_set[i] && !ok) {
                 // leave absent rather than forcing zeros
                 // (keeps payload smaller and semantics clear)
@@ -1200,8 +1235,7 @@ static int cmd_watch(int argc, char **argv, const char *prog)
         }
 
         /* Color updates for assets matching value indices */
-        uint32_t c = ok ? color_for_signal_dbm(signal_dbm) : 0xFF0000;
-
+        uint32_t c = ok ? color_for_signal_dbm(signal_smooth) : 0xFF0000;
         for (int i = 0; i < 8; i++) {
             if (!value_idx_set[i]) continue;
 
@@ -1235,8 +1269,10 @@ static int cmd_watch(int argc, char **argv, const char *prog)
         if (now != last_debug) {
             last_debug = now;
             fprintf(stderr,
-                    "[watch] dst=%s:%d iface=%s ok=%d ssid=\"%s\" signal=%.1f dBm color=0x%06X len=%d\n",
-                    dest, port, iface, ok, ssid16, signal_dbm, (unsigned)c,
+                    "[watch] dst=%s:%d iface=%s ok=%d ssid=\"%s\" "
+                    "signal=%.1f dBm smooth=%.1f dBm color=0x%06X len=%d\n",
+                    dest, port, iface, ok, ssid16,
+                    signal_dbm, signal_smooth, (unsigned)c,
                     (len > 0) ? len : 0);
         }
 
