@@ -16,6 +16,10 @@
 #include <stdbool.h>
 #include <dlfcn.h>
 
+#ifndef RTLD_NODELETE
+#define RTLD_NODELETE 0x01000
+#endif
+
 #include "lvgl/lvgl.h"
 #include "lvgl/src/draw/lv_draw_private.h"
 #include "mi_sys.h"
@@ -1381,37 +1385,29 @@ static bool ensure_venc_query_loaded(void)
         venc_force_load = (env && env[0] == '1') ? 1 : 0;
     }
 
-    int flags = RTLD_LAZY | RTLD_LOCAL;
-#ifdef RTLD_NODELETE
-    flags |= RTLD_NODELETE;
-#endif
+    pMI_VENC_Query = (mi_venc_query_fn)dlsym(RTLD_DEFAULT, "MI_VENC_Query");
+    if (!pMI_VENC_Query && !venc_force_load) {
+        fprintf(stderr, "[enc] libmi_venc.so not preloaded; skipping encoder stats (set WAYBEAM_VENC_FORCE_LOAD=1 to force)\n");
+        venc_dl_broken = 1;
+        return false;
+    }
 
+    if (!pMI_VENC_Query && venc_force_load) {
+        int flags = RTLD_LAZY | RTLD_LOCAL | RTLD_NODELETE;
 #ifdef RTLD_NOLOAD
-    venc_dl_handle = dlopen("libmi_venc.so", flags | RTLD_NOLOAD);
-#else
-    venc_dl_handle = NULL;
+        venc_dl_handle = dlopen("libmi_venc.so", flags | RTLD_NOLOAD);
 #endif
-
-    if (!venc_dl_handle && venc_force_load) {
-        venc_dl_handle = dlopen("libmi_venc.so", flags);
+        if (!venc_dl_handle) {
+            venc_dl_handle = dlopen("libmi_venc.so", flags);
+        }
         if (!venc_dl_handle) {
             fprintf(stderr, "[enc] dlopen libmi_venc.so failed (force load): %s\n", dlerror());
             venc_dl_broken = 1;
             return false;
         }
+        pMI_VENC_Query = (mi_venc_query_fn)dlsym(venc_dl_handle, "MI_VENC_Query");
     }
 
-    if (!venc_dl_handle) {
-#ifdef RTLD_NOLOAD
-        fprintf(stderr, "[enc] libmi_venc.so not preloaded; skipping encoder stats (set WAYBEAM_VENC_FORCE_LOAD=1 to force)\n");
-#else
-        fprintf(stderr, "[enc] libmi_venc.so not available; skipping encoder stats\n");
-#endif
-        venc_dl_broken = 1;
-        return false;
-    }
-
-    pMI_VENC_Query = (mi_venc_query_fn)dlsym(venc_dl_handle, "MI_VENC_Query");
     if (!pMI_VENC_Query) {
         fprintf(stderr, "[enc] dlsym MI_VENC_Query failed: %s\n", dlerror());
         venc_dl_broken = 1;
