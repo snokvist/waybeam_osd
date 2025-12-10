@@ -13,10 +13,6 @@
 ./build.sh
 ```
 `lvgltest` is produced in the repo root using the Sigmastar toolchain bundled under `toolchain/`.
-If your sysroot is missing `gnu/stubs-soft.h` (some OpenIPC drops omit it), the bundled headers
-include a minimal fallback under `sdk/include/gnu/` that is picked up automatically by the
-existing include paths.
-
 ## Run
 1) Adjust `config.json` (resolution, assets, idle wait, stats). See examples inside the file.
 2) Launch the OSD:

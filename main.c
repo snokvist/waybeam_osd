@@ -1369,7 +1369,7 @@ static bool query_encoder_stats(double *fps_out, double *bitrate_out)
     MI_VENC_ChnStat_t stat;
     memset(&stat, 0, sizeof(stat));
     MI_S32 ret = MI_VENC_Query(0, &stat);
-    if (ret != MI_VENC_OK) {
+    if (ret != MI_SUCCESS) {
         fprintf(stderr, "[enc] MI_VENC_Query failed: %d\n", ret);
         return false;
     }
