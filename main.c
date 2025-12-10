@@ -63,6 +63,9 @@ static mi_venc_query_fn pMI_VENC_Query = NULL;
 static void *venc_dl_handle = NULL;
 static int venc_dl_broken = 0;
 static int venc_force_load = -1; /* lazy-env parsed */
+static int venc_loaded_from_default = 0;
+static int venc_loaded_from_dlopen = 0;
+static int venc_dl_flags = 0;
 
 typedef struct {
     int width;
@@ -1386,11 +1389,16 @@ static bool ensure_venc_query_loaded(void)
     }
 
     pMI_VENC_Query = (mi_venc_query_fn)dlsym(RTLD_DEFAULT, "MI_VENC_Query");
+    if (pMI_VENC_Query) {
+        venc_loaded_from_default = 1;
+        fprintf(stderr, "[enc] MI_VENC_Query resolved via RTLD_DEFAULT\n");
+    }
     if (!pMI_VENC_Query && venc_force_load) {
         int flags = RTLD_LAZY | RTLD_LOCAL;
 #ifdef RTLD_NODELETE
         flags |= RTLD_NODELETE;
 #endif
+        venc_dl_flags = flags;
 #ifdef RTLD_NOLOAD
         venc_dl_handle = dlopen("libmi_venc.so", flags | RTLD_NOLOAD);
         if (!venc_dl_handle) {
@@ -1406,6 +1414,10 @@ static bool ensure_venc_query_loaded(void)
             return false;
         }
         pMI_VENC_Query = (mi_venc_query_fn)dlsym(venc_dl_handle, "MI_VENC_Query");
+        if (pMI_VENC_Query) {
+            venc_loaded_from_dlopen = 1;
+            venc_dl_flags = flags;
+        }
     }
 
     if (!pMI_VENC_Query) {
@@ -1828,6 +1840,35 @@ static void reload_config_runtime(void)
 
 static void cleanup_resources(void)
 {
+    if (pMI_VENC_Query || venc_dl_handle) {
+        MI_VENC_ChnStat_t stat;
+        memset(&stat, 0, sizeof(stat));
+        if (pMI_VENC_Query) {
+            MI_S32 ret = pMI_VENC_Query(0, &stat);
+            if (ret == MI_SUCCESS && stat.u32FrmRateDen) {
+                double fps = (double)stat.u32FrmRateNum / (double)stat.u32FrmRateDen;
+                fprintf(stderr,
+                        "[enc] exit query: ret=%d fps=%.2f bitrate=%u num=%u den=%u (loaded %s%s)\n",
+                        ret,
+                        fps,
+                        stat.u32BitRate,
+                        stat.u32FrmRateNum,
+                        stat.u32FrmRateDen,
+                        venc_loaded_from_default ? "RTLD_DEFAULT" : "dlopen",
+                        (venc_dl_flags & RTLD_NODELETE) ? "|NODELETE" : "");
+            } else {
+                fprintf(stderr,
+                        "[enc] exit query failed: ret=%d den=%u (loaded %s%s)\n",
+                        ret,
+                        stat.u32FrmRateDen,
+                        venc_loaded_from_default ? "RTLD_DEFAULT" : "dlopen",
+                        (venc_dl_flags & RTLD_NODELETE) ? "|NODELETE" : "");
+            }
+        } else {
+            fprintf(stderr, "[enc] exit: no MI_VENC_Query but handle present (flags=0x%x)\n", venc_dl_flags);
+        }
+    }
+
     destroy_assets();
 
     if (stats_timer) {
