@@ -14,6 +14,7 @@
 #include <time.h>
 #include <limits.h>
 #include <stdbool.h>
+#include <dlfcn.h>
 
 #include "lvgl/lvgl.h"
 #include "lvgl/src/draw/lv_draw_private.h"
@@ -51,6 +52,12 @@ enum {
 // LVGL buffers - allocated at runtime for ARGB8888 (32-bit per pixel)
 static lv_color_t *buf1 = NULL;
 static lv_color_t *buf2 = NULL;
+
+typedef MI_S32 (*mi_venc_query_fn)(MI_VENC_CHN, MI_VENC_ChnStat_t *);
+
+static mi_venc_query_fn pMI_VENC_Query = NULL;
+static void *venc_dl_handle = NULL;
+static int venc_dl_broken = 0;
 
 typedef struct {
     int width;
@@ -1363,12 +1370,39 @@ static double read_cpu_load_pct(void)
     return pct;
 }
 
+static bool ensure_venc_query_loaded(void)
+{
+    if (pMI_VENC_Query) return true;
+    if (venc_dl_broken) return false;
+
+    int flags = RTLD_LAZY | RTLD_LOCAL;
+#ifdef RTLD_NODELETE
+    flags |= RTLD_NODELETE;
+#endif
+    venc_dl_handle = dlopen("libmi_venc.so", flags);
+    if (!venc_dl_handle) {
+        fprintf(stderr, "[enc] dlopen libmi_venc.so failed: %s\n", dlerror());
+        venc_dl_broken = 1;
+        return false;
+    }
+
+    pMI_VENC_Query = (mi_venc_query_fn)dlsym(venc_dl_handle, "MI_VENC_Query");
+    if (!pMI_VENC_Query) {
+        fprintf(stderr, "[enc] dlsym MI_VENC_Query failed: %s\n", dlerror());
+        venc_dl_broken = 1;
+        return false;
+    }
+
+    return true;
+}
+
 static bool query_encoder_stats(double *fps_out, double *bitrate_out)
 {
     if (!fps_out || !bitrate_out) return false;
+    if (!ensure_venc_query_loaded()) return false;
     MI_VENC_ChnStat_t stat;
     memset(&stat, 0, sizeof(stat));
-    MI_S32 ret = MI_VENC_Query(0, &stat);
+    MI_S32 ret = pMI_VENC_Query(0, &stat);
     if (ret != MI_SUCCESS) {
         fprintf(stderr, "[enc] MI_VENC_Query failed: %d\n", ret);
         return false;
