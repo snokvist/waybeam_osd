@@ -20,13 +20,33 @@
 #include "mi_sys.h"
 #include "mi_rgn.h"
 #include "mi_vpe.h"
+#include "mi_venc.h"
 
 #define DEFAULT_SCREEN_WIDTH 1280   // fallback resolution if config is absent
 #define DEFAULT_SCREEN_HEIGHT 720
 #define BUF_ROWS 60  // partial buffer height
 #define CONFIG_PATH "/etc/waybeam_osd.json"
 #define UDP_PORT 7777
-#define UDP_MAX_PACKET 512
+#define UDP_MAX_PACKET 1280
+#define UDP_VALUE_COUNT 8
+#define SYSTEM_VALUE_COUNT 8
+#define TOTAL_VALUE_COUNT (UDP_VALUE_COUNT + SYSTEM_VALUE_COUNT)
+#define UDP_TEXT_COUNT 8
+#define SYSTEM_TEXT_COUNT 8
+#define TOTAL_TEXT_COUNT (UDP_TEXT_COUNT + SYSTEM_TEXT_COUNT)
+#define TEXT_SLOT_MAX_CHARS 96
+#define TEXT_SLOT_LEN (TEXT_SLOT_MAX_CHARS + 1)
+
+enum {
+    SYS_VALUE_TEMP = 0,
+    SYS_VALUE_CPU_LOAD,
+    SYS_VALUE_ENCODER_FPS,
+    SYS_VALUE_ENCODER_BITRATE,
+    SYS_VALUE_RESERVED4,
+    SYS_VALUE_RESERVED5,
+    SYS_VALUE_RESERVED6,
+    SYS_VALUE_RESERVED7,
+};
 
 // LVGL buffers - allocated at runtime for ARGB8888 (32-bit per pixel)
 static lv_color_t *buf1 = NULL;
@@ -83,7 +103,7 @@ typedef struct {
     lv_obj_t *obj;
     lv_obj_t *label_obj;
     int last_pct;
-    char last_label_text[128];
+    char last_label_text[1024];
 } asset_t;
 
 typedef struct {
@@ -138,10 +158,16 @@ static int idle_ms_applied = 100;
 static volatile sig_atomic_t stop_requested = 0;
 static volatile sig_atomic_t reload_requested = 0;
 static lv_timer_t *stats_timer = NULL;
+static const int max_ms = 32; // throttle channel pushes to ~30 fps
 static int udp_sock = -1;
-static double udp_values[8] = {0};
-static char udp_texts[8][17] = {{0}};
+static double udp_values[UDP_VALUE_COUNT] = {0};
+static double system_values[SYSTEM_VALUE_COUNT] = {0};
+static char udp_texts[UDP_TEXT_COUNT][TEXT_SLOT_LEN] = {{0}};
+static char system_texts[SYSTEM_TEXT_COUNT][TEXT_SLOT_LEN] = {{0}};
 static int idle_cap_ms = 100;
+static uint64_t last_system_refresh_ms = 0;
+static uint64_t last_channel_push_ms = 0;
+static bool pending_channel_flush = false;
 // -------------------------
 // Utility helpers
 // -------------------------
@@ -155,6 +181,43 @@ static float clamp_float(float v, float lo, float hi) {
     if (v < lo) return lo;
     if (v > hi) return hi;
     return v;
+}
+
+static void init_system_channels(void)
+{
+    memset(system_values, 0, sizeof(system_values));
+    memset(system_texts, 0, sizeof(system_texts));
+    static const char *defaults[SYSTEM_TEXT_COUNT] = {
+        "temp",
+        "cpu",
+        "enc fps",
+        "bitrate",
+        "sys4",
+        "sys5",
+        "sys6",
+        "sys7",
+    };
+    for (int i = 0; i < SYSTEM_TEXT_COUNT; i++) {
+        snprintf(system_texts[i], TEXT_SLOT_LEN, "%s", defaults[i]);
+    }
+}
+
+static double get_value_channel(int idx)
+{
+    if (idx < 0) return 0.0;
+    if (idx < UDP_VALUE_COUNT) return udp_values[idx];
+    idx -= UDP_VALUE_COUNT;
+    if (idx < SYSTEM_VALUE_COUNT) return system_values[idx];
+    return 0.0;
+}
+
+static const char *get_text_channel(int idx)
+{
+    if (idx < 0) return "";
+    if (idx < UDP_TEXT_COUNT) return udp_texts[idx];
+    idx -= UDP_TEXT_COUNT;
+    if (idx < SYSTEM_TEXT_COUNT) return system_texts[idx];
+    return "";
 }
 
 static int to_canvas_x(int x)
@@ -407,7 +470,7 @@ static void init_asset_defaults(asset_t *a, int id)
     a->cfg.type = ASSET_BAR;
     a->cfg.id = id;
     a->cfg.enabled = 1;
-    a->cfg.value_index = clamp_int(id, 0, 7);
+    a->cfg.value_index = clamp_int(id, 0, TOTAL_VALUE_COUNT - 1);
     a->cfg.x = 40;
     a->cfg.y = 60 + id * 60;
     a->cfg.width = 320;
@@ -693,6 +756,13 @@ static void set_defaults(void)
     g_cfg.idle_ms = 100;
     g_cfg.udp_stats = 0;
 
+    memset(udp_values, 0, sizeof(udp_values));
+    memset(udp_texts, 0, sizeof(udp_texts));
+    init_system_channels();
+    last_system_refresh_ms = 0;
+    last_channel_push_ms = 0;
+    pending_channel_flush = false;
+
     memset(assets, 0, sizeof(assets));
     asset_count = 1;
     init_asset_defaults(&assets[0], 0);
@@ -736,7 +806,7 @@ static void parse_assets_array(const char *json)
         int v = 0;
         float fv = 0.0f;
         if (json_get_bool_range(obj_start, obj_end, "enabled", &v) == 0 || json_get_bool_range(obj_start, obj_end, "enable", &v) == 0) a.cfg.enabled = v;
-        if (json_get_int_range(obj_start, obj_end, "value_index", &v) == 0) a.cfg.value_index = clamp_int(v, 0, 7);
+        if (json_get_int_range(obj_start, obj_end, "value_index", &v) == 0) a.cfg.value_index = clamp_int(v, 0, TOTAL_VALUE_COUNT - 1);
         if (json_get_int_range(obj_start, obj_end, "id", &v) == 0) a.cfg.id = clamp_int(v, 0, 63);
         if (json_get_int_range(obj_start, obj_end, "x", &v) == 0) a.cfg.x = v;
         if (json_get_int_range(obj_start, obj_end, "y", &v) == 0) a.cfg.y = v;
@@ -749,8 +819,11 @@ static void parse_assets_array(const char *json)
         if (json_get_int_range(obj_start, obj_end, "background", &v) == 0) a.cfg.bg_style = clamp_int(v, -1, (int)(sizeof(g_bg_styles) / sizeof(g_bg_styles[0])) - 1);
         if (json_get_int_range(obj_start, obj_end, "background_opacity", &v) == 0) a.cfg.bg_opacity_pct = clamp_int(v, 0, 100);
         if (json_get_int_range(obj_start, obj_end, "segments", &v) == 0) a.cfg.segments = clamp_int(v, 0, 64);
-        if (json_get_int_range(obj_start, obj_end, "text_index", &v) == 0) a.cfg.text_index = clamp_int(v, -1, 7);
+        if (json_get_int_range(obj_start, obj_end, "text_index", &v) == 0) a.cfg.text_index = clamp_int(v, -1, TOTAL_TEXT_COUNT - 1);
         json_get_int_array_range(obj_start, obj_end, "text_indices", a.cfg.text_indices, 8, &a.cfg.text_indices_count);
+        for (int i = 0; i < a.cfg.text_indices_count; i++) {
+            a.cfg.text_indices[i] = clamp_int(a.cfg.text_indices[i], 0, TOTAL_TEXT_COUNT - 1);
+        }
         if (json_get_bool_range(obj_start, obj_end, "text_inline", &v) == 0) a.cfg.text_inline = v;
         if (json_get_bool_range(obj_start, obj_end, "rounded_outline", &v) == 0) a.cfg.rounded_outline = v;
         json_get_string_range(obj_start, obj_end, "label", a.cfg.label, sizeof(a.cfg.label));
@@ -841,7 +914,7 @@ static void parse_udp_values(const char *buf)
     p = strchr(p, '[');
     if (!p) return;
     p++;
-    for (int i = 0; i < 8; i++) {
+    for (int i = 0; i < UDP_VALUE_COUNT; i++) {
         while (*p && isspace((unsigned char)*p)) p++;
         if (!*p) break;
         char *endptr = NULL;
@@ -862,7 +935,7 @@ static void parse_udp_texts(const char *buf)
     p = strchr(p, '[');
     if (!p) return;
     p++;
-    for (int i = 0; i < 8; i++) {
+    for (int i = 0; i < UDP_TEXT_COUNT; i++) {
         while (*p && isspace((unsigned char)*p)) p++;
         if (!*p) break;
         if (*p != '\"') break;
@@ -870,7 +943,7 @@ static void parse_udp_texts(const char *buf)
         const char *start = p;
         while (*p && *p != '\"') p++;
         size_t len = (size_t)(p - start);
-        if (len > 16) len = 16;
+        if (len > TEXT_SLOT_LEN - 1) len = TEXT_SLOT_LEN - 1;
         memcpy(udp_texts[i], start, len);
         udp_texts[i][len] = '\0';
         if (*p != '\"') break;
@@ -944,14 +1017,14 @@ static void parse_udp_asset_updates(const char *buf)
         }
 
         if (json_get_int_range(obj_start, obj_end, "value_index", &v) == 0) {
-            int idx = clamp_int(v, 0, 7);
+            int idx = clamp_int(v, 0, TOTAL_VALUE_COUNT - 1);
             if (idx != asset->cfg.value_index) {
                 asset->cfg.value_index = idx;
             }
         }
 
         if (json_get_int_range(obj_start, obj_end, "text_index", &v) == 0) {
-            int idx = clamp_int(v, -1, 7);
+            int idx = clamp_int(v, -1, TOTAL_TEXT_COUNT - 1);
             if (idx != asset->cfg.text_index) {
                 asset->cfg.text_index = idx;
                 text_change = 1;
@@ -962,6 +1035,9 @@ static void parse_udp_asset_updates(const char *buf)
         int idx_count = 0;
         if (find_key_range(obj_start, obj_end, "text_indices")) {
             json_get_int_array_range(obj_start, obj_end, "text_indices", indices_tmp, 8, &idx_count);
+            for (int i = 0; i < idx_count; i++) {
+                indices_tmp[i] = clamp_int(indices_tmp[i], 0, TOTAL_TEXT_COUNT - 1);
+            }
             if (idx_count != asset->cfg.text_indices_count || memcmp(indices_tmp, asset->cfg.text_indices, sizeof(int) * (size_t)idx_count) != 0) {
                 memcpy(asset->cfg.text_indices, indices_tmp, sizeof(int) * (size_t)idx_count);
                 asset->cfg.text_indices_count = idx_count;
@@ -1134,11 +1210,9 @@ static void parse_udp_asset_updates(const char *buf)
 
 static const char *get_asset_text(const asset_t *asset)
 {
-    if (asset->cfg.text_index >= 0 && asset->cfg.text_index < 8) {
-        const char *t = udp_texts[asset->cfg.text_index];
+    if (asset->cfg.text_index >= 0 && asset->cfg.text_index < TOTAL_TEXT_COUNT) {
+        const char *t = get_text_channel(asset->cfg.text_index);
         if (t[0] != '\0') return t;
-        if (asset->cfg.label[0] != '\0') return asset->cfg.label;
-        return "";
     }
     if (asset->cfg.label[0] != '\0') return asset->cfg.label;
     return "";
@@ -1150,17 +1224,17 @@ static void compose_asset_text(const asset_t *asset, char *buf, size_t buf_sz)
     buf[0] = '\0';
     if (!asset) return;
 
-    if (asset->cfg.type == ASSET_TEXT) {
-        size_t written = 0;
-        if (asset->cfg.text_indices_count > 0) {
-            for (int i = 0; i < asset->cfg.text_indices_count; i++) {
-                int idx = clamp_int(asset->cfg.text_indices[i], 0, 7);
-                const char *t = udp_texts[idx];
-                if (t[0] == '\0') continue;
+        if (asset->cfg.type == ASSET_TEXT) {
+            size_t written = 0;
+            if (asset->cfg.text_indices_count > 0) {
+                for (int i = 0; i < asset->cfg.text_indices_count; i++) {
+                    int idx = clamp_int(asset->cfg.text_indices[i], 0, TOTAL_TEXT_COUNT - 1);
+                    const char *t = get_text_channel(idx);
+                    if (t[0] == '\0') continue;
                 if (written > 0 && written < buf_sz - 1) {
                     buf[written++] = asset->cfg.text_inline ? ' ' : '\n';
                 }
-                size_t len = strnlen(t, sizeof(udp_texts[0]));
+                size_t len = strnlen(t, TEXT_SLOT_LEN - 1);
                 size_t to_copy = len < buf_sz - 1 - written ? len : buf_sz - 1 - written;
                 memcpy(buf + written, t, to_copy);
                 written += to_copy;
@@ -1168,9 +1242,9 @@ static void compose_asset_text(const asset_t *asset, char *buf, size_t buf_sz)
             }
         }
 
-        if (written == 0 && asset->cfg.text_index >= 0 && asset->cfg.text_index < 8) {
-            const char *t = udp_texts[asset->cfg.text_index];
-            size_t len = strnlen(t, sizeof(udp_texts[0]));
+        if (written == 0 && asset->cfg.text_index >= 0 && asset->cfg.text_index < TOTAL_TEXT_COUNT) {
+            const char *t = get_text_channel(asset->cfg.text_index);
+            size_t len = strnlen(t, TEXT_SLOT_LEN - 1);
             size_t to_copy = len < buf_sz - 1 ? len : buf_sz - 1;
             memcpy(buf, t, to_copy);
             written = to_copy;
@@ -1195,19 +1269,17 @@ static bool poll_udp(void)
     if (udp_sock < 0) return false;
     char buf[UDP_MAX_PACKET];
     ssize_t r = 0;
-    ssize_t last_r = -1;
-    // Drain the socket to keep only the freshest payload
+    bool updated = false;
+
     while ((r = recvfrom(udp_sock, buf, sizeof(buf) - 1, 0, NULL, NULL)) > 0) {
-        last_r = r;
-    }
-    if (last_r > 0) {
-        buf[last_r] = '\0';
+        buf[r] = '\0';
         parse_udp_values(buf);
         parse_udp_texts(buf);
         parse_udp_asset_updates(buf);
-        return true;
+        updated = true;
     }
-    return false;
+
+    return updated;
 }
 
 // -------------------------
@@ -1227,6 +1299,106 @@ static uint64_t monotonic_ms64(void)
     return ((uint64_t)ts.tv_sec * 1000ULL) + (uint64_t)(ts.tv_nsec / 1000000ULL);
 }
 
+static bool set_system_value(int idx, double v)
+{
+    if (idx < 0 || idx >= SYSTEM_VALUE_COUNT) return false;
+    double prev = system_values[idx];
+    double diff = prev - v;
+    if (diff < 0) diff = -diff;
+    if (diff < 0.001) return false;
+    system_values[idx] = v;
+    return true;
+}
+
+static double read_soc_temperature(void)
+{
+    FILE *fp = popen("ipctool --temp 2>/dev/null", "r");
+    if (!fp) return -1.0;
+    char line[64];
+    double temp = -1.0;
+    if (fgets(line, sizeof(line), fp)) {
+        double v = 0.0;
+        if (sscanf(line, "%lf", &v) == 1) temp = v;
+    }
+    pclose(fp);
+    return temp;
+}
+
+static double read_cpu_load_pct(void)
+{
+    FILE *f = fopen("/proc/stat", "r");
+    if (!f) return -1.0;
+    char line[256];
+    if (!fgets(line, sizeof(line), f)) {
+        fclose(f);
+        return -1.0;
+    }
+    fclose(f);
+
+    unsigned long long user = 0, nice = 0, system_time = 0, idle = 0, iowait = 0, irq = 0, softirq = 0, steal = 0;
+    if (sscanf(line, "cpu %llu %llu %llu %llu %llu %llu %llu %llu", &user, &nice, &system_time, &idle, &iowait, &irq, &softirq, &steal) < 4) {
+        return -1.0;
+    }
+
+    unsigned long long idle_all = idle + iowait;
+    unsigned long long non_idle = user + nice + system_time + irq + softirq + steal;
+    unsigned long long total = idle_all + non_idle;
+    static unsigned long long prev_total = 0;
+    static unsigned long long prev_idle = 0;
+    if (prev_total == 0 && prev_idle == 0) {
+        prev_total = total;
+        prev_idle = idle_all;
+        return -1.0;
+    }
+
+    unsigned long long totald = total - prev_total;
+    unsigned long long idled = idle_all - prev_idle;
+    prev_total = total;
+    prev_idle = idle_all;
+    if (totald == 0) return -1.0;
+
+    double pct = (double)(totald - idled) * 100.0 / (double)totald;
+    if (pct < 0.0) pct = 0.0;
+    if (pct > 100.0) pct = 100.0;
+    return pct;
+}
+
+static bool query_encoder_stats(double *fps_out, double *bitrate_out)
+{
+    if (!fps_out || !bitrate_out) return false;
+    MI_VENC_ChnStat_t stat;
+    memset(&stat, 0, sizeof(stat));
+    if (MI_VENC_Query(0, &stat) != MI_VENC_OK) return false;
+    if (stat.u32FrmRateDen == 0) return false;
+    *fps_out = (double)stat.u32FrmRateNum / (double)stat.u32FrmRateDen;
+    *bitrate_out = (double)stat.u32BitRate;
+    return true;
+}
+
+static bool refresh_system_values(void)
+{
+    uint64_t now = monotonic_ms64();
+    if (last_system_refresh_ms != 0 && now - last_system_refresh_ms < 1000) return false;
+    last_system_refresh_ms = now;
+
+    bool changed = false;
+
+    double temp = read_soc_temperature();
+    if (temp >= 0.0) changed |= set_system_value(SYS_VALUE_TEMP, temp);
+
+    double cpu = read_cpu_load_pct();
+    if (cpu >= 0.0) changed |= set_system_value(SYS_VALUE_CPU_LOAD, cpu);
+
+    double fps = 0.0;
+    double bitrate = 0.0;
+    if (query_encoder_stats(&fps, &bitrate)) {
+        changed |= set_system_value(SYS_VALUE_ENCODER_FPS, fps);
+        changed |= set_system_value(SYS_VALUE_ENCODER_BITRATE, bitrate);
+    }
+
+    return changed;
+}
+
 static const MI_RGN_CanvasInfo_t *get_cached_canvas(void)
 {
     if (!g_canvas_info_valid || !g_cached_canvas_info.virtAddr) {
@@ -1237,6 +1409,26 @@ static const MI_RGN_CanvasInfo_t *get_cached_canvas(void)
         g_canvas_info_valid = 1;
     }
     return &g_cached_canvas_info;
+}
+
+static void clear_rgn_canvas(void)
+{
+    const MI_RGN_CanvasInfo_t *info = get_cached_canvas();
+    if (!info) return;
+    MI_U32 stride = info->u32Stride;
+    MI_U32 height = info->stSize.u32Height;
+    if (stride == 0 || height == 0) return;
+    MI_U32 size = stride * height;
+
+    if (info->phyAddr) {
+        MI_SYS_MemsetPa(info->phyAddr, 0, size);
+    } else if (info->virtAddr) {
+        memset((void *)info->virtAddr, 0, size);
+    }
+    MI_RGN_UpdateCanvas(hRgnHandle);
+    g_canvas_dirty = 0;
+    g_canvas_info_valid = 0;
+    memset(&g_cached_canvas_info, 0, sizeof(g_cached_canvas_info));
 }
 
 // -------------------------
@@ -1319,10 +1511,7 @@ void mi_region_init(void)
     stRgnChnAttr.unPara.stOsdChnPort.stOsdAlphaAttr.eAlphaMode = E_MI_RGN_PIXEL_ALPHA;
 
     MI_RGN_AttachToChn(hRgnHandle, &stVpeChnPort, &stRgnChnAttr);
-
-    if (MI_RGN_GetCanvasInfo(hRgnHandle, &g_cached_canvas_info) == MI_RGN_OK) {
-        g_canvas_info_valid = 1;
-    }
+    clear_rgn_canvas();
 }
 
 // -------------------------
@@ -1476,7 +1665,7 @@ static void destroy_assets(void)
     memset(assets, 0, sizeof(assets));
 }
 
-static void update_assets_from_udp(void)
+static void update_assets_from_channels(void)
 {
     for (int i = 0; i < asset_count; i++) {
         if (!assets[i].cfg.enabled) continue;
@@ -1486,7 +1675,7 @@ static void update_assets_from_udp(void)
         if (max <= min + 0.0001f) {
             max = min + 1.0f;
         }
-        float v = (float)udp_values[clamp_int(cfg->value_index, 0, 7)];
+        float v = (float)get_value_channel(clamp_int(cfg->value_index, 0, TOTAL_VALUE_COUNT - 1));
         v = clamp_float(v, min, max);
         float pct_f = (v - min) / (max - min);
         int pct = clamp_int((int)(pct_f * 100.0f), 0, 100);
@@ -1500,7 +1689,7 @@ static void update_assets_from_udp(void)
                 break;
             case ASSET_TEXT: {
                 if (assets[i].obj) {
-                    char text_buf[128];
+                    char text_buf[1024];
                     compose_asset_text(&assets[i], text_buf, sizeof(text_buf));
                     if (strncmp(text_buf, assets[i].last_label_text, sizeof(assets[i].last_label_text) - 1) != 0) {
                         lv_label_set_text(assets[i].obj, text_buf);
@@ -1515,7 +1704,7 @@ static void update_assets_from_udp(void)
         }
 
         if (assets[i].label_obj) {
-            char text_buf[128];
+            char text_buf[1024];
             compose_asset_text(&assets[i], text_buf, sizeof(text_buf));
             if (strncmp(text_buf, assets[i].last_label_text, sizeof(assets[i].last_label_text) - 1) != 0) {
                 lv_label_set_text(assets[i].label_obj, text_buf);
@@ -1553,7 +1742,10 @@ static void reload_config_runtime(void)
     idle_ms_applied = idle_cap_ms;
 
     create_assets();
-    update_assets_from_udp();
+    refresh_system_values();
+    update_assets_from_channels();
+    pending_channel_flush = false;
+    last_channel_push_ms = monotonic_ms64();
 
     if (stats_label) {
         if (g_cfg.show_stats) {
@@ -1613,7 +1805,7 @@ static void stats_timer_cb(lv_timer_t *timer)
             primary_h = lv_obj_get_height(assets[i].obj);
         }
     }
-    char buf[512];
+    char buf[1024];
     int disp_w = lv_disp_get_hor_res(NULL);
     int disp_h = lv_disp_get_ver_res(NULL);
     int off = 0;
@@ -1628,16 +1820,31 @@ static void stats_timer_cb(lv_timer_t *timer)
 
     if (g_cfg.udp_stats && off < (int)sizeof(buf) - 32) {
         off += lv_snprintf(buf + off, sizeof(buf) - off, "\nUDP values:");
-        for (int i = 0; i < 8 && off < (int)sizeof(buf) - 16; i++) {
+        for (int i = 0; i < UDP_VALUE_COUNT && off < (int)sizeof(buf) - 16; i++) {
             int whole = (int)udp_values[i];
             int frac = (int)((udp_values[i] - whole) * 100.0);
             if (frac < 0) frac = -frac;
             off += lv_snprintf(buf + off, sizeof(buf) - off, "\n v%d=%d.%02d", i, whole, frac);
         }
         off += lv_snprintf(buf + off, sizeof(buf) - off, "\nUDP texts:");
-        for (int i = 0; i < 8 && off < (int)sizeof(buf) - 20; i++) {
+        for (int i = 0; i < UDP_TEXT_COUNT && off < (int)sizeof(buf) - 20; i++) {
             const char *t = udp_texts[i][0] ? udp_texts[i] : "-";
             off += lv_snprintf(buf + off, sizeof(buf) - off, "\n t%d=%s", i, t);
+        }
+    }
+
+    if (off < (int)sizeof(buf) - 32) {
+        off += lv_snprintf(buf + off, sizeof(buf) - off, "\nSystem values:");
+        for (int i = 0; i < SYSTEM_VALUE_COUNT && off < (int)sizeof(buf) - 16; i++) {
+            int whole = (int)system_values[i];
+            int frac = (int)((system_values[i] - whole) * 100.0);
+            if (frac < 0) frac = -frac;
+            off += lv_snprintf(buf + off, sizeof(buf) - off, "\n s%d=%d.%02d", i, whole, frac);
+        }
+        off += lv_snprintf(buf + off, sizeof(buf) - off, "\nSystem texts:");
+        for (int i = 0; i < SYSTEM_TEXT_COUNT && off < (int)sizeof(buf) - 20; i++) {
+            const char *t = system_texts[i][0] ? system_texts[i] : "-";
+            off += lv_snprintf(buf + off, sizeof(buf) - off, "\n S%d=%s", i, t);
         }
     }
 
@@ -1689,7 +1896,10 @@ int main(void)
     // Timers (throttled to ~10 Hz)
     stats_timer = lv_timer_create(stats_timer_cb, 250, NULL);
 
-    update_assets_from_udp();
+    refresh_system_values();
+    update_assets_from_channels();
+    pending_channel_flush = false;
+    last_channel_push_ms = monotonic_ms64();
 
     idle_cap_ms = clamp_int(g_cfg.idle_ms, 10, 1000);
     idle_ms_applied = idle_cap_ms;
@@ -1703,7 +1913,18 @@ int main(void)
 
         uint64_t loop_start = monotonic_ms64();
 
+        if (refresh_system_values()) pending_channel_flush = true;
+
+        uint64_t now_for_wait = monotonic_ms64();
         int wait_ms = idle_cap_ms;
+        if (pending_channel_flush && last_channel_push_ms != 0) {
+            uint64_t earliest_push = last_channel_push_ms + (uint64_t)max_ms;
+            if (earliest_push > now_for_wait) {
+                uint64_t remaining = earliest_push - now_for_wait;
+                int until_push = clamp_int((int)remaining, 0, wait_ms);
+                wait_ms = until_push;
+            }
+        }
 
         struct pollfd pfd = {0};
         nfds_t nfds = 0;
@@ -1719,7 +1940,16 @@ int main(void)
         idle_ms_applied = clamp_int((int)poll_spent, 0, idle_cap_ms);
         if (ret > 0 && (pfd.revents & POLLIN)) {
             if (poll_udp()) {
-                update_assets_from_udp();
+                pending_channel_flush = true;
+            }
+        }
+
+        uint64_t now = monotonic_ms64();
+        if (pending_channel_flush) {
+            if (last_channel_push_ms == 0 || now - last_channel_push_ms >= (uint64_t)max_ms) {
+                update_assets_from_channels();
+                pending_channel_flush = false;
+                last_channel_push_ms = now;
             }
         }
 

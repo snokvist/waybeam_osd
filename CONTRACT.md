@@ -2,11 +2,12 @@
 
 ## Runtime UDP payload (port 7777)
 - Each datagram must be UTF-8 JSON with a top-level `values` array.
-- `values` holds up to 8 numeric entries (float/double). Missing entries default to `0` on the device.
+- `values` holds up to 8 numeric entries (float/double) for UDP channels `0-7`. Missing entries default to `0` on the device.
+- A second bank of 8 system values is always available on `value_index` slots `8-15` without going over UDP. System slots 8-11 are populated automatically with SoC temperature (`ipctool --temp`), CPU load (0–100), encoder FPS, and current encoder bitrate; slots 12-15 stay reserved for future system metrics.
 - Extra fields are ignored so senders can add metadata if needed.
-- Keep payloads under 512 bytes (anything larger is dropped).
-- The UDP socket is drained whenever it becomes readable so only the latest datagram drives the screen; older queued packets are discarded. Incoming packets trigger an immediate refresh when received, while `idle_ms` only caps the sleep when no data arrives.
-- Optional `texts` array (up to 8 strings, max 16 chars each) can be sent alongside `values`. These map to `text_index` on bar assets and override a static `label` if present. Missing or empty entries fall back to the asset’s `label`.
+- Keep payloads under 1280 bytes (anything larger is dropped).
+- Incoming UDP packets are applied in arrival order; any backlog in the socket is coalesced each cycle so that only the latest values per channel or asset take effect. On-screen updates are throttled to no faster than every 32 ms (about 30 fps) even if more packets arrive sooner.
+- Optional `texts` array (up to 8 strings, max 96 chars each) can be sent alongside `values`. These map to `text_index` on bar assets and override a static `label` if present. Missing or empty entries fall back to the asset’s `label`. System text slots `8-15` are reserved for future data and come prefilled with descriptors (`temp`, `cpu`, `enc fps`, `bitrate`, `sys4`, `sys5`, `sys6`, `sys7`).
 - Optional `asset_updates` array lets senders retint, reposition, enable/disable, or fully reconfigure assets at runtime. Each object must contain an `id`; if the ID does not exist yet and there is room (max 8 assets), the asset slot is created on the fly. Valid keys include: `enabled` (bool), `type` (`"bar"` or `"text"`), `value_index`, `text_index`, `text_indices` (array), `text_inline`, `label`, `orientation`, `x`, `y`, `width`, `height`, `min`, `max`, `bar_color` (bars only), `text_color`, `background`, `background_opacity`, `segments` (bars only), and `rounded_outline` (bars only). Only valid values that differ from the current config are applied; disabled assets are removed from the screen immediately.
 
 Example:
@@ -23,7 +24,7 @@ Example:
 }
 ```
 
-Each on-screen asset binds to one `values[i]` entry via `value_index`. For bar assets, `text_index` maps the descriptor to `texts[i]`; otherwise the bar uses the optional static `label`. When `udp_stats` is enabled, the stats overlay also lists all 8 numeric values and text entries vertically.
+Each on-screen asset binds to one numeric channel via `value_index`. Indices `0-7` read the UDP `values[i]`; indices `8-15` read the system value bank (temperature, CPU load, encoder FPS, encoder bitrate, and four reserved slots). For bar assets, `text_index` maps the descriptor to the combined text bank: `0-7` pull from UDP `texts[i]`, while `8-15` use the prefilled system descriptors. Otherwise the bar uses the optional static `label`. The stats overlay always lists the system numeric/text banks and, when `udp_stats` is enabled, also lists the UDP numeric/text banks vertically.
 
 ## Local config file (`config.json`)
 - JSON file read at startup; missing keys fall back to defaults. Send `SIGHUP` to the running process to reload the file without restarting (asset layout, stats toggle, and `idle_ms` update in-place; resolution still follows the startup config).
@@ -31,15 +32,15 @@ Each on-screen asset binds to one `values[i]` entry via `value_index`. For bar a
 - `width`, `height` (int): OSD canvas resolution. Default 1280x720.
 - `osd_x`, `osd_y` (int, optional): On-screen origin for the RGN. Default `0,0`.
   - `show_stats` (bool): show/hide the top-left stats overlay. Default `true`.
-  - `udp_stats` (bool): when `true`, the stats overlay also lists the latest 8 numeric values and text channels. Default `false`.
+  - `udp_stats` (bool): when `true`, the stats overlay also lists the latest UDP and system numeric/text banks. Default `false`.
   - `idle_ms` (int): maximum idle wait between UDP polls and screen refreshes in milliseconds (clamped 10–1000); default 100 ms. Legacy configs may still specify `refresh_ms`, which is treated the same way for compatibility.
   - `assets` (array, max 8): list of objects defining what to render and which UDP value to consume.
   - Asset fields:
     - `type`: `"bar"` or `"text"`.
     - `enabled` (bool, optional): when `false`, the asset stays hidden until enabled by config reload or UDP `asset_updates`. Defaults to `true`.
     - `id` (int, optional): unique asset identifier for UDP `asset_updates`. Defaults to the array index when omitted.
-    - `value_index` (int): which UDP `values[i]` drives this asset (0–7).
-    - `text_index` (int, optional, bars/text): which UDP `texts[i]` drives the descriptor (0–7). `-1` or missing skips UDP text.
+    - `value_index` (int): which numeric channel drives this asset (`0–7` for UDP `values[i]`, `8–15` for system values).
+    - `text_index` (int, optional, bars/text): which text channel drives the descriptor (`0–7` from UDP `texts[i]`, `8–15` from the system text bank). `-1` or missing skips live text.
     - `text_indices` (array<int>, text only): render multiple UDP text entries; empty strings are skipped.
     - `text_inline` (bool, text only): when `true`, joins `text_indices` on a single line with spaces; otherwise stacks them on new lines. Default `false`.
     - `label` (string, optional, bars/text): static text descriptor. Used when no UDP text is present.

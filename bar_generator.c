@@ -14,7 +14,7 @@
 // value[5]: 0..360 wrap (e.g. degrees)
 // value[6]: steady 0.5
 // value[7]: steady 0.0
-// texts[i]: 16-char sample descriptors for each channel
+// texts[i]: sample descriptors for each channel (up to 96 chars)
 // Usage: ./bar_generator [ip] [port] [ms]
 // Defaults: 127.0.0.1 7777 100
 int main(int argc, char **argv)
@@ -63,7 +63,7 @@ int main(int argc, char **argv)
     uint32_t last_bar_color = 0;
 
     while (1) {
-        char buf[512];
+        char buf[2048];
         uint32_t bar_color = 0xFF0000;
         if (v[0] >= 0.75) {
             bar_color = 0x00FF00; // green
