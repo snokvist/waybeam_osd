@@ -3,7 +3,7 @@
 ## Runtime UDP payload (port 7777)
 - Each datagram must be UTF-8 JSON with a top-level `values` array.
 - `values` holds up to 8 numeric entries (float/double) for UDP channels `0-7`. Missing entries default to `0` on the device.
-- A second bank of 8 system values is always available on `value_index` slots `8-15` without going over UDP. System slots 8-11 are populated automatically with SoC temperature (`ipctool --temp`), CPU load (0–100), encoder FPS, and current encoder bitrate (queried best-effort via a dynamically loaded `libmi_venc.so` to avoid disturbing the encoder on exit); slots 12-15 stay reserved for future system metrics.
+- A second bank of 8 system values is always available on `value_index` slots `8-15` without going over UDP. System slots 8-11 are populated automatically with SoC temperature (`ipctool --temp`), CPU load (0–100), encoder FPS, and current encoder bitrate (queried best-effort from a preloaded `libmi_venc.so`; set `WAYBEAM_VENC_FORCE_LOAD=1` to explicitly load the library if it is not already resident, at the operator’s risk); slots 12-15 stay reserved for future system metrics.
 - Extra fields are ignored so senders can add metadata if needed.
 - Keep payloads under 1280 bytes (anything larger is dropped).
 - Incoming UDP packets are applied in arrival order; any backlog in the socket is coalesced each cycle so that only the latest values per channel or asset take effect. On-screen updates are throttled to no faster than every 32 ms (about 30 fps) even if more packets arrive sooner.

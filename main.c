@@ -58,6 +58,7 @@ typedef MI_S32 (*mi_venc_query_fn)(MI_VENC_CHN, MI_VENC_ChnStat_t *);
 static mi_venc_query_fn pMI_VENC_Query = NULL;
 static void *venc_dl_handle = NULL;
 static int venc_dl_broken = 0;
+static int venc_force_load = -1; /* lazy-env parsed */
 
 typedef struct {
     int width;
@@ -1375,13 +1376,37 @@ static bool ensure_venc_query_loaded(void)
     if (pMI_VENC_Query) return true;
     if (venc_dl_broken) return false;
 
+    if (venc_force_load < 0) {
+        const char *env = getenv("WAYBEAM_VENC_FORCE_LOAD");
+        venc_force_load = (env && env[0] == '1') ? 1 : 0;
+    }
+
     int flags = RTLD_LAZY | RTLD_LOCAL;
 #ifdef RTLD_NODELETE
     flags |= RTLD_NODELETE;
 #endif
-    venc_dl_handle = dlopen("libmi_venc.so", flags);
+
+#ifdef RTLD_NOLOAD
+    venc_dl_handle = dlopen("libmi_venc.so", flags | RTLD_NOLOAD);
+#else
+    venc_dl_handle = NULL;
+#endif
+
+    if (!venc_dl_handle && venc_force_load) {
+        venc_dl_handle = dlopen("libmi_venc.so", flags);
+        if (!venc_dl_handle) {
+            fprintf(stderr, "[enc] dlopen libmi_venc.so failed (force load): %s\n", dlerror());
+            venc_dl_broken = 1;
+            return false;
+        }
+    }
+
     if (!venc_dl_handle) {
-        fprintf(stderr, "[enc] dlopen libmi_venc.so failed: %s\n", dlerror());
+#ifdef RTLD_NOLOAD
+        fprintf(stderr, "[enc] libmi_venc.so not preloaded; skipping encoder stats (set WAYBEAM_VENC_FORCE_LOAD=1 to force)\n");
+#else
+        fprintf(stderr, "[enc] libmi_venc.so not available; skipping encoder stats\n");
+#endif
         venc_dl_broken = 1;
         return false;
     }
