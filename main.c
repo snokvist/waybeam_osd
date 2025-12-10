@@ -754,7 +754,7 @@ static void set_defaults(void)
     g_cfg.osd_y = 0;
     g_cfg.show_stats = 1;
     g_cfg.idle_ms = 100;
-    g_cfg.udp_stats = 0;
+    g_cfg.udp_stats = 1;
 
     memset(udp_values, 0, sizeof(udp_values));
     memset(udp_texts, 0, sizeof(udp_texts));
@@ -1368,10 +1368,21 @@ static bool query_encoder_stats(double *fps_out, double *bitrate_out)
     if (!fps_out || !bitrate_out) return false;
     MI_VENC_ChnStat_t stat;
     memset(&stat, 0, sizeof(stat));
-    if (MI_VENC_Query(0, &stat) != MI_VENC_OK) return false;
-    if (stat.u32FrmRateDen == 0) return false;
+    MI_S32 ret = MI_VENC_Query(0, &stat);
+    if (ret != MI_VENC_OK) {
+        fprintf(stderr, "[enc] MI_VENC_Query failed: %d\n", ret);
+        return false;
+    }
+    if (stat.u32FrmRateDen == 0) {
+        fprintf(stderr, "[enc] MI_VENC_Query returned zero denominator (num=%u, br=%u)\n", stat.u32FrmRateNum, stat.u32BitRate);
+        return false;
+    }
     *fps_out = (double)stat.u32FrmRateNum / (double)stat.u32FrmRateDen;
     *bitrate_out = (double)stat.u32BitRate;
+    if (*fps_out <= 0.0 || *bitrate_out <= 0.0) {
+        fprintf(stderr, "[enc] fps=%.2f bitrate=%.2f (num=%u den=%u br=%u)\n",
+                *fps_out, *bitrate_out, stat.u32FrmRateNum, stat.u32FrmRateDen, stat.u32BitRate);
+    }
     return true;
 }
 
@@ -1818,33 +1829,39 @@ static void stats_timer_cb(lv_timer_t *timer)
                        active_assets, asset_count, primary_w, primary_h,
                        fps_value, last_frame_ms, last_loop_ms, idle_ms_applied);
 
-    if (g_cfg.udp_stats && off < (int)sizeof(buf) - 32) {
-        off += lv_snprintf(buf + off, sizeof(buf) - off, "\nUDP values:");
-        for (int i = 0; i < UDP_VALUE_COUNT && off < (int)sizeof(buf) - 16; i++) {
-            int whole = (int)udp_values[i];
-            int frac = (int)((udp_values[i] - whole) * 100.0);
-            if (frac < 0) frac = -frac;
-            off += lv_snprintf(buf + off, sizeof(buf) - off, "\n v%d=%d.%02d", i, whole, frac);
-        }
-        off += lv_snprintf(buf + off, sizeof(buf) - off, "\nUDP texts:");
-        for (int i = 0; i < UDP_TEXT_COUNT && off < (int)sizeof(buf) - 20; i++) {
-            const char *t = udp_texts[i][0] ? udp_texts[i] : "-";
-            off += lv_snprintf(buf + off, sizeof(buf) - off, "\n t%d=%s", i, t);
-        }
-    }
-
     if (off < (int)sizeof(buf) - 32) {
-        off += lv_snprintf(buf + off, sizeof(buf) - off, "\nSystem values:");
-        for (int i = 0; i < SYSTEM_VALUE_COUNT && off < (int)sizeof(buf) - 16; i++) {
-            int whole = (int)system_values[i];
-            int frac = (int)((system_values[i] - whole) * 100.0);
-            if (frac < 0) frac = -frac;
-            off += lv_snprintf(buf + off, sizeof(buf) - off, "\n s%d=%d.%02d", i, whole, frac);
+        int rows = UDP_VALUE_COUNT > SYSTEM_VALUE_COUNT ? UDP_VALUE_COUNT : SYSTEM_VALUE_COUNT;
+        off += lv_snprintf(buf + off, sizeof(buf) - off, "\nValues (v=UDP s=SYS):");
+        for (int i = 0; i < rows && off < (int)sizeof(buf) - 24; i++) {
+            char udp_val[24];
+            char sys_val[24];
+            if (g_cfg.udp_stats && i < UDP_VALUE_COUNT) {
+                int whole = (int)udp_values[i];
+                int frac = (int)((udp_values[i] - whole) * 100.0);
+                if (frac < 0) frac = -frac;
+                lv_snprintf(udp_val, sizeof(udp_val), "%d.%02d", whole, frac);
+            } else {
+                lv_snprintf(udp_val, sizeof(udp_val), "-");
+            }
+
+            if (i < SYSTEM_VALUE_COUNT) {
+                int whole = (int)system_values[i];
+                int frac = (int)((system_values[i] - whole) * 100.0);
+                if (frac < 0) frac = -frac;
+                lv_snprintf(sys_val, sizeof(sys_val), "%d.%02d", whole, frac);
+            } else {
+                lv_snprintf(sys_val, sizeof(sys_val), "-");
+            }
+
+            off += lv_snprintf(buf + off, sizeof(buf) - off, "\n %d v=%s | s=%s", i, udp_val, sys_val);
         }
-        off += lv_snprintf(buf + off, sizeof(buf) - off, "\nSystem texts:");
-        for (int i = 0; i < SYSTEM_TEXT_COUNT && off < (int)sizeof(buf) - 20; i++) {
-            const char *t = system_texts[i][0] ? system_texts[i] : "-";
-            off += lv_snprintf(buf + off, sizeof(buf) - off, "\n S%d=%s", i, t);
+
+        rows = UDP_TEXT_COUNT > SYSTEM_TEXT_COUNT ? UDP_TEXT_COUNT : SYSTEM_TEXT_COUNT;
+        off += lv_snprintf(buf + off, sizeof(buf) - off, "\nTexts (t=UDP s=SYS):");
+        for (int i = 0; i < rows && off < (int)sizeof(buf) - 20; i++) {
+            const char *udp_t = (g_cfg.udp_stats && i < UDP_TEXT_COUNT && udp_texts[i][0]) ? udp_texts[i] : "-";
+            const char *sys_t = (i < SYSTEM_TEXT_COUNT && system_texts[i][0]) ? system_texts[i] : "-";
+            off += lv_snprintf(buf + off, sizeof(buf) - off, "\n %d t=%s | s=%s", i, udp_t, sys_t);
         }
     }
 

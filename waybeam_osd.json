@@ -4,7 +4,7 @@
   "osd_x": 0,
   "osd_y": 0,
   "show_stats": true,
-  "udp_stats": false,
+  "udp_stats": true,
   "idle_ms": 100,
   "assets": [
     {

@@ -24,7 +24,7 @@ Example:
 }
 ```
 
-Each on-screen asset binds to one numeric channel via `value_index`. Indices `0-7` read the UDP `values[i]`; indices `8-15` read the system value bank (temperature, CPU load, encoder FPS, encoder bitrate, and four reserved slots). For bar assets, `text_index` maps the descriptor to the combined text bank: `0-7` pull from UDP `texts[i]`, while `8-15` use the prefilled system descriptors. Otherwise the bar uses the optional static `label`. The stats overlay always lists the system numeric/text banks and, when `udp_stats` is enabled, also lists the UDP numeric/text banks vertically.
+Each on-screen asset binds to one numeric channel via `value_index`. Indices `0-7` read the UDP `values[i]`; indices `8-15` read the system value bank (temperature, CPU load, encoder FPS, encoder bitrate, and four reserved slots). For bar assets, `text_index` maps the descriptor to the combined text bank: `0-7` pull from UDP `texts[i]`, while `8-15` use the prefilled system descriptors. Otherwise the bar uses the optional static `label`. The stats overlay always lists the system numeric/text banks and, when `udp_stats` is enabled, also lists the UDP numeric/text banks on the same lines to keep the widget compact.
 
 ## Local config file (`config.json`)
 - JSON file read at startup; missing keys fall back to defaults. Send `SIGHUP` to the running process to reload the file without restarting (asset layout, stats toggle, and `idle_ms` update in-place; resolution still follows the startup config).
@@ -32,7 +32,7 @@ Each on-screen asset binds to one numeric channel via `value_index`. Indices `0-
 - `width`, `height` (int): OSD canvas resolution. Default 1280x720.
 - `osd_x`, `osd_y` (int, optional): On-screen origin for the RGN. Default `0,0`.
   - `show_stats` (bool): show/hide the top-left stats overlay. Default `true`.
-  - `udp_stats` (bool): when `true`, the stats overlay also lists the latest UDP and system numeric/text banks. Default `false`.
+  - `udp_stats` (bool): when `true`, the stats overlay also lists the latest UDP and system numeric/text banks on the same lines. Default `true`.
   - `idle_ms` (int): maximum idle wait between UDP polls and screen refreshes in milliseconds (clamped 10–1000); default 100 ms. Legacy configs may still specify `refresh_ms`, which is treated the same way for compatibility.
   - `assets` (array, max 8): list of objects defining what to render and which UDP value to consume.
   - Asset fields:
@@ -72,8 +72,8 @@ Example:
 {
   "width": 1280,
   "height": 720,
-  "show_stats": true,
-  "udp_stats": false,
+    "show_stats": true,
+    "udp_stats": true,
   "assets": [
     { "type": "bar", "value_index": 0, "text_index": 0, "label": "BAR CH0", "x": 40, "y": 200, "width": 320, "height": 32, "min": 0.0, "max": 1.0, "orientation": "right", "segments": 8, "bar_color": 2254540, "text_color": 16777215, "background": 4, "background_opacity": 70 },
     { "type": "bar", "value_index": 1, "text_index": 1, "label": "BAR CH1", "x": 420, "y": 140, "width": 220, "height": 24, "min": 0.0, "max": 1.0, "orientation": "left", "bar_color": 2254540, "text_color": 0, "background": 2, "background_opacity": 60, "rounded_outline": true },
