@@ -1388,16 +1388,20 @@ static bool ensure_venc_query_loaded(void)
     pMI_VENC_Query = (mi_venc_query_fn)dlsym(RTLD_DEFAULT, "MI_VENC_Query");
     if (!pMI_VENC_Query && venc_force_load) {
         int flags = RTLD_LAZY | RTLD_LOCAL;
-#ifdef RTLD_NOLOAD
-        flags |= RTLD_NOLOAD;
-#endif
 #ifdef RTLD_NODELETE
         flags |= RTLD_NODELETE;
 #endif
-        venc_dl_handle = dlopen("libmi_venc.so", flags);
+#ifdef RTLD_NOLOAD
+        venc_dl_handle = dlopen("libmi_venc.so", flags | RTLD_NOLOAD);
         if (!venc_dl_handle) {
-            fprintf(stderr,
-                    "[enc] libmi_venc.so not already loaded; encoder stats disabled (preload or set WAYBEAM_VENC_FORCE_LOAD=1 with RTLD_NOLOAD support)\n");
+            fprintf(stderr, "[enc] libmi_venc.so not preloaded; attempting full load (may hang encoder on exit)\n");
+        }
+#endif
+        if (!venc_dl_handle) {
+            venc_dl_handle = dlopen("libmi_venc.so", flags);
+        }
+        if (!venc_dl_handle) {
+            fprintf(stderr, "[enc] dlopen libmi_venc.so failed: %s\n", dlerror());
             venc_dl_broken = 1;
             return false;
         }
