@@ -1840,6 +1840,8 @@ static void reload_config_runtime(void)
 
 static void cleanup_resources(void)
 {
+    int skip_destructors = (venc_loaded_from_dlopen && !venc_loaded_from_default);
+
     if (pMI_VENC_Query || venc_dl_handle) {
         MI_VENC_ChnStat_t stat;
         memset(&stat, 0, sizeof(stat));
@@ -1887,6 +1889,12 @@ static void cleanup_resources(void)
 
     free(buf1);
     free(buf2);
+
+    fflush(NULL);
+    if (skip_destructors) {
+        fprintf(stderr, "[enc] exiting with _exit() to avoid VENC destructors after dlopen\n");
+        _exit(0);
+    }
 }
 
 static void stats_timer_cb(lv_timer_t *timer)
