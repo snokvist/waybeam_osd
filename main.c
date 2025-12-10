@@ -1386,22 +1386,18 @@ static bool ensure_venc_query_loaded(void)
     }
 
     pMI_VENC_Query = (mi_venc_query_fn)dlsym(RTLD_DEFAULT, "MI_VENC_Query");
-    if (!pMI_VENC_Query && !venc_force_load) {
-        fprintf(stderr, "[enc] libmi_venc.so not preloaded; skipping encoder stats (set WAYBEAM_VENC_FORCE_LOAD=1 to force)\n");
-        venc_dl_broken = 1;
-        return false;
-    }
-
     if (!pMI_VENC_Query && venc_force_load) {
-        int flags = RTLD_LAZY | RTLD_LOCAL | RTLD_NODELETE;
+        int flags = RTLD_LAZY | RTLD_LOCAL;
 #ifdef RTLD_NOLOAD
-        venc_dl_handle = dlopen("libmi_venc.so", flags | RTLD_NOLOAD);
+        flags |= RTLD_NOLOAD;
 #endif
+#ifdef RTLD_NODELETE
+        flags |= RTLD_NODELETE;
+#endif
+        venc_dl_handle = dlopen("libmi_venc.so", flags);
         if (!venc_dl_handle) {
-            venc_dl_handle = dlopen("libmi_venc.so", flags);
-        }
-        if (!venc_dl_handle) {
-            fprintf(stderr, "[enc] dlopen libmi_venc.so failed (force load): %s\n", dlerror());
+            fprintf(stderr,
+                    "[enc] libmi_venc.so not already loaded; encoder stats disabled (preload or set WAYBEAM_VENC_FORCE_LOAD=1 with RTLD_NOLOAD support)\n");
             venc_dl_broken = 1;
             return false;
         }
@@ -1425,7 +1421,8 @@ static bool query_encoder_stats(double *fps_out, double *bitrate_out)
     memset(&stat, 0, sizeof(stat));
     MI_S32 ret = pMI_VENC_Query(0, &stat);
     if (ret != MI_SUCCESS) {
-        fprintf(stderr, "[enc] MI_VENC_Query failed: %d\n", ret);
+        fprintf(stderr, "[enc] MI_VENC_Query failed: %d (disabling encoder stats)\n", ret);
+        venc_dl_broken = 1;
         return false;
     }
     if (stat.u32FrmRateDen == 0) {
