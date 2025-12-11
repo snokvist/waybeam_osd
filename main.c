@@ -1406,7 +1406,7 @@ static bool query_encoder_stats(double *fps_out, double *bitrate_out)
 static bool refresh_system_values(void)
 {
     uint64_t now = monotonic_ms64();
-    if (last_system_refresh_ms != 0 && now - last_system_refresh_ms < 1000) return false;
+    if (last_system_refresh_ms != 0 && now - last_system_refresh_ms < 2000) return false;
     last_system_refresh_ms = now;
 
     bool changed = false;
@@ -1980,6 +1980,19 @@ int main(void)
 
         uint64_t now = monotonic_ms64();
         if (pending_channel_flush) {
+            if (last_channel_push_ms != 0) {
+                uint64_t elapsed = now - last_channel_push_ms;
+                if (elapsed < (uint64_t)max_ms) {
+                    uint64_t remaining = (uint64_t)max_ms - elapsed;
+                    if (remaining > (uint64_t)idle_cap_ms) remaining = (uint64_t)idle_cap_ms;
+                    struct timespec ts = {0};
+                    ts.tv_sec = (time_t)(remaining / 1000ULL);
+                    ts.tv_nsec = (long)((remaining % 1000ULL) * 1000000ULL);
+                    nanosleep(&ts, NULL);
+                    now = monotonic_ms64();
+                }
+            }
+
             if (last_channel_push_ms == 0 || now - last_channel_push_ms >= (uint64_t)max_ms) {
                 update_assets_from_channels();
                 pending_channel_flush = false;
