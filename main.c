@@ -20,7 +20,6 @@
 #include "mi_sys.h"
 #include "mi_rgn.h"
 #include "mi_vpe.h"
-#include "mi_venc.h"
 
 #define DEFAULT_SCREEN_WIDTH 1280   // fallback resolution if config is absent
 #define DEFAULT_SCREEN_HEIGHT 720
@@ -1366,24 +1365,42 @@ static double read_cpu_load_pct(void)
 static bool query_encoder_stats(double *fps_out, double *bitrate_out)
 {
     if (!fps_out || !bitrate_out) return false;
-    MI_VENC_ChnStat_t stat;
-    memset(&stat, 0, sizeof(stat));
-    MI_S32 ret = MI_VENC_Query(0, &stat);
-    if (ret != MI_SUCCESS) {
-        fprintf(stderr, "[enc] MI_VENC_Query failed: %d\n", ret);
+
+    const char *path = "/proc/mi_modules/mi_venc/mi_venc0";
+    FILE *f = fopen(path, "r");
+    if (!f) {
+        fprintf(stderr, "[enc] failed to open %s\n", path);
         return false;
     }
-    if (stat.u32FrmRateDen == 0) {
-        fprintf(stderr, "[enc] MI_VENC_Query returned zero denominator (num=%u, br=%u)\n", stat.u32FrmRateNum, stat.u32BitRate);
-        return false;
+
+    char line[256];
+    int in_table = 0;
+    int found = 0;
+    while (fgets(line, sizeof(line), f)) {
+        if (!in_table) {
+            if (strstr(line, "ChnId") && strstr(line, "Fps_1s") && strstr(line, "kbps")) {
+                in_table = 1;
+            }
+            continue;
+        }
+
+        int chn = -1;
+        double fps = 0.0;
+        double kbps = 0.0;
+        if (sscanf(line, " %d %*d %*d %*d %*d %*d %*d %*d %lf %lf %*lf %*lf", &chn, &fps, &kbps) == 3) {
+            if (chn == 0) {
+                *fps_out = fps;
+                *bitrate_out = kbps;
+                found = 1;
+                break;
+            }
+        } else if (in_table && strchr(line, '-')) {
+            break;
+        }
     }
-    *fps_out = (double)stat.u32FrmRateNum / (double)stat.u32FrmRateDen;
-    *bitrate_out = (double)stat.u32BitRate;
-    if (*fps_out <= 0.0 || *bitrate_out <= 0.0) {
-        fprintf(stderr, "[enc] fps=%.2f bitrate=%.2f (num=%u den=%u br=%u)\n",
-                *fps_out, *bitrate_out, stat.u32FrmRateNum, stat.u32FrmRateDen, stat.u32BitRate);
-    }
-    return true;
+
+    fclose(f);
+    return found == 1;
 }
 
 static bool refresh_system_values(void)
