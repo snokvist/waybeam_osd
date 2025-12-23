@@ -7,7 +7,7 @@
 - Keep payloads under 1280 bytes (anything larger is dropped).
 - The UDP socket is drained whenever it becomes readable so only the latest datagram drives the screen; older queued packets are discarded. Incoming packets trigger an immediate refresh when received, while `idle_ms` only caps the sleep when no data arrives.
 - Optional `texts` array (up to 8 strings, max 95 chars each) can be sent alongside `values`. These map to `text_index` on bar assets and override a static `label` if present. Missing or empty entries fall back to the asset’s `label`.
-- Optional `asset_updates` array lets senders retint, reposition, enable/disable, or fully reconfigure assets at runtime. Each object must contain an `id`; if the ID does not exist yet and there is room (max 8 assets), the asset slot is created on the fly. Valid keys include: `enabled` (bool, alias `enable`), `type` (`"bar"` or `"text"`), `value_index`, `text_index`, `text_indices` (array), `text_inline`, `label`, `orientation`, `x`, `y`, `width`, `height`, `min`, `max`, `bar_color` (bars only), `text_color`, `background`, `background_opacity`, `segments` (bars only), and `rounded_outline` (bars only). Only valid values that differ from the current config are applied; disabled assets are removed from the screen immediately.
+- Optional `asset_updates` array lets senders retint, reposition, enable/disable, or fully reconfigure assets at runtime. Each object must contain an `id`; if the ID does not exist yet and there is room (max 8 assets), the asset slot is created on the fly. Valid keys include: `enabled` (bool), `type` (`"bar"` or `"text"`), `value_index`, `text_index`, `text_indices` (array), `text_inline`, `label`, `orientation`, `x`, `y`, `width`, `height`, `min`, `max`, `bar_color` (bars only), `text_color`, `background`, `background_opacity`, `segments` (bars only), and `rounded_outline` (bars only). Only valid values that differ from the current config are applied; disabled assets are removed from the screen immediately.
 
 Example:
 ```json
@@ -23,6 +23,37 @@ Example:
 }
 ```
 
+### Partial Update Examples
+
+The `values` and `texts` arrays are positional. To update an index, all preceding indices must be provided. It is not possible to "skip" indices (e.g., updating index 2 without writing to 0 and 1).
+
+**Update only the first value:**
+```json
+{"values": [0.75]}
+```
+*Effect:* `values[0]` is set to 0.75. `values[1..7]` are unchanged.
+
+**Update the first three values:**
+```json
+{"values": [0.1, 0.2, 0.3]}
+```
+*Effect:* `values[0..2]` are updated. `values[3..7]` are unchanged.
+
+**Update index 2 (requires rewriting 0 and 1):**
+```json
+{"values": [0.1, 0.2, 0.9]}
+```
+*Effect:* `values[0]` is set to 0.1, `values[1]` to 0.2, `values[2]` to 0.9. It is not possible to update `values[2]` without also providing values for 0 and 1. Note that sending `null` or empty strings in the array will be parsed as `0` or empty, overwriting the existing state.
+
+### Multi-Sender Interference
+
+Because the UDP socket is **drained completely** on every poll cycle (retaining only the last received packet), and because `values`/`texts` arrays are positional:
+
+1.  **Race Conditions:** If Sender A and Sender B both send packets within the same ~100ms poll window, only the one that arrived *last* will be processed. The earlier packet is discarded.
+2.  **Overwrites:** If Sender A sends `[1.0]` (index 0) and Sender B sends `[2.0, 3.0]` (indices 0 and 1), they fundamentally interfere. Sender B cannot update index 1 without overwriting index 0.
+
+**Conclusion:** Multiple independent senders **cannot** reliably share the display if they are trying to update different `values` or `texts` indices. They will overwrite each other's data or cause updates to be dropped. `asset_updates` are safer in isolation (as they are ID-based) but still suffer from the "last packet wins" drop behavior.
+
 Each on-screen asset binds to one `values[i]` entry via `value_index`. For bar assets, `text_index` maps the descriptor to `texts[i]`; otherwise the bar uses the optional static `label`. When `udp_stats` is enabled, the stats overlay also lists all 8 numeric values and text entries vertically.
 
 ## Local config file (`config.json`)
@@ -36,7 +67,7 @@ Each on-screen asset binds to one `values[i]` entry via `value_index`. For bar a
   - `assets` (array, max 8): list of objects defining what to render and which UDP value to consume.
   - Asset fields:
     - `type`: `"bar"` or `"text"`.
-    - `enabled` (bool, optional): when `false`, the asset stays hidden until enabled by config reload or UDP `asset_updates`. Defaults to `true`. (`enable` is also accepted as an alias).
+    - `enabled` (bool, optional): when `false`, the asset stays hidden until enabled by config reload or UDP `asset_updates`. Defaults to `true`.
     - `id` (int, optional): unique asset identifier for UDP `asset_updates`. Defaults to the array index when omitted.
     - `value_index` (int): which UDP `values[i]` drives this asset (0–7).
     - `text_index` (int, optional, bars/text): which UDP `texts[i]` drives the descriptor (0–7). `-1` or missing skips UDP text.

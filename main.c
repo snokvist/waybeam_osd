@@ -735,7 +735,7 @@ static void parse_assets_array(const char *json)
 
         int v = 0;
         float fv = 0.0f;
-        if (json_get_bool_range(obj_start, obj_end, "enabled", &v) == 0 || json_get_bool_range(obj_start, obj_end, "enable", &v) == 0) a.cfg.enabled = v;
+        if (json_get_bool_range(obj_start, obj_end, "enabled", &v) == 0) a.cfg.enabled = v;
         if (json_get_int_range(obj_start, obj_end, "value_index", &v) == 0) a.cfg.value_index = clamp_int(v, 0, 7);
         if (json_get_int_range(obj_start, obj_end, "id", &v) == 0) a.cfg.id = clamp_int(v, 0, 63);
         if (json_get_int_range(obj_start, obj_end, "x", &v) == 0) a.cfg.x = v;
@@ -925,7 +925,7 @@ static void parse_udp_asset_updates(const char *buf)
         int text_change = 0;
 
         int enabled_flag = asset->cfg.enabled;
-        if (json_get_bool_range(obj_start, obj_end, "enabled", &v) == 0 || json_get_bool_range(obj_start, obj_end, "enable", &v) == 0) {
+        if (json_get_bool_range(obj_start, obj_end, "enabled", &v) == 0) {
             enabled_flag = v ? 1 : 0;
         }
 
