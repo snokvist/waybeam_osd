@@ -571,15 +571,19 @@ static int serialize_payload(const PayloadBuilder *pb, char *out, size_t out_cap
         if (!appendf(out, out_cap, &len, "%s\"values\":[", first_field ? "" : ",")) return -1;
         first_field = 0;
 
-        int first = 1;
+        // Find max present index
+        int max_idx = -1;
         for (int i = 0; i < 8; i++) {
-            if (!pb->values_present[i]) continue;
-            if (!appendf(out, out_cap, &len, "%s%.3f", first ? "" : ",", pb->values[i])) return -1;
-            first = 0;
+            if (pb->values_present[i]) max_idx = i;
         }
-        if (first) {
-            // Shouldn't happen because any_values() true, but be safe.
-            if (!appendf(out, out_cap, &len, "0")) return -1;
+
+        for (int i = 0; i <= max_idx; i++) {
+            const char *sep = (i == 0) ? "" : ",";
+            if (pb->values_present[i]) {
+                if (!appendf(out, out_cap, &len, "%s%.3f", sep, pb->values[i])) return -1;
+            } else {
+                if (!appendf(out, out_cap, &len, "%snull", sep)) return -1;
+            }
         }
         if (!appendf(out, out_cap, &len, "]")) return -1;
     }
@@ -589,16 +593,21 @@ static int serialize_payload(const PayloadBuilder *pb, char *out, size_t out_cap
         if (!appendf(out, out_cap, &len, "%s\"texts\":[", first_field ? "" : ",")) return -1;
         first_field = 0;
 
-        int first = 1;
+        // Find max present index
+        int max_idx = -1;
         for (int i = 0; i < 8; i++) {
-            if (!pb->texts_present[i]) continue;
-            char esc[128];
-            json_escape(pb->texts[i], esc, sizeof(esc));
-            if (!appendf(out, out_cap, &len, "%s\"%s\"", first ? "" : ",", esc)) return -1;
-            first = 0;
+            if (pb->texts_present[i]) max_idx = i;
         }
-        if (first) {
-            if (!appendf(out, out_cap, &len, "\"\"")) return -1;
+
+        for (int i = 0; i <= max_idx; i++) {
+            const char *sep = (i == 0) ? "" : ",";
+            if (pb->texts_present[i]) {
+                char esc[128];
+                json_escape(pb->texts[i], esc, sizeof(esc));
+                if (!appendf(out, out_cap, &len, "%s\"%s\"", sep, esc)) return -1;
+            } else {
+                if (!appendf(out, out_cap, &len, "%snull", sep)) return -1;
+            }
         }
         if (!appendf(out, out_cap, &len, "]")) return -1;
     }
