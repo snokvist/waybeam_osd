@@ -26,7 +26,9 @@
 #define BUF_ROWS 60  // partial buffer height
 #define CONFIG_PATH "/etc/waybeam_osd.json"
 #define UDP_PORT 7777
-#define UDP_MAX_PACKET 512
+#define UDP_MAX_PACKET 1280
+#define MAX_ASSETS 8
+#define UDP_TEXT_LEN 96
 
 // LVGL buffers - allocated at runtime for ARGB8888 (32-bit per pixel)
 static lv_color_t *buf1 = NULL;
@@ -83,7 +85,7 @@ typedef struct {
     lv_obj_t *obj;
     lv_obj_t *label_obj;
     int last_pct;
-    char last_label_text[128];
+    char last_label_text[1024];
 } asset_t;
 
 typedef struct {
@@ -110,12 +112,10 @@ static int osd_width = DEFAULT_SCREEN_WIDTH;
 static int osd_height = DEFAULT_SCREEN_HEIGHT;
 static int osd_offset_x = 0;
 static int osd_offset_y = 0;
-static asset_t assets[8];
+static asset_t assets[MAX_ASSETS];
 static int asset_count = 0;
 static int rgn_pos_x = 0;
 static int rgn_pos_y = 0;
-
-#define MAX_ASSETS (int)(sizeof(assets) / sizeof(assets[0]))
 
 // Sigmastar RGN
 static MI_RGN_PaletteTable_t g_stPaletteTable = {};
@@ -139,8 +139,8 @@ static volatile sig_atomic_t stop_requested = 0;
 static volatile sig_atomic_t reload_requested = 0;
 static lv_timer_t *stats_timer = NULL;
 static int udp_sock = -1;
-static double udp_values[8] = {0};
-static char udp_texts[8][17] = {{0}};
+static double udp_values[MAX_ASSETS] = {0};
+static char udp_texts[MAX_ASSETS][UDP_TEXT_LEN] = {{0}};
 static int idle_cap_ms = 100;
 // -------------------------
 // Utility helpers
@@ -407,7 +407,7 @@ static void init_asset_defaults(asset_t *a, int id)
     a->cfg.type = ASSET_BAR;
     a->cfg.id = id;
     a->cfg.enabled = 1;
-    a->cfg.value_index = clamp_int(id, 0, 7);
+    a->cfg.value_index = clamp_int(id, 0, MAX_ASSETS - 1);
     a->cfg.x = 40;
     a->cfg.y = 60 + id * 60;
     a->cfg.width = 320;
@@ -707,7 +707,7 @@ static void parse_assets_array(const char *json)
     p = arr + 1;
     asset_count = 0;
 
-    while (*p && asset_count < 8) {
+    while (*p && asset_count < MAX_ASSETS) {
         while (*p && *p != '{' && *p != ']') p++;
         if (*p == ']') break;
         const char *obj_start = p;
@@ -841,7 +841,7 @@ static void parse_udp_values(const char *buf)
     p = strchr(p, '[');
     if (!p) return;
     p++;
-    for (int i = 0; i < 8; i++) {
+    for (int i = 0; i < MAX_ASSETS; i++) {
         while (*p && isspace((unsigned char)*p)) p++;
         if (!*p) break;
         char *endptr = NULL;
@@ -862,7 +862,7 @@ static void parse_udp_texts(const char *buf)
     p = strchr(p, '[');
     if (!p) return;
     p++;
-    for (int i = 0; i < 8; i++) {
+    for (int i = 0; i < MAX_ASSETS; i++) {
         while (*p && isspace((unsigned char)*p)) p++;
         if (!*p) break;
         if (*p != '\"') break;
@@ -870,7 +870,7 @@ static void parse_udp_texts(const char *buf)
         const char *start = p;
         while (*p && *p != '\"') p++;
         size_t len = (size_t)(p - start);
-        if (len > 16) len = 16;
+        if (len > UDP_TEXT_LEN - 1) len = UDP_TEXT_LEN - 1;
         memcpy(udp_texts[i], start, len);
         udp_texts[i][len] = '\0';
         if (*p != '\"') break;
@@ -944,24 +944,24 @@ static void parse_udp_asset_updates(const char *buf)
         }
 
         if (json_get_int_range(obj_start, obj_end, "value_index", &v) == 0) {
-            int idx = clamp_int(v, 0, 7);
+            int idx = clamp_int(v, 0, MAX_ASSETS - 1);
             if (idx != asset->cfg.value_index) {
                 asset->cfg.value_index = idx;
             }
         }
 
         if (json_get_int_range(obj_start, obj_end, "text_index", &v) == 0) {
-            int idx = clamp_int(v, -1, 7);
+            int idx = clamp_int(v, -1, MAX_ASSETS - 1);
             if (idx != asset->cfg.text_index) {
                 asset->cfg.text_index = idx;
                 text_change = 1;
             }
         }
 
-        int indices_tmp[8] = {0};
+        int indices_tmp[MAX_ASSETS] = {0};
         int idx_count = 0;
         if (find_key_range(obj_start, obj_end, "text_indices")) {
-            json_get_int_array_range(obj_start, obj_end, "text_indices", indices_tmp, 8, &idx_count);
+            json_get_int_array_range(obj_start, obj_end, "text_indices", indices_tmp, MAX_ASSETS, &idx_count);
             if (idx_count != asset->cfg.text_indices_count || memcmp(indices_tmp, asset->cfg.text_indices, sizeof(int) * (size_t)idx_count) != 0) {
                 memcpy(asset->cfg.text_indices, indices_tmp, sizeof(int) * (size_t)idx_count);
                 asset->cfg.text_indices_count = idx_count;
@@ -1134,7 +1134,7 @@ static void parse_udp_asset_updates(const char *buf)
 
 static const char *get_asset_text(const asset_t *asset)
 {
-    if (asset->cfg.text_index >= 0 && asset->cfg.text_index < 8) {
+    if (asset->cfg.text_index >= 0 && asset->cfg.text_index < MAX_ASSETS) {
         const char *t = udp_texts[asset->cfg.text_index];
         if (t[0] != '\0') return t;
         if (asset->cfg.label[0] != '\0') return asset->cfg.label;
@@ -1154,7 +1154,7 @@ static void compose_asset_text(const asset_t *asset, char *buf, size_t buf_sz)
         size_t written = 0;
         if (asset->cfg.text_indices_count > 0) {
             for (int i = 0; i < asset->cfg.text_indices_count; i++) {
-                int idx = clamp_int(asset->cfg.text_indices[i], 0, 7);
+                int idx = clamp_int(asset->cfg.text_indices[i], 0, MAX_ASSETS - 1);
                 const char *t = udp_texts[idx];
                 if (t[0] == '\0') continue;
                 if (written > 0 && written < buf_sz - 1) {
@@ -1168,7 +1168,7 @@ static void compose_asset_text(const asset_t *asset, char *buf, size_t buf_sz)
             }
         }
 
-        if (written == 0 && asset->cfg.text_index >= 0 && asset->cfg.text_index < 8) {
+        if (written == 0 && asset->cfg.text_index >= 0 && asset->cfg.text_index < MAX_ASSETS) {
             const char *t = udp_texts[asset->cfg.text_index];
             size_t len = strnlen(t, sizeof(udp_texts[0]));
             size_t to_copy = len < buf_sz - 1 ? len : buf_sz - 1;
@@ -1213,18 +1213,16 @@ static bool poll_udp(void)
 // -------------------------
 // LVGL tick function
 // -------------------------
-uint32_t my_get_milliseconds(void)
-{
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (uint32_t)(((uint64_t)ts.tv_sec * 1000ULL) + (uint64_t)(ts.tv_nsec / 1000000ULL));
-}
-
 static uint64_t monotonic_ms64(void)
 {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return ((uint64_t)ts.tv_sec * 1000ULL) + (uint64_t)(ts.tv_nsec / 1000000ULL);
+}
+
+uint32_t my_get_milliseconds(void)
+{
+    return (uint32_t)monotonic_ms64();
 }
 
 static const MI_RGN_CanvasInfo_t *get_cached_canvas(void)
@@ -1338,6 +1336,10 @@ void init_lvgl(void)
     size_t buf_size = (size_t)osd_width * BUF_ROWS * sizeof(lv_color_t);
     buf1 = (lv_color_t *)malloc(buf_size);
     buf2 = (lv_color_t *)malloc(buf_size);
+    if (!buf1 || !buf2) {
+        fprintf(stderr, "Failed to allocate LVGL buffers\n");
+        exit(1);
+    }
 
     lv_display_t * disp = lv_display_create(osd_width, osd_height);
     lv_display_set_color_format(disp, LV_COLOR_FORMAT_ARGB8888);
@@ -1403,7 +1405,7 @@ static lv_obj_t *create_text_asset(asset_t *asset)
     lv_obj_set_style_text_color(label, lv_color_hex(asset->cfg.text_color), 0);
     lv_obj_set_style_text_opa(label, LV_OPA_COVER, 0);
 
-    char text_buf[128];
+    char text_buf[1024];
     compose_asset_text(asset, text_buf, sizeof(text_buf));
     lv_label_set_text(label, text_buf);
     strncpy(asset->last_label_text, text_buf, sizeof(asset->last_label_text) - 1);
@@ -1447,7 +1449,7 @@ static void maybe_attach_asset_label(asset_t *asset)
     lv_obj_set_style_text_opa(asset->label_obj, LV_OPA_COVER, 0);
     lv_obj_set_style_bg_opa(asset->label_obj, LV_OPA_TRANSP, 0);
 
-    char text_buf[128];
+    char text_buf[1024];
     compose_asset_text(asset, text_buf, sizeof(text_buf));
     lv_label_set_text(asset->label_obj, text_buf);
     strncpy(asset->last_label_text, text_buf, sizeof(asset->last_label_text) - 1);
@@ -1486,7 +1488,7 @@ static void update_assets_from_udp(void)
         if (max <= min + 0.0001f) {
             max = min + 1.0f;
         }
-        float v = (float)udp_values[clamp_int(cfg->value_index, 0, 7)];
+        float v = (float)udp_values[clamp_int(cfg->value_index, 0, MAX_ASSETS - 1)];
         v = clamp_float(v, min, max);
         float pct_f = (v - min) / (max - min);
         int pct = clamp_int((int)(pct_f * 100.0f), 0, 100);
@@ -1500,7 +1502,7 @@ static void update_assets_from_udp(void)
                 break;
             case ASSET_TEXT: {
                 if (assets[i].obj) {
-                    char text_buf[128];
+                    char text_buf[1024];
                     compose_asset_text(&assets[i], text_buf, sizeof(text_buf));
                     if (strncmp(text_buf, assets[i].last_label_text, sizeof(assets[i].last_label_text) - 1) != 0) {
                         lv_label_set_text(assets[i].obj, text_buf);
@@ -1515,7 +1517,7 @@ static void update_assets_from_udp(void)
         }
 
         if (assets[i].label_obj) {
-            char text_buf[128];
+            char text_buf[1024];
             compose_asset_text(&assets[i], text_buf, sizeof(text_buf));
             if (strncmp(text_buf, assets[i].last_label_text, sizeof(assets[i].last_label_text) - 1) != 0) {
                 lv_label_set_text(assets[i].label_obj, text_buf);
@@ -1628,14 +1630,14 @@ static void stats_timer_cb(lv_timer_t *timer)
 
     if (g_cfg.udp_stats && off < (int)sizeof(buf) - 32) {
         off += lv_snprintf(buf + off, sizeof(buf) - off, "\nUDP values:");
-        for (int i = 0; i < 8 && off < (int)sizeof(buf) - 16; i++) {
+        for (int i = 0; i < MAX_ASSETS && off < (int)sizeof(buf) - 16; i++) {
             int whole = (int)udp_values[i];
             int frac = (int)((udp_values[i] - whole) * 100.0);
             if (frac < 0) frac = -frac;
             off += lv_snprintf(buf + off, sizeof(buf) - off, "\n v%d=%d.%02d", i, whole, frac);
         }
         off += lv_snprintf(buf + off, sizeof(buf) - off, "\nUDP texts:");
-        for (int i = 0; i < 8 && off < (int)sizeof(buf) - 20; i++) {
+        for (int i = 0; i < MAX_ASSETS && off < (int)sizeof(buf) - 20; i++) {
             const char *t = udp_texts[i][0] ? udp_texts[i] : "-";
             off += lv_snprintf(buf + off, sizeof(buf) - off, "\n t%d=%s", i, t);
         }
@@ -1660,8 +1662,13 @@ int main(void)
 {
     load_config();
     compute_osd_geometry();
-    signal(SIGINT, handle_sigint);
-    signal(SIGHUP, handle_sighup);
+
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = handle_sigint;
+    sigaction(SIGINT, &sa, NULL);
+    sa.sa_handler = handle_sighup;
+    sigaction(SIGHUP, &sa, NULL);
 
     udp_sock = setup_udp_socket();
 
