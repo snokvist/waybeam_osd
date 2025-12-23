@@ -5,7 +5,7 @@
 - `values` holds up to 8 numeric entries (float/double). Missing entries default to `0` on the device.
 - Extra fields are ignored so senders can add metadata if needed.
 - Keep payloads under 1280 bytes (anything larger is dropped).
-- The UDP socket is drained whenever it becomes readable so only the latest datagram drives the screen; older queued packets are discarded. Incoming packets trigger an immediate refresh when received, while `idle_ms` only caps the sleep when no data arrives.
+- The UDP socket is fully drained whenever it becomes readable, processing all queued packets in order. This ensures that even if multiple packets arrive in the same poll cycle, all side effects (like sparse index updates or asset property changes) are applied, with the last packet for any given index/property "winning". Incoming packets trigger an immediate refresh when received, while `idle_ms` only caps the sleep when no data arrives.
 - Optional `texts` array (up to 8 strings, max 95 chars each) can be sent alongside `values`. These map to `text_index` on bar assets and override a static `label` if present. Missing or empty entries fall back to the asset’s `label`.
 - Optional `asset_updates` array lets senders retint, reposition, enable/disable, or fully reconfigure assets at runtime. Each object must contain an `id`; if the ID does not exist yet and there is room (max 8 assets), the asset slot is created on the fly. Valid keys include: `enabled` (bool), `type` (`"bar"` or `"text"`), `value_index`, `text_index`, `text_indices` (array), `text_inline`, `label`, `orientation`, `x`, `y`, `width`, `height`, `min`, `max`, `bar_color` (bars only), `text_color`, `background`, `background_opacity`, `segments` (bars only), and `rounded_outline` (bars only). Only valid values that differ from the current config are applied; disabled assets are removed from the screen immediately.
 
@@ -22,6 +22,38 @@ Example:
   "timestamp_ms":1712345678
 }
 ```
+
+### Partial Update Examples
+
+The `values` and `texts` arrays are positional, but indices can be skipped by using `null` (for values) or `null` (for texts, without quotes).
+
+**Update only the first value:**
+```json
+{"values": [0.75]}
+```
+*Effect:* `values[0]` is set to 0.75. `values[1..7]` are unchanged.
+
+**Update the first three values:**
+```json
+{"values": [0.1, 0.2, 0.3]}
+```
+*Effect:* `values[0..2]` are updated. `values[3..7]` are unchanged.
+
+**Update index 2 (skipping 0 and 1):**
+```json
+{"values": [null, null, 0.9]}
+```
+*Effect:* `values[2]` is set to 0.9. `values[0]` and `values[1]` retain their previous values.
+
+### Multi-Sender Interference
+
+The UDP socket is **drained fully** on every poll cycle, meaning every packet in the buffer is processed in order. This mitigates packet loss but introduces specific behavior for multi-sender scenarios:
+
+1.  **Shared Indices:** If Sender A and Sender B both update the *same* index within the same poll cycle, the packet processed last (typically the one arriving last) wins.
+2.  **Positional Arrays:** Because arrays are positional, senders must be careful not to overwrite indices owned by others. Using `null` to skip indices (sparse updates) allows independent senders to manage distinct sets of indices without interference, provided they agree on the layout.
+3.  **Asset Updates:** `asset_updates` are ID-based and safe to mix, as long as senders target different asset IDs.
+
+**Conclusion:** Multiple independent senders **can** share the display if they use sparse arrays (`null` for unowned indices) or target mutually exclusive asset IDs.
 
 Each on-screen asset binds to one `values[i]` entry via `value_index`. For bar assets, `text_index` maps the descriptor to `texts[i]`; otherwise the bar uses the optional static `label`. When `udp_stats` is enabled, the stats overlay also lists all 8 numeric values and text entries vertically.
 

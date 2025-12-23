@@ -735,7 +735,7 @@ static void parse_assets_array(const char *json)
 
         int v = 0;
         float fv = 0.0f;
-        if (json_get_bool_range(obj_start, obj_end, "enabled", &v) == 0 || json_get_bool_range(obj_start, obj_end, "enable", &v) == 0) a.cfg.enabled = v;
+        if (json_get_bool_range(obj_start, obj_end, "enabled", &v) == 0) a.cfg.enabled = v;
         if (json_get_int_range(obj_start, obj_end, "value_index", &v) == 0) a.cfg.value_index = clamp_int(v, 0, 7);
         if (json_get_int_range(obj_start, obj_end, "id", &v) == 0) a.cfg.id = clamp_int(v, 0, 63);
         if (json_get_int_range(obj_start, obj_end, "x", &v) == 0) a.cfg.x = v;
@@ -844,11 +844,17 @@ static void parse_udp_values(const char *buf)
     for (int i = 0; i < MAX_ASSETS; i++) {
         while (*p && isspace((unsigned char)*p)) p++;
         if (!*p) break;
-        char *endptr = NULL;
-        double val = strtod(p, &endptr);
-        if (p == endptr) break;
-        udp_values[i] = val;
-        p = endptr;
+
+        if (strncmp(p, "null", 4) == 0) {
+            p += 4;
+        } else {
+            char *endptr = NULL;
+            double val = strtod(p, &endptr);
+            if (p == endptr) break;
+            udp_values[i] = val;
+            p = endptr;
+        }
+
         const char *comma = strchr(p, ',');
         if (!comma) break;
         p = comma + 1;
@@ -865,16 +871,23 @@ static void parse_udp_texts(const char *buf)
     for (int i = 0; i < MAX_ASSETS; i++) {
         while (*p && isspace((unsigned char)*p)) p++;
         if (!*p) break;
-        if (*p != '\"') break;
-        p++; // skip quote
-        const char *start = p;
-        while (*p && *p != '\"') p++;
-        size_t len = (size_t)(p - start);
-        if (len > UDP_TEXT_LEN - 1) len = UDP_TEXT_LEN - 1;
-        memcpy(udp_texts[i], start, len);
-        udp_texts[i][len] = '\0';
-        if (*p != '\"') break;
-        p++; // skip closing quote
+
+        if (strncmp(p, "null", 4) == 0) {
+            p += 4;
+        } else if (*p == '\"') {
+            p++; // skip quote
+            const char *start = p;
+            while (*p && *p != '\"') p++;
+            size_t len = (size_t)(p - start);
+            if (len > UDP_TEXT_LEN - 1) len = UDP_TEXT_LEN - 1;
+            memcpy(udp_texts[i], start, len);
+            udp_texts[i][len] = '\0';
+            if (*p != '\"') break;
+            p++; // skip closing quote
+        } else {
+            break;
+        }
+
         const char *comma = strchr(p, ',');
         if (!comma) break;
         p = comma + 1;
@@ -925,7 +938,7 @@ static void parse_udp_asset_updates(const char *buf)
         int text_change = 0;
 
         int enabled_flag = asset->cfg.enabled;
-        if (json_get_bool_range(obj_start, obj_end, "enabled", &v) == 0 || json_get_bool_range(obj_start, obj_end, "enable", &v) == 0) {
+        if (json_get_bool_range(obj_start, obj_end, "enabled", &v) == 0) {
             enabled_flag = v ? 1 : 0;
         }
 
@@ -1195,19 +1208,16 @@ static bool poll_udp(void)
     if (udp_sock < 0) return false;
     char buf[UDP_MAX_PACKET];
     ssize_t r = 0;
-    ssize_t last_r = -1;
-    // Drain the socket to keep only the freshest payload
+    bool processed_any = false;
+    // Drain the socket by processing all waiting payloads
     while ((r = recvfrom(udp_sock, buf, sizeof(buf) - 1, 0, NULL, NULL)) > 0) {
-        last_r = r;
-    }
-    if (last_r > 0) {
-        buf[last_r] = '\0';
+        buf[r] = '\0';
         parse_udp_values(buf);
         parse_udp_texts(buf);
         parse_udp_asset_updates(buf);
-        return true;
+        processed_any = true;
     }
-    return false;
+    return processed_any;
 }
 
 // -------------------------
