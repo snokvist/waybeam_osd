@@ -26,9 +26,9 @@
 #define BUF_ROWS 60  // partial buffer height
 #define CONFIG_PATH "/etc/waybeam_osd.json"
 #define UDP_PORT 7777
-#define UDP_MAX_PACKET 512
+#define UDP_MAX_PACKET 1280
 #define MAX_ASSETS 8
-#define UDP_TEXT_LEN 17
+#define UDP_TEXT_LEN 96
 
 // LVGL buffers - allocated at runtime for ARGB8888 (32-bit per pixel)
 static lv_color_t *buf1 = NULL;
@@ -85,7 +85,7 @@ typedef struct {
     lv_obj_t *obj;
     lv_obj_t *label_obj;
     int last_pct;
-    char last_label_text[128];
+    char last_label_text[1024];
 } asset_t;
 
 typedef struct {
@@ -1405,7 +1405,7 @@ static lv_obj_t *create_text_asset(asset_t *asset)
     lv_obj_set_style_text_color(label, lv_color_hex(asset->cfg.text_color), 0);
     lv_obj_set_style_text_opa(label, LV_OPA_COVER, 0);
 
-    char text_buf[128];
+    char text_buf[1024];
     compose_asset_text(asset, text_buf, sizeof(text_buf));
     lv_label_set_text(label, text_buf);
     strncpy(asset->last_label_text, text_buf, sizeof(asset->last_label_text) - 1);
@@ -1449,7 +1449,7 @@ static void maybe_attach_asset_label(asset_t *asset)
     lv_obj_set_style_text_opa(asset->label_obj, LV_OPA_COVER, 0);
     lv_obj_set_style_bg_opa(asset->label_obj, LV_OPA_TRANSP, 0);
 
-    char text_buf[128];
+    char text_buf[1024];
     compose_asset_text(asset, text_buf, sizeof(text_buf));
     lv_label_set_text(asset->label_obj, text_buf);
     strncpy(asset->last_label_text, text_buf, sizeof(asset->last_label_text) - 1);
@@ -1502,7 +1502,7 @@ static void update_assets_from_udp(void)
                 break;
             case ASSET_TEXT: {
                 if (assets[i].obj) {
-                    char text_buf[128];
+                    char text_buf[1024];
                     compose_asset_text(&assets[i], text_buf, sizeof(text_buf));
                     if (strncmp(text_buf, assets[i].last_label_text, sizeof(assets[i].last_label_text) - 1) != 0) {
                         lv_label_set_text(assets[i].obj, text_buf);
@@ -1517,7 +1517,7 @@ static void update_assets_from_udp(void)
         }
 
         if (assets[i].label_obj) {
-            char text_buf[128];
+            char text_buf[1024];
             compose_asset_text(&assets[i], text_buf, sizeof(text_buf));
             if (strncmp(text_buf, assets[i].last_label_text, sizeof(assets[i].last_label_text) - 1) != 0) {
                 lv_label_set_text(assets[i].label_obj, text_buf);
