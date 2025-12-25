@@ -3,7 +3,7 @@
   "height": 400,
   "osd_x": 0,
   "osd_y": 0,
-  "show_stats": true,
+  "show_stats": false,
   "udp_stats": true,
   "idle_ms": 100,
   "assets": [
@@ -22,13 +22,13 @@
       "max": 100,
       "orientation": "left",
       "background": 2,
-      "background_opacity": 80,
-      "bar_color": 2254540,
+      "background_opacity": 15,
+      "bar_color": 0,
       "text_color": 0
     },
     {
       "type": "bar",
-      "enabled": true,
+      "enabled": false,
       "id": 1,
       "value_index":8,
       "text_index":8,
@@ -40,13 +40,13 @@
       "min": 0,
       "max": 100,
       "background": 2,
-      "background_opacity": 80,
+      "background_opacity": 15,
       "bar_color": 2254540,
       "text_color": 0
     },
         {
       "type": "bar",
-      "enabled": true,
+      "enabled": false,
       "id": 2,
       "value_index":9,
       "text_index":9,
@@ -59,13 +59,13 @@
       "max": 100,
       "orientation": "left",
       "background": 2,
-      "background_opacity": 80,
+      "background_opacity": 15,
       "bar_color": 2254540,
       "text_color": 0
     },
     {
       "type": "bar",
-      "enabled": true,
+      "enabled": false,
       "id": 3,
       "value_index":10,
       "text_index":10,
@@ -77,7 +77,7 @@
       "min": 0.0,
       "max": 100.0,
       "background": 2,
-      "background_opacity": 80,
+      "background_opacity": 15,
       "bar_color": 2254540,
       "text_color": 0
     },
@@ -103,7 +103,7 @@
     },
         {
       "type": "bar",
-      "enabled": true,
+      "enabled": false,
       "id": 5,
       "value_index": 5,
       "text_index": -1,
