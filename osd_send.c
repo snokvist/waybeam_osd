@@ -1232,17 +1232,21 @@ static int cmd_watch(int argc, char **argv, const char *prog)
                     }
                 }
 
+                /* Force changed=1 if file present, to support fast updates (poor mtime resolution) */
+                if (ctx[i].fp) changed = 1;
+
                 if (changed && ctx[i].fp) {
-                    /* Refresh stats */
+                    /* Rewind and re-parse unconditionally */
+                    rewind(ctx[i].fp);
+                    ini_init(&ctx[i].store);
+                    ini_parse_stream(&ctx[i].store, ctx[i].fp);
+
+                    /* Refresh stats for inode check only */
                     if (fstat(fileno(ctx[i].fp), &st) == 0) {
                          ctx[i].mtime = st.st_mtime;
                          ctx[i].size = st.st_size;
                          ctx[i].inode = st.st_ino;
                     }
-                    /* Rewind and re-parse */
-                    rewind(ctx[i].fp);
-                    ini_init(&ctx[i].store);
-                    ini_parse_stream(&ctx[i].store, ctx[i].fp);
                 }
             } else {
                 /* File missing */
