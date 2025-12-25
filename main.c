@@ -1476,24 +1476,6 @@ static const MI_RGN_CanvasInfo_t *get_cached_canvas(void)
     return &g_cached_canvas_info;
 }
 
-static void clear_rgn_canvas(void)
-{
-    const MI_RGN_CanvasInfo_t *info = get_cached_canvas();
-    if (!info) return;
-    MI_U32 stride = info->u32Stride;
-    MI_U32 height = info->stSize.u32Height;
-    if (stride == 0 || height == 0) return;
-    MI_U32 size = stride * height;
-
-    if (info->phyAddr) {
-        MI_SYS_MemsetPa(info->phyAddr, 0, size);
-    } else if (info->virtAddr) {
-        memset((void *)info->virtAddr, 0, size);
-    }
-    MI_RGN_UpdateCanvas(hRgnHandle);
-    g_canvas_dirty = 0;
-}
-
 // -------------------------
 // LVGL flush callback
 // -------------------------
@@ -1574,7 +1556,10 @@ void mi_region_init(void)
     stRgnChnAttr.unPara.stOsdChnPort.stOsdAlphaAttr.eAlphaMode = E_MI_RGN_PIXEL_ALPHA;
 
     MI_RGN_AttachToChn(hRgnHandle, &stVpeChnPort, &stRgnChnAttr);
-    clear_rgn_canvas();
+
+    if (MI_RGN_GetCanvasInfo(hRgnHandle, &g_cached_canvas_info) == MI_RGN_OK) {
+        g_canvas_info_valid = 1;
+    }
 }
 
 // -------------------------
