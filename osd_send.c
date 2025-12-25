@@ -286,11 +286,9 @@ static void strip_quotes_inplace(char *s)
     }
 }
 
-static int ini_add_file(IniStore *ini, const char *path)
+static int ini_parse_stream(IniStore *ini, FILE *fp)
 {
-    if (!ini || !path || !*path) return 0;
-    FILE *fp = fopen(path, "r");
-    if (!fp) return 0;
+    if (!ini || !fp) return 0;
 
     ini->loaded = 1;
 
@@ -309,9 +307,18 @@ static int ini_add_file(IniStore *ini, const char *path)
         strip_quotes_inplace(v);
         (void)ini_set(ini, k, v);
     }
-
-    fclose(fp);
     return 1;
+}
+
+static int ini_add_file(IniStore *ini, const char *path)
+{
+    if (!ini || !path || !*path) return 0;
+    FILE *fp = fopen(path, "r");
+    if (!fp) return 0;
+
+    int ret = ini_parse_stream(ini, fp);
+    fclose(fp);
+    return ret;
 }
 
 /* For @key: if missing -> return 0. Non-@ -> copies. */
@@ -335,30 +342,6 @@ static int resolve_ini_ref(const IniStore *ini, const char *in, char *out, size_
     return 1;
 }
 
-static int resolve_ini_ref_multi(const IniStore *stores, int count, const char *in, char *out, size_t out_sz)
-{
-    if (!out || out_sz == 0) return 0;
-    out[0] = '\0';
-    if (!in) return 0;
-
-    if (in[0] == '@') {
-        const char *k = in + 1;
-        /* Search latest to earliest */
-        for (int i = count - 1; i >= 0; i--) {
-            const char *v = ini_get(&stores[i], k);
-            if (v) {
-                strncpy(out, v, out_sz - 1);
-                out[out_sz - 1] = '\0';
-                return 1;
-            }
-        }
-        return 0;
-    }
-
-    strncpy(out, in, out_sz - 1);
-    out[out_sz - 1] = '\0';
-    return 1;
-}
 
 /* ------------------------- payload ------------------------- */
 
@@ -761,59 +744,6 @@ static int parse_and_store_list_rhs(char **rhs_arr, int used_arr[8], const char 
  *  - "null" => null
  *  - numeric parse -> number
  */
-static ValueState watch_resolve_value(const IniStore *stores, int count, const char *rhs, double *outv, int verbose, int idx)
-{
-    if (!rhs) return VS_NULL;
-
-    if (is_literal_null(rhs)) return VS_NULL;
-    if (rhs[0] == '\0') return VS_EMPTY;
-
-    if (rhs[0] == '@') {
-        char resolved[INI_VAL_MAX];
-        if (!resolve_ini_ref_multi(stores, count, rhs, resolved, sizeof(resolved))) {
-            if (verbose) fprintf(stderr, "[watch] values[%d] missing %s => null\n", idx, rhs);
-            return VS_NULL;
-        }
-        if (resolved[0] == '\0') return VS_EMPTY;
-        if (is_literal_null(resolved)) return VS_NULL;
-
-        double dv;
-        if (!parse_double(resolved, &dv)) {
-            if (verbose) fprintf(stderr, "[watch] values[%d] non-numeric '%s' from %s => null\n", idx, resolved, rhs);
-            return VS_NULL;
-        }
-        *outv = dv;
-        return VS_NUM;
-    }
-
-    double dv;
-    if (!parse_double(rhs, &dv)) return VS_NULL;
-    *outv = dv;
-    return VS_NUM;
-}
-
-static TextState watch_resolve_text(const IniStore *stores, int count, const char *rhs, char out[MAX_TEXT_LEN + 1], int verbose, int idx)
-{
-    if (!rhs) return TS_NULL;
-
-    if (is_literal_null(rhs)) return TS_NULL;
-
-    if (rhs[0] == '\0') { out[0] = '\0'; return TS_STR; }
-
-    if (rhs[0] == '@') {
-        char resolved[INI_VAL_MAX];
-        if (!resolve_ini_ref_multi(stores, count, rhs, resolved, sizeof(resolved))) {
-            if (verbose) fprintf(stderr, "[watch] texts[%d] missing %s => null\n", idx, rhs);
-            return TS_NULL;
-        }
-        if (is_literal_null(resolved)) return TS_NULL;
-        clamp_textN(resolved, out, MAX_TEXT_LEN + 1); /* may be empty => clears */
-        return TS_STR;
-    }
-
-    clamp_textN(rhs, out, MAX_TEXT_LEN + 1);
-    return TS_STR;
-}
 
 /* ------------------------- SEND ------------------------- */
 
@@ -1038,47 +968,73 @@ static int cmd_watch(int argc, char **argv, const char *prog)
 
     if (!dest_raw) dest_raw = DEFAULT_DEST_IP;
 
-    /* resolve dest/port (initial load) */
-    IniStore *stores = (IniStore *)calloc(ini_count, sizeof(IniStore));
-    struct FileState {
+    /* Persistent state for polling efficiency */
+    typedef struct {
+        IniStore store;
+        FILE *fp;
+        const char *path;
         time_t mtime;
         off_t size;
-    } *fstates = (struct FileState *)calloc(ini_count, sizeof(struct FileState));
+        ino_t inode;
+    } IniContext;
 
-    if (!stores || !fstates) {
+    IniContext *ctx = (IniContext *)calloc(ini_count, sizeof(IniContext));
+    if (!ctx) {
         perror("calloc");
         watchspec_free(&w);
         return 1;
     }
 
-    /* Initial load of all files for dest/port and baseline */
+    /* Initial load of all files */
     int have_ini0 = 0;
     for (int i = 0; i < ini_count; i++) {
-        ini_init(&stores[i]);
-        if (ini_add_file(&stores[i], ini_paths[i])) {
-            have_ini0 = 1;
-        } else {
-            if (verbose) fprintf(stderr, "[watch] ini not readable initially: %s (%s)\n", ini_paths[i], strerror(errno));
-        }
+        ctx[i].path = ini_paths[i];
+        ini_init(&ctx[i].store);
 
-        /* populate stats so we don't reload immediately */
-        struct stat st;
-        if (stat(ini_paths[i], &st) == 0) {
-            fstates[i].mtime = st.st_mtime;
-            fstates[i].size = st.st_size;
+        /* Open and parse */
+        ctx[i].fp = fopen(ctx[i].path, "r");
+        if (ctx[i].fp) {
+            ini_parse_stream(&ctx[i].store, ctx[i].fp);
+            have_ini0 = 1;
+
+            struct stat st;
+            if (fstat(fileno(ctx[i].fp), &st) == 0) {
+                ctx[i].mtime = st.st_mtime;
+                ctx[i].size = st.st_size;
+                ctx[i].inode = st.st_ino;
+            }
+        } else {
+            if (verbose) fprintf(stderr, "[watch] ini not readable initially: %s (%s)\n", ctx[i].path, strerror(errno));
         }
     }
 
     char dest[64];
+    /* Helper to map ctx array to stores for resolve_ini_ref_multi without refactoring it heavily */
+    /* Actually we can just cast or update resolve to take context, but let's just make a temp array of pointers? */
+    /* Or easier: resolve_ini_ref_multi currently takes (IniStore*, int).
+       We have an array of structs that contain IniStore. We can't pass that array directly.
+       We need to refactor resolve_ini_ref_multi or copy stores?
+       Refactoring resolve is cleaner. */
+
+    /* Hack: we can't easily pass stride. Let's make a temp array of pointers or just iterate manually here?
+       Wait, resolve_ini_ref_multi is used in the loop.
+       Let's update resolve_ini_ref_multi to take stride? No, just loop here manually for dest/port.
+    */
     if (dest_raw[0] == '@') {
-        char resolved[INI_VAL_MAX];
-        if (!have_ini0 || !resolve_ini_ref_multi(stores, ini_count, dest_raw, resolved, sizeof(resolved))) {
-            strncpy(dest, DEFAULT_DEST_IP, sizeof(dest) - 1);
-            dest[sizeof(dest) - 1] = '\0';
-            if (verbose) fprintf(stderr, "[watch] --dest %s missing => default %s\n", dest_raw, dest);
+        const char *k = dest_raw + 1;
+        const char *found = NULL;
+        for (int i = ini_count - 1; i >= 0; i--) {
+            const char *v = ini_get(&ctx[i].store, k);
+            if (v) { found = v; break; }
+        }
+
+        if (!found || !*found) {
+             strncpy(dest, DEFAULT_DEST_IP, sizeof(dest) - 1);
+             dest[sizeof(dest) - 1] = '\0';
+             if (verbose) fprintf(stderr, "[watch] --dest %s missing => default %s\n", dest_raw, dest);
         } else {
-            strncpy(dest, resolved, sizeof(dest) - 1);
-            dest[sizeof(dest) - 1] = '\0';
+             strncpy(dest, found, sizeof(dest) - 1);
+             dest[sizeof(dest) - 1] = '\0';
         }
     } else {
         strncpy(dest, dest_raw, sizeof(dest) - 1);
@@ -1087,8 +1043,28 @@ static int cmd_watch(int argc, char **argv, const char *prog)
 
     int port = DEFAULT_PORT;
     if (port_raw) {
+        /* Re-implement logic properly */
         char pbuf[64];
-        if (!have_ini0 || !resolve_ini_ref_multi(stores, ini_count, port_raw, pbuf, sizeof(pbuf))) {
+        int resolved = 0;
+
+        if (port_raw[0] != '@') {
+            strncpy(pbuf, port_raw, sizeof(pbuf)-1);
+            pbuf[sizeof(pbuf)-1] = '\0';
+            resolved = 1;
+        } else {
+            const char *key = port_raw + 1;
+             for (int i = ini_count - 1; i >= 0; i--) {
+                const char *v = ini_get(&ctx[i].store, key);
+                if (v) {
+                    strncpy(pbuf, v, sizeof(pbuf)-1);
+                    pbuf[sizeof(pbuf)-1] = '\0';
+                    resolved = 1;
+                    break;
+                }
+            }
+        }
+
+        if (!resolved) {
             port = DEFAULT_PORT;
             if (verbose) fprintf(stderr, "[watch] --port %s missing => default %d\n", port_raw, port);
         } else {
@@ -1106,8 +1082,9 @@ static int cmd_watch(int argc, char **argv, const char *prog)
     if (sock < 0) {
         perror("socket");
         watchspec_free(&w);
-        free(stores);
-        free(fstates);
+        /* Cleanup contexts including open files */
+        for (int i=0; i<ini_count; i++) if (ctx[i].fp) fclose(ctx[i].fp);
+        free(ctx);
         return 1;
     }
 
@@ -1122,10 +1099,42 @@ static int cmd_watch(int argc, char **argv, const char *prog)
 
         if (verbose && !have_ini0) fprintf(stderr, "[watch] baseline: ini unreadable -> all watched @keys treated as null\n");
 
+        /* We must duplicate the logic here or make a helper. Inline for now. */
         for (int i = 0; i < 8; i++) {
             if (w.value_used[i] && w.value_rhs[i]) {
                 double dv = 0.0;
-                ValueState st = watch_resolve_value(stores, ini_count, w.value_rhs[i], &dv, verbose, i);
+                /* Manual resolve loop for baseline */
+                ValueState st = VS_NULL;
+                const char *rhs = w.value_rhs[i];
+                /* Copied resolve logic */
+                if (!rhs) st = VS_NULL;
+                else if (is_literal_null(rhs)) st = VS_NULL;
+                else if (rhs[0] == '\0') st = VS_EMPTY;
+                else if (rhs[0] == '@') {
+                    const char *k = rhs + 1;
+                    const char *found = NULL;
+                    for (int j = ini_count - 1; j >= 0; j--) {
+                        const char *v = ini_get(&ctx[j].store, k);
+                        if (v) { found = v; break; }
+                    }
+                    if (!found) {
+                        if (verbose) fprintf(stderr, "[watch] values[%d] missing %s => null\n", i, rhs);
+                        st = VS_NULL;
+                    } else if (found[0] == '\0') {
+                        st = VS_EMPTY;
+                    } else if (is_literal_null(found)) {
+                        st = VS_NULL;
+                    } else {
+                        if (parse_double(found, &dv)) st = VS_NUM;
+                        else {
+                            if (verbose) fprintf(stderr, "[watch] values[%d] non-numeric '%s' from %s => null\n", i, found, rhs);
+                            st = VS_NULL;
+                        }
+                    }
+                } else {
+                    if (parse_double(rhs, &dv)) st = VS_NUM;
+                }
+
                 w.last_v_state[i] = st;
                 if (st == VS_NUM) { w.last_v[i] = dv; set_value_num(&pb, i, dv); }
                 else if (st == VS_EMPTY) { set_value_empty(&pb, i); }
@@ -1133,7 +1142,32 @@ static int cmd_watch(int argc, char **argv, const char *prog)
             }
             if (w.text_used[i] && w.text_rhs[i]) {
                 char t[MAX_TEXT_LEN + 1];
-                TextState st = watch_resolve_text(stores, ini_count, w.text_rhs[i], t, verbose, i);
+                TextState st = TS_NULL;
+                const char *rhs = w.text_rhs[i];
+                if (!rhs) st = TS_NULL;
+                else if (is_literal_null(rhs)) st = TS_NULL;
+                else if (rhs[0] == '\0') { t[0]='\0'; st = TS_STR; }
+                else if (rhs[0] == '@') {
+                    const char *k = rhs + 1;
+                    const char *found = NULL;
+                    for (int j = ini_count - 1; j >= 0; j--) {
+                        const char *v = ini_get(&ctx[j].store, k);
+                        if (v) { found = v; break; }
+                    }
+                    if (!found) {
+                        if (verbose) fprintf(stderr, "[watch] texts[%d] missing %s => null\n", i, rhs);
+                        st = TS_NULL;
+                    } else if (is_literal_null(found)) {
+                        st = TS_NULL;
+                    } else {
+                        clamp_textN(found, t, MAX_TEXT_LEN + 1);
+                        st = TS_STR;
+                    }
+                } else {
+                    clamp_textN(rhs, t, MAX_TEXT_LEN + 1);
+                    st = TS_STR;
+                }
+
                 w.last_t_state[i] = st;
                 if (st == TS_STR) {
                     strncpy(w.last_t[i], t, MAX_TEXT_LEN);
@@ -1152,8 +1186,8 @@ static int cmd_watch(int argc, char **argv, const char *prog)
             fprintf(stderr, "Error: baseline payload build failed\n");
             close(sock);
             watchspec_free(&w);
-            free(stores);
-            free(fstates);
+            for (int i=0; i<ini_count; i++) if (ctx[i].fp) fclose(ctx[i].fp);
+            free(ctx);
             return 1;
         }
 
@@ -1163,34 +1197,63 @@ static int cmd_watch(int argc, char **argv, const char *prog)
             perror("sendto(baseline)");
             close(sock);
             watchspec_free(&w);
-            free(stores);
-            free(fstates);
+            for (int i=0; i<ini_count; i++) if (ctx[i].fp) fclose(ctx[i].fp);
+            free(ctx);
             return 1;
         }
     }
 
     /* poll loop */
     for (;;) {
-        int any_reloaded = 0;
         for (int i = 0; i < ini_count; i++) {
             struct stat st;
-            if (stat(ini_paths[i], &st) == 0) {
-                if (st.st_mtime != fstates[i].mtime || st.st_size != fstates[i].size) {
-                    if (verbose) fprintf(stderr, "[watch] file %d (%s) changed, reloading...\n", i, ini_paths[i]);
-                    ini_init(&stores[i]);
-                    (void)ini_add_file(&stores[i], ini_paths[i]);
-                    fstates[i].mtime = st.st_mtime;
-                    fstates[i].size = st.st_size;
-                    any_reloaded = 1;
+            /* Check if file on disk changed (external modification/move) */
+            if (stat(ctx[i].path, &st) == 0) {
+                int changed = 0;
+                /* If file exists but we have no handle, open it */
+                if (!ctx[i].fp) {
+                    ctx[i].fp = fopen(ctx[i].path, "r");
+                    if (ctx[i].fp) {
+                        changed = 1;
+                        if (verbose) fprintf(stderr, "[watch] file %d (%s) appeared, loading...\n", i, ctx[i].path);
+                    }
+                } else {
+                    /* Handle has inode? */
+                    if (st.st_ino != ctx[i].inode) {
+                        /* File replaced (mv) */
+                        if (verbose) fprintf(stderr, "[watch] file %d (%s) replaced, reloading...\n", i, ctx[i].path);
+                        fclose(ctx[i].fp);
+                        ctx[i].fp = fopen(ctx[i].path, "r");
+                        changed = 1;
+                    } else if (st.st_mtime != ctx[i].mtime || st.st_size != ctx[i].size) {
+                        /* File modified in place */
+                        if (verbose) fprintf(stderr, "[watch] file %d (%s) changed, reloading...\n", i, ctx[i].path);
+                        changed = 1;
+                    }
+                }
+
+                if (changed && ctx[i].fp) {
+                    /* Refresh stats */
+                    if (fstat(fileno(ctx[i].fp), &st) == 0) {
+                         ctx[i].mtime = st.st_mtime;
+                         ctx[i].size = st.st_size;
+                         ctx[i].inode = st.st_ino;
+                    }
+                    /* Rewind and re-parse */
+                    rewind(ctx[i].fp);
+                    ini_init(&ctx[i].store);
+                    ini_parse_stream(&ctx[i].store, ctx[i].fp);
                 }
             } else {
-                /* file missing or unreadable */
-                if (fstates[i].mtime != 0 || fstates[i].size != 0) {
-                    if (verbose) fprintf(stderr, "[watch] file %d (%s) gone, clearing...\n", i, ini_paths[i]);
-                    ini_init(&stores[i]); /* Clear store if file gone */
-                    fstates[i].mtime = 0;
-                    fstates[i].size = 0;
-                    any_reloaded = 1;
+                /* File missing */
+                if (ctx[i].fp) {
+                    if (verbose) fprintf(stderr, "[watch] file %d (%s) gone, clearing...\n", i, ctx[i].path);
+                    fclose(ctx[i].fp);
+                    ctx[i].fp = NULL;
+                    ini_init(&ctx[i].store);
+                    ctx[i].mtime = 0;
+                    ctx[i].size = 0;
+                    ctx[i].inode = 0;
                 }
             }
         }
@@ -1202,7 +1265,34 @@ static int cmd_watch(int argc, char **argv, const char *prog)
         for (int i = 0; i < 8; i++) {
             if (w.value_used[i] && w.value_rhs[i]) {
                 double dv = 0.0;
-                ValueState st = watch_resolve_value(stores, ini_count, w.value_rhs[i], &dv, verbose, i);
+                /* Inline resolve logic again since we can't use helper easily with ctx array */
+                ValueState st = VS_NULL;
+                const char *rhs = w.value_rhs[i];
+                if (!rhs) st = VS_NULL;
+                else if (is_literal_null(rhs)) st = VS_NULL;
+                else if (rhs[0] == '\0') st = VS_EMPTY;
+                else if (rhs[0] == '@') {
+                    const char *k = rhs + 1;
+                    const char *found = NULL;
+                    for (int j = ini_count - 1; j >= 0; j--) {
+                        const char *v = ini_get(&ctx[j].store, k);
+                        if (v) { found = v; break; }
+                    }
+                    if (!found) {
+                        /* Keep silent if missing, or verbose? Previous log had verbose */
+                         if (verbose) fprintf(stderr, "[watch] values[%d] missing %s => null\n", i, rhs);
+                        st = VS_NULL;
+                    } else if (found[0] == '\0') {
+                        st = VS_EMPTY;
+                    } else if (is_literal_null(found)) {
+                        st = VS_NULL;
+                    } else {
+                        if (parse_double(found, &dv)) st = VS_NUM;
+                        else st = VS_NULL;
+                    }
+                } else {
+                    if (parse_double(rhs, &dv)) st = VS_NUM;
+                }
 
                 int changed = 0;
                 if (st != w.last_v_state[i]) changed = 1;
@@ -1225,7 +1315,31 @@ static int cmd_watch(int argc, char **argv, const char *prog)
 
             if (w.text_used[i] && w.text_rhs[i]) {
                 char t[MAX_TEXT_LEN + 1];
-                TextState st = watch_resolve_text(stores, ini_count, w.text_rhs[i], t, verbose, i);
+                TextState st = TS_NULL;
+                const char *rhs = w.text_rhs[i];
+                if (!rhs) st = TS_NULL;
+                else if (is_literal_null(rhs)) st = TS_NULL;
+                else if (rhs[0] == '\0') { t[0]='\0'; st = TS_STR; }
+                else if (rhs[0] == '@') {
+                    const char *k = rhs + 1;
+                    const char *found = NULL;
+                    for (int j = ini_count - 1; j >= 0; j--) {
+                        const char *v = ini_get(&ctx[j].store, k);
+                        if (v) { found = v; break; }
+                    }
+                    if (!found) {
+                        if (verbose) fprintf(stderr, "[watch] texts[%d] missing %s => null\n", i, rhs);
+                        st = TS_NULL;
+                    } else if (is_literal_null(found)) {
+                        st = TS_NULL;
+                    } else {
+                        clamp_textN(found, t, MAX_TEXT_LEN + 1);
+                        st = TS_STR;
+                    }
+                } else {
+                    clamp_textN(rhs, t, MAX_TEXT_LEN + 1);
+                    st = TS_STR;
+                }
 
                 int changed = 0;
                 if (st != w.last_t_state[i]) changed = 1;
@@ -1272,8 +1386,8 @@ static int cmd_watch(int argc, char **argv, const char *prog)
 
     close(sock);
     watchspec_free(&w);
-    free(stores);
-    free(fstates);
+    for (int i=0; i<ini_count; i++) if (ctx[i].fp) fclose(ctx[i].fp);
+    free(ctx);
     return 0;
 }
 
