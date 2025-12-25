@@ -1870,13 +1870,13 @@ static void stats_timer_cb(lv_timer_t *timer)
                        active_assets, asset_count, primary_w, primary_h,
                        fps_value, last_frame_ms, last_loop_ms, idle_ms_applied);
 
-    if (off < (int)sizeof(buf) - 32) {
+    if (g_cfg.udp_stats && off < (int)sizeof(buf) - 32) {
         int rows = UDP_VALUE_COUNT > SYSTEM_VALUE_COUNT ? UDP_VALUE_COUNT : SYSTEM_VALUE_COUNT;
         off += lv_snprintf(buf + off, sizeof(buf) - off, "\nValues (v=UDP s=SYS):");
         for (int i = 0; i < rows && off < (int)sizeof(buf) - 24; i++) {
             char udp_val[24];
             char sys_val[24];
-            if (g_cfg.udp_stats && i < UDP_VALUE_COUNT) {
+            if (i < UDP_VALUE_COUNT) {
                 int whole = (int)udp_values[i];
                 int frac = (int)((udp_values[i] - whole) * 100.0);
                 if (frac < 0) frac = -frac;
@@ -1900,7 +1900,7 @@ static void stats_timer_cb(lv_timer_t *timer)
         rows = UDP_TEXT_COUNT > SYSTEM_TEXT_COUNT ? UDP_TEXT_COUNT : SYSTEM_TEXT_COUNT;
         off += lv_snprintf(buf + off, sizeof(buf) - off, "\nTexts (t=UDP s=SYS):");
         for (int i = 0; i < rows && off < (int)sizeof(buf) - 20; i++) {
-            const char *udp_t = (g_cfg.udp_stats && i < UDP_TEXT_COUNT && udp_texts[i][0]) ? udp_texts[i] : "-";
+            const char *udp_t = (i < UDP_TEXT_COUNT && udp_texts[i][0]) ? udp_texts[i] : "-";
             const char *sys_t = (i < SYSTEM_TEXT_COUNT && system_texts[i][0]) ? system_texts[i] : "-";
             off += lv_snprintf(buf + off, sizeof(buf) - off, "\n %d t=%s | s=%s", i, udp_t, sys_t);
         }
