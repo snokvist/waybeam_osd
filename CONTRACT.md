@@ -2,7 +2,7 @@
 
 ## Runtime UDP payload (port 7777)
 - Each datagram must be UTF-8 JSON with a top-level `values` array.
-- `values` holds up to 8 numeric entries (float/double) for UDP channels `0-7`. Missing entries default to `0` on the device. A second bank of 8 system values is always available on `value_index` slots `8-15` without going over UDP. System slots 8-11 are populated automatically with SoC temperature (`ipctool --temp`), CPU load (0–100), encoder FPS, and current encoder bitrate in kilobits per second (parsed from `/proc/mi_modules/mi_venc/mi_venc0` under the `VENC 0 CHN info` table using the `Fps_1s` and adjacent `kbps` columns for channel 0). Slots 12-15 stay reserved for future system metrics.
+- `values` holds up to 8 numeric entries (float/double) for UDP channels `0-7`. Missing entries default to `0` on the device. A second bank of 8 system values is always available on `value_index` slots `8-15` without going over UDP. System slots 8-11 are populated automatically with SoC temperature (`ipctool --temp`), CPU load (0–100), encoder FPS, and current encoder bitrate in kilobits per second (parsed from `/proc/mi_modules/mi_venc/mi_venc0` under the `VENC 0 CHN info` table using the `Fps_1s` and adjacent `kbps` columns for channel 0). Slots 12-15 stay reserved for future system metrics. Refresh cadence is configurable via `system_refresh_ms` in the local config (default 1000 ms).
 - Extra fields are ignored so senders can add metadata if needed.
 - Keep payloads under 1280 bytes (anything larger is dropped).
 - Incoming UDP packets are applied in arrival order; the socket is fully drained whenever it becomes readable so every queued packet is processed. The last packet for a given index/property wins, and on-screen pushes are throttled to ~30 fps (about every 32 ms). `idle_ms` only caps the sleep when no data arrives.
@@ -65,6 +65,7 @@ The UDP socket is **drained fully** on every poll cycle, meaning every packet in
   - `show_stats` (bool): show/hide the top-left stats overlay. Default `true`.
   - `udp_stats` (bool): when `true`, the stats overlay also lists the latest UDP and system numeric/text banks on the same lines. Default `true`.
   - `idle_ms` (int): maximum idle wait between UDP polls and screen refreshes in milliseconds (clamped 10–1000); default 100 ms. Legacy configs may still specify `refresh_ms`, which is treated the same way for compatibility.
+  - `system_refresh_ms` (int, optional): cadence for polling system metrics (temperature, CPU load, encoder FPS/bitrate). Clamped 100–60000; default 1000.
   - `assets` (array, max 8): list of objects defining what to render and which UDP value to consume.
   - Asset fields:
     - `type`: `"bar"` or `"text"`.
