@@ -14,18 +14,12 @@
 #include <time.h>
 #include <limits.h>
 #include <stdbool.h>
-#include <dlfcn.h>
-
-#ifndef RTLD_NODELETE
-#define RTLD_NODELETE 0x01000
-#endif
 
 #include "lvgl/lvgl.h"
 #include "lvgl/src/draw/lv_draw_private.h"
 #include "mi_sys.h"
 #include "mi_rgn.h"
 #include "mi_vpe.h"
-#include "mi_venc.h"
 
 #define DEFAULT_SCREEN_WIDTH 1280   // fallback resolution if config is absent
 #define DEFAULT_SCREEN_HEIGHT 720
@@ -56,16 +50,6 @@ enum {
 // LVGL buffers - allocated at runtime for ARGB8888 (32-bit per pixel)
 static lv_color_t *buf1 = NULL;
 static lv_color_t *buf2 = NULL;
-
-typedef MI_S32 (*mi_venc_query_fn)(MI_VENC_CHN, MI_VENC_ChnStat_t *);
-
-static mi_venc_query_fn pMI_VENC_Query = NULL;
-static void *venc_dl_handle = NULL;
-static int venc_dl_broken = 0;
-static int venc_force_load = -1; /* lazy-env parsed */
-static int venc_loaded_from_default = 0;
-static int venc_loaded_from_dlopen = 0;
-static int venc_dl_flags = 0;
 
 typedef struct {
     int width;
@@ -1391,80 +1375,56 @@ static double read_cpu_load_pct(void)
     return pct;
 }
 
-static bool ensure_venc_query_loaded(void)
-{
-    if (pMI_VENC_Query) return true;
-    if (venc_dl_broken) return false;
-
-    if (venc_force_load < 0) {
-        const char *env = getenv("WAYBEAM_VENC_FORCE_LOAD");
-        venc_force_load = (env && env[0] == '1') ? 1 : 0;
-    }
-
-    pMI_VENC_Query = (mi_venc_query_fn)dlsym(RTLD_DEFAULT, "MI_VENC_Query");
-    if (pMI_VENC_Query) {
-        venc_loaded_from_default = 1;
-        fprintf(stderr, "[enc] MI_VENC_Query resolved via RTLD_DEFAULT\n");
-    }
-    if (!pMI_VENC_Query && venc_force_load) {
-        int flags = RTLD_LAZY | RTLD_LOCAL;
-#ifdef RTLD_NODELETE
-        flags |= RTLD_NODELETE;
-#endif
-        venc_dl_flags = flags;
-#ifdef RTLD_NOLOAD
-        venc_dl_handle = dlopen("libmi_venc.so", flags | RTLD_NOLOAD);
-        if (!venc_dl_handle) {
-            fprintf(stderr, "[enc] libmi_venc.so not preloaded; attempting full load (may hang encoder on exit)\n");
-        }
-#endif
-        if (!venc_dl_handle) {
-            venc_dl_handle = dlopen("libmi_venc.so", flags);
-        }
-        if (!venc_dl_handle) {
-            fprintf(stderr, "[enc] dlopen libmi_venc.so failed: %s\n", dlerror());
-            venc_dl_broken = 1;
-            return false;
-        }
-        pMI_VENC_Query = (mi_venc_query_fn)dlsym(venc_dl_handle, "MI_VENC_Query");
-        if (pMI_VENC_Query) {
-            venc_loaded_from_dlopen = 1;
-            venc_dl_flags = flags;
-        }
-    }
-
-    if (!pMI_VENC_Query) {
-        fprintf(stderr, "[enc] dlsym MI_VENC_Query failed: %s\n", dlerror());
-        venc_dl_broken = 1;
-        return false;
-    }
-
-    return true;
-}
-
-static bool query_encoder_stats(double *fps_out, double *bitrate_out)
+static bool read_encoder_stats_proc(double *fps_out, double *bitrate_out)
 {
     if (!fps_out || !bitrate_out) return false;
-    if (!ensure_venc_query_loaded()) return false;
-    MI_VENC_ChnStat_t stat;
-    memset(&stat, 0, sizeof(stat));
-    MI_S32 ret = pMI_VENC_Query(0, &stat);
-    if (ret != MI_SUCCESS) {
-        fprintf(stderr, "[enc] MI_VENC_Query failed: %d (disabling encoder stats)\n", ret);
-        venc_dl_broken = 1;
-        return false;
+    FILE *f = fopen("/proc/mi_modules/mi_venc/mi_venc0", "r");
+    if (!f) return false;
+
+    char line[512];
+    int in_section = 0;
+    bool found = false;
+    while (fgets(line, sizeof(line), f)) {
+        if (!in_section) {
+            if (strstr(line, "VENC 0 CHN info")) {
+                in_section = 1;
+            }
+            continue;
+        }
+
+        if (strncmp(line, "ChnId", 5) == 0 || line[0] == '-') continue;
+
+        int chn = -1;
+        int state = 0, enpred = 0, base = 0, enhance = 0, max_stream = 0, frame_idx = 0, gradient = 0;
+        double fps1s = 0.0, kbps = 0.0, fps10s = 0.0, kbps10s = 0.0;
+        int parsed = sscanf(line,
+                            " %d %d %d %d %d %d %d %d %lf %lf %lf %lf",
+                            &chn,
+                            &state,
+                            &enpred,
+                            &base,
+                            &enhance,
+                            &max_stream,
+                            &frame_idx,
+                            &gradient,
+                            &fps1s,
+                            &kbps,
+                            &fps10s,
+                            &kbps10s);
+        if (parsed == 12 && chn == 0) {
+            *fps_out = fps1s;
+            *bitrate_out = kbps;
+            found = true;
+            break;
+        }
+
+        if (parsed < 0 && in_section && line[0] == '\n') {
+            break;
+        }
     }
-    if (stat.u32FrmRateDen == 0) {
-        fprintf(stderr, "[enc] MI_VENC_Query returned zero denominator (num=%u, br=%u)\n", stat.u32FrmRateNum, stat.u32BitRate);
-        return false;
-    }
-    *fps_out = (double)stat.u32FrmRateNum / (double)stat.u32FrmRateDen;
-    *bitrate_out = (double)stat.u32BitRate;
-    if (*fps_out <= 0.0 || *bitrate_out <= 0.0) {
-        fprintf(stderr, "[enc] fps=%.2f bitrate=%.2f (num=%u den=%u br=%u)\n",
-                *fps_out, *bitrate_out, stat.u32FrmRateNum, stat.u32FrmRateDen, stat.u32BitRate);
-    }
-    return true;
+
+    fclose(f);
+    return found;
 }
 
 static bool refresh_system_values(void)
@@ -1483,7 +1443,7 @@ static bool refresh_system_values(void)
 
     double fps = 0.0;
     double bitrate = 0.0;
-    if (query_encoder_stats(&fps, &bitrate)) {
+    if (read_encoder_stats_proc(&fps, &bitrate)) {
         changed |= set_system_value(SYS_VALUE_ENCODER_FPS, fps);
         changed |= set_system_value(SYS_VALUE_ENCODER_BITRATE, bitrate);
     }
@@ -1840,37 +1800,6 @@ static void reload_config_runtime(void)
 
 static void cleanup_resources(void)
 {
-    int skip_destructors = (venc_loaded_from_dlopen && !venc_loaded_from_default);
-
-    if (pMI_VENC_Query || venc_dl_handle) {
-        MI_VENC_ChnStat_t stat;
-        memset(&stat, 0, sizeof(stat));
-        if (pMI_VENC_Query) {
-            MI_S32 ret = pMI_VENC_Query(0, &stat);
-            if (ret == MI_SUCCESS && stat.u32FrmRateDen) {
-                double fps = (double)stat.u32FrmRateNum / (double)stat.u32FrmRateDen;
-                fprintf(stderr,
-                        "[enc] exit query: ret=%d fps=%.2f bitrate=%u num=%u den=%u (loaded %s%s)\n",
-                        ret,
-                        fps,
-                        stat.u32BitRate,
-                        stat.u32FrmRateNum,
-                        stat.u32FrmRateDen,
-                        venc_loaded_from_default ? "RTLD_DEFAULT" : "dlopen",
-                        (venc_dl_flags & RTLD_NODELETE) ? "|NODELETE" : "");
-            } else {
-                fprintf(stderr,
-                        "[enc] exit query failed: ret=%d den=%u (loaded %s%s)\n",
-                        ret,
-                        stat.u32FrmRateDen,
-                        venc_loaded_from_default ? "RTLD_DEFAULT" : "dlopen",
-                        (venc_dl_flags & RTLD_NODELETE) ? "|NODELETE" : "");
-            }
-        } else {
-            fprintf(stderr, "[enc] exit: no MI_VENC_Query but handle present (flags=0x%x)\n", venc_dl_flags);
-        }
-    }
-
     destroy_assets();
 
     if (stats_timer) {
@@ -1889,12 +1818,6 @@ static void cleanup_resources(void)
 
     free(buf1);
     free(buf2);
-
-    fflush(NULL);
-    if (skip_destructors) {
-        fprintf(stderr, "[enc] exiting with _exit() to avoid VENC destructors after dlopen\n");
-        _exit(0);
-    }
 }
 
 static void stats_timer_cb(lv_timer_t *timer)
