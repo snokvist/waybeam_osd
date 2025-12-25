@@ -20,9 +20,12 @@ CFLAGS += -Os -ffunction-sections -fdata-sections -fno-unwind-tables -fno-asynch
 LDFLAGS += --sysroot=$(SYSROOT) -Wl,--gc-sections -s -L$(SYSROOT)/usr/lib -L$(SYSROOT)/lib
 
 SRCS := main.c
+OSD_SEND_SRC := osd_send.c
 
 OUTPUT_NAME := lvgltest
 OUTPUT ?= $(abspath $(OUTPUT_NAME))
+OSD_SEND_OUTPUT_NAME := osd_send
+OSD_SEND_OUTPUT ?= $(abspath $(OSD_SEND_OUTPUT_NAME))
 
 BUILD_DIR := build
 
@@ -31,6 +34,7 @@ LVGL_OBJS := $(addprefix $(BUILD_DIR)/, $(CSRCS:.c=.o))
 
 # Convert your own sources into objects
 APP_OBJS := $(addprefix $(BUILD_DIR)/, $(SRCS:.c=.o))
+OSD_SEND_OBJ := $(addprefix $(BUILD_DIR)/, $(OSD_SEND_SRC:.c=.o))
 
 # Include paths
 INCLUDES := -I$(SDK)/include \
@@ -41,11 +45,15 @@ INCLUDES := -I$(SDK)/include \
 LIBS := -lcam_os_wrapper -lmi_rgn -lmi_sys -ldl
 
 # Target
-all: $(OUTPUT)
+all: $(OUTPUT) $(OSD_SEND_OUTPUT)
 
 $(OUTPUT): $(APP_OBJS) $(LVGL_OBJS)
 	@mkdir -p $(@D)
 	$(CC) $(APP_OBJS) $(LVGL_OBJS) $(INCLUDES) $(CFLAGS) $(LDFLAGS) -L$(DRV) $(LIBS) -o $@
+
+$(OSD_SEND_OUTPUT): $(OSD_SEND_OBJ)
+	@mkdir -p $(@D)
+	$(CC) $(OSD_SEND_OBJ) $(CFLAGS) $(LDFLAGS) -o $@
 
 # Build rule for all .c files (app + LVGL)
 $(BUILD_DIR)/%.o: %.c
@@ -53,6 +61,6 @@ $(BUILD_DIR)/%.o: %.c
 	$(CC) $(CFLAGS) $(INCLUDES) -c $< -o $@
 
 clean:
-	rm -rf $(BUILD_DIR) $(OUTPUT)
+	rm -rf $(BUILD_DIR) $(OUTPUT) $(OSD_SEND_OUTPUT)
 
 .PHONY: all clean
