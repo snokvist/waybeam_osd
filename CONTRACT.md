@@ -2,12 +2,11 @@
 
 ## Runtime UDP payload (port 7777)
 - Each datagram must be UTF-8 JSON with a top-level `values` array.
-- `values` holds up to 8 numeric entries (float/double) for UDP channels `0-7`. Missing entries default to `0` on the device.
-- A second bank of 8 system values is always available on `value_index` slots `8-15` without going over UDP. System slots 8-11 are populated automatically with SoC temperature (`ipctool --temp`), CPU load (0–100), encoder FPS, and current encoder bitrate (queried best-effort from an already loaded `libmi_venc.so`, discovered via `dlsym(RTLD_DEFAULT, …)`. Setting `WAYBEAM_VENC_FORCE_LOAD=1` will attempt to load `libmi_venc.so` (using `RTLD_NODELETE` when available) if it is not already present, after warning that doing so may hang the encoder on exit; when the library is opened this way, shutdown skips shared-library destructors via `_exit()` to avoid tripping encoder finalizers). Slots 12-15 stay reserved for future system metrics.
+- `values` holds up to 8 numeric entries (float/double) for UDP channels `0-7`. Missing entries default to `0` on the device. A second bank of 8 system values is always available on `value_index` slots `8-15` without going over UDP. System slots 8-11 are populated automatically with SoC temperature (`ipctool --temp`), CPU load (0–100), encoder FPS, and current encoder bitrate in kilobits per second (parsed from `/proc/mi_modules/mi_venc/mi_venc0` under the `VENC 0 CHN info` table using the `Fps_1s` and adjacent `kbps` columns for channel 0). Slots 12-15 stay reserved for future system metrics.
 - Extra fields are ignored so senders can add metadata if needed.
 - Keep payloads under 1280 bytes (anything larger is dropped).
-- Incoming UDP packets are applied in arrival order; any backlog in the socket is coalesced each cycle so that only the latest values per channel or asset take effect. On-screen updates are throttled to no faster than every 32 ms (about 30 fps) even if more packets arrive sooner.
-- Optional `texts` array (up to 8 strings, max 96 chars each) can be sent alongside `values`. These map to `text_index` on bar assets and override a static `label` if present. Missing or empty entries fall back to the asset’s `label`. System text slots `8-15` are reserved for future data and come prefilled with descriptors (`temp`, `cpu`, `enc fps`, `bitrate`, `sys4`, `sys5`, `sys6`, `sys7`).
+- Incoming UDP packets are applied in arrival order; the socket is fully drained whenever it becomes readable so every queued packet is processed. The last packet for a given index/property wins, and on-screen pushes are throttled to ~30 fps (about every 32 ms). `idle_ms` only caps the sleep when no data arrives.
+- Optional `texts` array (up to 8 strings, max 96 chars each) can be sent alongside `values`. These map to `text_index` on bar assets and override a static `label` if present. `null` entries are ignored (keep existing text); an empty string clears the text and falls back to the asset’s `label`. System text slots `8-15` are reserved for future data and come prefilled with descriptors (`temp`, `cpu`, `enc fps`, `bitrate`, `sys4`, `sys5`, `sys6`, `sys7`).
 - Optional `asset_updates` array lets senders retint, reposition, enable/disable, or fully reconfigure assets at runtime. Each object must contain an `id`; if the ID does not exist yet and there is room (max 8 assets), the asset slot is created on the fly. Valid keys include: `enabled` (bool), `type` (`"bar"` or `"text"`), `value_index`, `text_index`, `text_indices` (array), `text_inline`, `label`, `orientation`, `x`, `y`, `width`, `height`, `min`, `max`, `bar_color` (bars only), `text_color`, `background`, `background_opacity`, `segments` (bars only), and `rounded_outline` (bars only). Only valid values that differ from the current config are applied; disabled assets are removed from the screen immediately.
 
 Example:
@@ -25,6 +24,38 @@ Example:
 ```
 
 Each on-screen asset binds to one numeric channel via `value_index`. Indices `0-7` read the UDP `values[i]`; indices `8-15` read the system value bank (temperature, CPU load, encoder FPS, encoder bitrate, and four reserved slots). For bar assets, `text_index` maps the descriptor to the combined text bank: `0-7` pull from UDP `texts[i]`, while `8-15` use the prefilled system descriptors. Otherwise the bar uses the optional static `label`. The stats overlay always lists the system numeric/text banks and, when `udp_stats` is enabled, also lists the UDP numeric/text banks on the same lines to keep the widget compact.
+
+### Partial Update Examples
+
+The `values` and `texts` arrays are positional. `null` entries are ignored (slot keeps its previous value/text), while omitted trailing indices also keep their previous content; system slots 8–15 are populated locally. Use explicit numbers to overwrite value slots, and empty strings to clear either a text slot or a numeric slot (clears to `0`).
+
+**Update only the first value:**
+```json
+{"values": [0.75]}
+```
+*Effect:* `values[0]` is set to 0.75. `values[1..7]` are unchanged.
+
+**Update the first three values:**
+```json
+{"values": [0.1, 0.2, 0.3]}
+```
+*Effect:* `values[0..2]` are updated. `values[3..7]` are unchanged.
+
+**Update index 2 (skipping 0 and 1):**
+```json
+{"values": [null, null, 0.9]}
+```
+*Effect:* `values[2]` is set to 0.9. `values[0]` and `values[1]` retain their previous values.
+
+### Multi-Sender Interference
+
+The UDP socket is **drained fully** on every poll cycle, meaning every packet in the buffer is processed in order. This mitigates packet loss but introduces specific behavior for multi-sender scenarios:
+
+1.  **Shared Indices:** If Sender A and Sender B both update the *same* UDP index within the same poll cycle, the packet processed last (typically the one arriving last) wins.
+2.  **Positional Arrays:** Because arrays are positional, senders must be careful not to overwrite indices owned by others. Using `null` to skip indices (sparse updates) allows independent senders to manage distinct sets of indices without interference, provided they agree on the layout.
+3.  **Asset Updates:** `asset_updates` are ID-based and safe to mix, as long as senders target different asset IDs.
+
+**Conclusion:** Multiple independent senders **can** share the display if they use sparse arrays (`null` for unowned indices) or target mutually exclusive asset IDs.
 
 ## Local config file (`config.json`)
 - JSON file read at startup; missing keys fall back to defaults. Send `SIGHUP` to the running process to reload the file without restarting (asset layout, stats toggle, and `idle_ms` update in-place; resolution still follows the startup config).

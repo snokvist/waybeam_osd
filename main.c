@@ -14,18 +14,12 @@
 #include <time.h>
 #include <limits.h>
 #include <stdbool.h>
-#include <dlfcn.h>
-
-#ifndef RTLD_NODELETE
-#define RTLD_NODELETE 0x01000
-#endif
 
 #include "lvgl/lvgl.h"
 #include "lvgl/src/draw/lv_draw_private.h"
 #include "mi_sys.h"
 #include "mi_rgn.h"
 #include "mi_vpe.h"
-#include "mi_venc.h"
 
 #define DEFAULT_SCREEN_WIDTH 1280   // fallback resolution if config is absent
 #define DEFAULT_SCREEN_HEIGHT 720
@@ -56,16 +50,6 @@ enum {
 // LVGL buffers - allocated at runtime for ARGB8888 (32-bit per pixel)
 static lv_color_t *buf1 = NULL;
 static lv_color_t *buf2 = NULL;
-
-typedef MI_S32 (*mi_venc_query_fn)(MI_VENC_CHN, MI_VENC_ChnStat_t *);
-
-static mi_venc_query_fn pMI_VENC_Query = NULL;
-static void *venc_dl_handle = NULL;
-static int venc_dl_broken = 0;
-static int venc_force_load = -1; /* lazy-env parsed */
-static int venc_loaded_from_default = 0;
-static int venc_loaded_from_dlopen = 0;
-static int venc_dl_flags = 0;
 
 typedef struct {
     int width;
@@ -792,7 +776,7 @@ static void parse_assets_array(const char *json)
     p = arr + 1;
     asset_count = 0;
 
-    while (*p && asset_count < 8) {
+    while (*p && asset_count < MAX_ASSETS) {
         while (*p && *p != '{' && *p != ']') p++;
         if (*p == ']') break;
         const char *obj_start = p;
@@ -820,7 +804,7 @@ static void parse_assets_array(const char *json)
 
         int v = 0;
         float fv = 0.0f;
-        if (json_get_bool_range(obj_start, obj_end, "enabled", &v) == 0 || json_get_bool_range(obj_start, obj_end, "enable", &v) == 0) a.cfg.enabled = v;
+        if (json_get_bool_range(obj_start, obj_end, "enabled", &v) == 0) a.cfg.enabled = v;
         if (json_get_int_range(obj_start, obj_end, "value_index", &v) == 0) a.cfg.value_index = clamp_int(v, 0, TOTAL_VALUE_COUNT - 1);
         if (json_get_int_range(obj_start, obj_end, "id", &v) == 0) a.cfg.id = clamp_int(v, 0, 63);
         if (json_get_int_range(obj_start, obj_end, "x", &v) == 0) a.cfg.x = v;
@@ -932,11 +916,30 @@ static void parse_udp_values(const char *buf)
     for (int i = 0; i < UDP_VALUE_COUNT; i++) {
         while (*p && isspace((unsigned char)*p)) p++;
         if (!*p) break;
-        char *endptr = NULL;
-        double val = strtod(p, &endptr);
-        if (p == endptr) break;
-        udp_values[i] = val;
-        p = endptr;
+
+        if (strncmp(p, "null", 4) == 0) {
+            p += 4;
+        } else {
+            if (*p == '\"') {
+                /* Treat empty string as a clear-to-zero */
+                p++;
+                if (*p == '\"') {
+                    udp_values[i] = 0.0;
+                    p++; /* skip closing quote */
+                } else {
+                    // Skip until closing quote for malformed entries
+                    while (*p && *p != '\"') p++;
+                    if (*p == '\"') p++;
+                }
+            } else {
+            char *endptr = NULL;
+            double val = strtod(p, &endptr);
+            if (p == endptr) break;
+            udp_values[i] = val;
+            p = endptr;
+            }
+        }
+
         const char *comma = strchr(p, ',');
         if (!comma) break;
         p = comma + 1;
@@ -953,16 +956,23 @@ static void parse_udp_texts(const char *buf)
     for (int i = 0; i < UDP_TEXT_COUNT; i++) {
         while (*p && isspace((unsigned char)*p)) p++;
         if (!*p) break;
-        if (*p != '\"') break;
-        p++; // skip quote
-        const char *start = p;
-        while (*p && *p != '\"') p++;
-        size_t len = (size_t)(p - start);
-        if (len > TEXT_SLOT_LEN - 1) len = TEXT_SLOT_LEN - 1;
-        memcpy(udp_texts[i], start, len);
-        udp_texts[i][len] = '\0';
-        if (*p != '\"') break;
-        p++; // skip closing quote
+
+        if (strncmp(p, "null", 4) == 0) {
+            p += 4;
+        } else if (*p == '\"') {
+            p++; // skip quote
+            const char *start = p;
+            while (*p && *p != '\"') p++;
+            size_t len = (size_t)(p - start);
+            if (len > TEXT_SLOT_LEN - 1) len = TEXT_SLOT_LEN - 1;
+            memcpy(udp_texts[i], start, len);
+            udp_texts[i][len] = '\0';
+            if (*p != '\"') break;
+            p++; // skip closing quote
+        } else {
+            break;
+        }
+
         const char *comma = strchr(p, ',');
         if (!comma) break;
         p = comma + 1;
@@ -1013,7 +1023,7 @@ static void parse_udp_asset_updates(const char *buf)
         int text_change = 0;
 
         int enabled_flag = asset->cfg.enabled;
-        if (json_get_bool_range(obj_start, obj_end, "enabled", &v) == 0 || json_get_bool_range(obj_start, obj_end, "enable", &v) == 0) {
+        if (json_get_bool_range(obj_start, obj_end, "enabled", &v) == 0) {
             enabled_flag = v ? 1 : 0;
         }
 
@@ -1239,13 +1249,13 @@ static void compose_asset_text(const asset_t *asset, char *buf, size_t buf_sz)
     buf[0] = '\0';
     if (!asset) return;
 
-        if (asset->cfg.type == ASSET_TEXT) {
-            size_t written = 0;
-            if (asset->cfg.text_indices_count > 0) {
-                for (int i = 0; i < asset->cfg.text_indices_count; i++) {
-                    int idx = clamp_int(asset->cfg.text_indices[i], 0, TOTAL_TEXT_COUNT - 1);
-                    const char *t = get_text_channel(idx);
-                    if (t[0] == '\0') continue;
+    if (asset->cfg.type == ASSET_TEXT) {
+        size_t written = 0;
+        if (asset->cfg.text_indices_count > 0) {
+            for (int i = 0; i < asset->cfg.text_indices_count; i++) {
+                int idx = clamp_int(asset->cfg.text_indices[i], 0, TOTAL_TEXT_COUNT - 1);
+                const char *t = get_text_channel(idx);
+                if (t[0] == '\0') continue;
                 if (written > 0 && written < buf_sz - 1) {
                     buf[written++] = asset->cfg.text_inline ? ' ' : '\n';
                 }
@@ -1378,80 +1388,56 @@ static double read_cpu_load_pct(void)
     return pct;
 }
 
-static bool ensure_venc_query_loaded(void)
-{
-    if (pMI_VENC_Query) return true;
-    if (venc_dl_broken) return false;
-
-    if (venc_force_load < 0) {
-        const char *env = getenv("WAYBEAM_VENC_FORCE_LOAD");
-        venc_force_load = (env && env[0] == '1') ? 1 : 0;
-    }
-
-    pMI_VENC_Query = (mi_venc_query_fn)dlsym(RTLD_DEFAULT, "MI_VENC_Query");
-    if (pMI_VENC_Query) {
-        venc_loaded_from_default = 1;
-        fprintf(stderr, "[enc] MI_VENC_Query resolved via RTLD_DEFAULT\n");
-    }
-    if (!pMI_VENC_Query && venc_force_load) {
-        int flags = RTLD_LAZY | RTLD_LOCAL;
-#ifdef RTLD_NODELETE
-        flags |= RTLD_NODELETE;
-#endif
-        venc_dl_flags = flags;
-#ifdef RTLD_NOLOAD
-        venc_dl_handle = dlopen("libmi_venc.so", flags | RTLD_NOLOAD);
-        if (!venc_dl_handle) {
-            fprintf(stderr, "[enc] libmi_venc.so not preloaded; attempting full load (may hang encoder on exit)\n");
-        }
-#endif
-        if (!venc_dl_handle) {
-            venc_dl_handle = dlopen("libmi_venc.so", flags);
-        }
-        if (!venc_dl_handle) {
-            fprintf(stderr, "[enc] dlopen libmi_venc.so failed: %s\n", dlerror());
-            venc_dl_broken = 1;
-            return false;
-        }
-        pMI_VENC_Query = (mi_venc_query_fn)dlsym(venc_dl_handle, "MI_VENC_Query");
-        if (pMI_VENC_Query) {
-            venc_loaded_from_dlopen = 1;
-            venc_dl_flags = flags;
-        }
-    }
-
-    if (!pMI_VENC_Query) {
-        fprintf(stderr, "[enc] dlsym MI_VENC_Query failed: %s\n", dlerror());
-        venc_dl_broken = 1;
-        return false;
-    }
-
-    return true;
-}
-
-static bool query_encoder_stats(double *fps_out, double *bitrate_out)
+static bool read_encoder_stats_proc(double *fps_out, double *bitrate_out)
 {
     if (!fps_out || !bitrate_out) return false;
-    if (!ensure_venc_query_loaded()) return false;
-    MI_VENC_ChnStat_t stat;
-    memset(&stat, 0, sizeof(stat));
-    MI_S32 ret = pMI_VENC_Query(0, &stat);
-    if (ret != MI_SUCCESS) {
-        fprintf(stderr, "[enc] MI_VENC_Query failed: %d (disabling encoder stats)\n", ret);
-        venc_dl_broken = 1;
-        return false;
+    FILE *f = fopen("/proc/mi_modules/mi_venc/mi_venc0", "r");
+    if (!f) return false;
+
+    char line[512];
+    int in_section = 0;
+    bool found = false;
+    while (fgets(line, sizeof(line), f)) {
+        if (!in_section) {
+            if (strstr(line, "VENC 0 CHN info")) {
+                in_section = 1;
+            }
+            continue;
+        }
+
+        if (strncmp(line, "ChnId", 5) == 0 || line[0] == '-') continue;
+
+        int chn = -1;
+        int state = 0, enpred = 0, base = 0, enhance = 0, max_stream = 0, frame_idx = 0, gradient = 0;
+        double fps1s = 0.0, kbps = 0.0, fps10s = 0.0, kbps10s = 0.0;
+        int parsed = sscanf(line,
+                            " %d %d %d %d %d %d %d %d %lf %lf %lf %lf",
+                            &chn,
+                            &state,
+                            &enpred,
+                            &base,
+                            &enhance,
+                            &max_stream,
+                            &frame_idx,
+                            &gradient,
+                            &fps1s,
+                            &kbps,
+                            &fps10s,
+                            &kbps10s);
+        if (parsed == 12 && chn == 0) {
+            *fps_out = fps1s;
+            *bitrate_out = kbps;
+            found = true;
+            break;
+        }
+
+        if (parsed < 0 && in_section && line[0] == '\n') {
+            break;
+        }
     }
-    if (stat.u32FrmRateDen == 0) {
-        fprintf(stderr, "[enc] MI_VENC_Query returned zero denominator (num=%u, br=%u)\n", stat.u32FrmRateNum, stat.u32BitRate);
-        return false;
-    }
-    *fps_out = (double)stat.u32FrmRateNum / (double)stat.u32FrmRateDen;
-    *bitrate_out = (double)stat.u32BitRate;
-    if (*fps_out <= 0.0 || *bitrate_out <= 0.0) {
-        fprintf(stderr, "[enc] fps=%.2f bitrate=%.2f (num=%u den=%u br=%u)\n",
-                *fps_out, *bitrate_out, stat.u32FrmRateNum, stat.u32FrmRateDen, stat.u32BitRate);
-    }
-    return true;
+
+    fclose(f);
+    return found;
 }
 
 static bool refresh_system_values(void)
@@ -1470,7 +1456,7 @@ static bool refresh_system_values(void)
 
     double fps = 0.0;
     double bitrate = 0.0;
-    if (query_encoder_stats(&fps, &bitrate)) {
+    if (read_encoder_stats_proc(&fps, &bitrate)) {
         changed |= set_system_value(SYS_VALUE_ENCODER_FPS, fps);
         changed |= set_system_value(SYS_VALUE_ENCODER_BITRATE, bitrate);
     }
@@ -1488,26 +1474,6 @@ static const MI_RGN_CanvasInfo_t *get_cached_canvas(void)
         g_canvas_info_valid = 1;
     }
     return &g_cached_canvas_info;
-}
-
-static void clear_rgn_canvas(void)
-{
-    const MI_RGN_CanvasInfo_t *info = get_cached_canvas();
-    if (!info) return;
-    MI_U32 stride = info->u32Stride;
-    MI_U32 height = info->stSize.u32Height;
-    if (stride == 0 || height == 0) return;
-    MI_U32 size = stride * height;
-
-    if (info->phyAddr) {
-        MI_SYS_MemsetPa(info->phyAddr, 0, size);
-    } else if (info->virtAddr) {
-        memset((void *)info->virtAddr, 0, size);
-    }
-    MI_RGN_UpdateCanvas(hRgnHandle);
-    g_canvas_dirty = 0;
-    g_canvas_info_valid = 0;
-    memset(&g_cached_canvas_info, 0, sizeof(g_cached_canvas_info));
 }
 
 // -------------------------
@@ -1590,7 +1556,10 @@ void mi_region_init(void)
     stRgnChnAttr.unPara.stOsdChnPort.stOsdAlphaAttr.eAlphaMode = E_MI_RGN_PIXEL_ALPHA;
 
     MI_RGN_AttachToChn(hRgnHandle, &stVpeChnPort, &stRgnChnAttr);
-    clear_rgn_canvas();
+
+    if (MI_RGN_GetCanvasInfo(hRgnHandle, &g_cached_canvas_info) == MI_RGN_OK) {
+        g_canvas_info_valid = 1;
+    }
 }
 
 // -------------------------
@@ -1606,6 +1575,10 @@ void init_lvgl(void)
     size_t buf_size = (size_t)osd_width * BUF_ROWS * sizeof(lv_color_t);
     buf1 = (lv_color_t *)malloc(buf_size);
     buf2 = (lv_color_t *)malloc(buf_size);
+    if (!buf1 || !buf2) {
+        fprintf(stderr, "Failed to allocate LVGL buffers\n");
+        exit(1);
+    }
 
     lv_display_t * disp = lv_display_create(osd_width, osd_height);
     lv_display_set_color_format(disp, LV_COLOR_FORMAT_ARGB8888);
@@ -1671,7 +1644,7 @@ static lv_obj_t *create_text_asset(asset_t *asset)
     lv_obj_set_style_text_color(label, lv_color_hex(asset->cfg.text_color), 0);
     lv_obj_set_style_text_opa(label, LV_OPA_COVER, 0);
 
-    char text_buf[128];
+    char text_buf[1024];
     compose_asset_text(asset, text_buf, sizeof(text_buf));
     lv_label_set_text(label, text_buf);
     strncpy(asset->last_label_text, text_buf, sizeof(asset->last_label_text) - 1);
@@ -1715,7 +1688,7 @@ static void maybe_attach_asset_label(asset_t *asset)
     lv_obj_set_style_text_opa(asset->label_obj, LV_OPA_COVER, 0);
     lv_obj_set_style_bg_opa(asset->label_obj, LV_OPA_TRANSP, 0);
 
-    char text_buf[128];
+    char text_buf[1024];
     compose_asset_text(asset, text_buf, sizeof(text_buf));
     lv_label_set_text(asset->label_obj, text_buf);
     strncpy(asset->last_label_text, text_buf, sizeof(asset->last_label_text) - 1);
@@ -1840,37 +1813,6 @@ static void reload_config_runtime(void)
 
 static void cleanup_resources(void)
 {
-    int skip_destructors = (venc_loaded_from_dlopen && !venc_loaded_from_default);
-
-    if (pMI_VENC_Query || venc_dl_handle) {
-        MI_VENC_ChnStat_t stat;
-        memset(&stat, 0, sizeof(stat));
-        if (pMI_VENC_Query) {
-            MI_S32 ret = pMI_VENC_Query(0, &stat);
-            if (ret == MI_SUCCESS && stat.u32FrmRateDen) {
-                double fps = (double)stat.u32FrmRateNum / (double)stat.u32FrmRateDen;
-                fprintf(stderr,
-                        "[enc] exit query: ret=%d fps=%.2f bitrate=%u num=%u den=%u (loaded %s%s)\n",
-                        ret,
-                        fps,
-                        stat.u32BitRate,
-                        stat.u32FrmRateNum,
-                        stat.u32FrmRateDen,
-                        venc_loaded_from_default ? "RTLD_DEFAULT" : "dlopen",
-                        (venc_dl_flags & RTLD_NODELETE) ? "|NODELETE" : "");
-            } else {
-                fprintf(stderr,
-                        "[enc] exit query failed: ret=%d den=%u (loaded %s%s)\n",
-                        ret,
-                        stat.u32FrmRateDen,
-                        venc_loaded_from_default ? "RTLD_DEFAULT" : "dlopen",
-                        (venc_dl_flags & RTLD_NODELETE) ? "|NODELETE" : "");
-            }
-        } else {
-            fprintf(stderr, "[enc] exit: no MI_VENC_Query but handle present (flags=0x%x)\n", venc_dl_flags);
-        }
-    }
-
     destroy_assets();
 
     if (stats_timer) {
@@ -1889,12 +1831,6 @@ static void cleanup_resources(void)
 
     free(buf1);
     free(buf2);
-
-    fflush(NULL);
-    if (skip_destructors) {
-        fprintf(stderr, "[enc] exiting with _exit() to avoid VENC destructors after dlopen\n");
-        _exit(0);
-    }
 }
 
 static void stats_timer_cb(lv_timer_t *timer)
@@ -1934,13 +1870,13 @@ static void stats_timer_cb(lv_timer_t *timer)
                        active_assets, asset_count, primary_w, primary_h,
                        fps_value, last_frame_ms, last_loop_ms, idle_ms_applied);
 
-    if (off < (int)sizeof(buf) - 32) {
+    if (g_cfg.udp_stats && off < (int)sizeof(buf) - 32) {
         int rows = UDP_VALUE_COUNT > SYSTEM_VALUE_COUNT ? UDP_VALUE_COUNT : SYSTEM_VALUE_COUNT;
         off += lv_snprintf(buf + off, sizeof(buf) - off, "\nValues (v=UDP s=SYS):");
         for (int i = 0; i < rows && off < (int)sizeof(buf) - 24; i++) {
             char udp_val[24];
             char sys_val[24];
-            if (g_cfg.udp_stats && i < UDP_VALUE_COUNT) {
+            if (i < UDP_VALUE_COUNT) {
                 int whole = (int)udp_values[i];
                 int frac = (int)((udp_values[i] - whole) * 100.0);
                 if (frac < 0) frac = -frac;
@@ -1964,7 +1900,7 @@ static void stats_timer_cb(lv_timer_t *timer)
         rows = UDP_TEXT_COUNT > SYSTEM_TEXT_COUNT ? UDP_TEXT_COUNT : SYSTEM_TEXT_COUNT;
         off += lv_snprintf(buf + off, sizeof(buf) - off, "\nTexts (t=UDP s=SYS):");
         for (int i = 0; i < rows && off < (int)sizeof(buf) - 20; i++) {
-            const char *udp_t = (g_cfg.udp_stats && i < UDP_TEXT_COUNT && udp_texts[i][0]) ? udp_texts[i] : "-";
+            const char *udp_t = (i < UDP_TEXT_COUNT && udp_texts[i][0]) ? udp_texts[i] : "-";
             const char *sys_t = (i < SYSTEM_TEXT_COUNT && system_texts[i][0]) ? system_texts[i] : "-";
             off += lv_snprintf(buf + off, sizeof(buf) - off, "\n %d t=%s | s=%s", i, udp_t, sys_t);
         }
@@ -1989,8 +1925,12 @@ int main(void)
 {
     load_config();
     compute_osd_geometry();
-    signal(SIGINT, handle_sigint);
-    signal(SIGHUP, handle_sighup);
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = handle_sigint;
+    sigaction(SIGINT, &sa, NULL);
+    sa.sa_handler = handle_sighup;
+    sigaction(SIGHUP, &sa, NULL);
 
     udp_sock = setup_udp_socket();
 
