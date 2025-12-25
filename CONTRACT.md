@@ -27,7 +27,7 @@ Each on-screen asset binds to one numeric channel via `value_index`. Indices `0-
 
 ### Partial Update Examples
 
-The `values` and `texts` arrays are positional. `null` entries are ignored (slot keeps its previous value/text), while omitted trailing indices also keep their previous content; system slots 8–15 are populated locally. Use explicit numbers to overwrite value slots and empty strings to clear text slots.
+The `values` and `texts` arrays are positional. `null` entries are ignored (slot keeps its previous value/text), while omitted trailing indices also keep their previous content; system slots 8–15 are populated locally. Use explicit numbers to overwrite value slots, and empty strings to clear either a text slot or a numeric slot (clears to `0`).
 
 **Update only the first value:**
 ```json

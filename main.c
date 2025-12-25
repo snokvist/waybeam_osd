@@ -920,11 +920,24 @@ static void parse_udp_values(const char *buf)
         if (strncmp(p, "null", 4) == 0) {
             p += 4;
         } else {
+            if (*p == '\"') {
+                /* Treat empty string as a clear-to-zero */
+                p++;
+                if (*p == '\"') {
+                    udp_values[i] = 0.0;
+                    p++; /* skip closing quote */
+                } else {
+                    // Skip until closing quote for malformed entries
+                    while (*p && *p != '\"') p++;
+                    if (*p == '\"') p++;
+                }
+            } else {
             char *endptr = NULL;
             double val = strtod(p, &endptr);
             if (p == endptr) break;
             udp_values[i] = val;
             p = endptr;
+            }
         }
 
         const char *comma = strchr(p, ',');
