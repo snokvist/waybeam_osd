@@ -6,7 +6,7 @@
 - Extra fields are ignored so senders can add metadata if needed.
 - Keep payloads under 1280 bytes (anything larger is dropped).
 - Incoming UDP packets are applied in arrival order; the socket is fully drained whenever it becomes readable so every queued packet is processed. The last packet for a given index/property wins, and on-screen pushes are throttled to ~30 fps (about every 32 ms). `idle_ms` only caps the sleep when no data arrives.
-- Optional `texts` array (up to 8 strings, max 96 chars each) can be sent alongside `values`. These map to `text_index` on bar assets and override a static `label` if present. Missing, empty, or `null` entries fall back to the asset’s `label`. System text slots `8-15` are reserved for future data and come prefilled with descriptors (`temp`, `cpu`, `enc fps`, `bitrate`, `sys4`, `sys5`, `sys6`, `sys7`).
+- Optional `texts` array (up to 8 strings, max 96 chars each) can be sent alongside `values`. These map to `text_index` on bar assets and override a static `label` if present. `null` or empty entries clear the text and fall back to the asset’s `label`. System text slots `8-15` are reserved for future data and come prefilled with descriptors (`temp`, `cpu`, `enc fps`, `bitrate`, `sys4`, `sys5`, `sys6`, `sys7`).
 - Optional `asset_updates` array lets senders retint, reposition, enable/disable, or fully reconfigure assets at runtime. Each object must contain an `id`; if the ID does not exist yet and there is room (max 8 assets), the asset slot is created on the fly. Valid keys include: `enabled` (bool), `type` (`"bar"` or `"text"`), `value_index`, `text_index`, `text_indices` (array), `text_inline`, `label`, `orientation`, `x`, `y`, `width`, `height`, `min`, `max`, `bar_color` (bars only), `text_color`, `background`, `background_opacity`, `segments` (bars only), and `rounded_outline` (bars only). Only valid values that differ from the current config are applied; disabled assets are removed from the screen immediately.
 
 Example:
@@ -27,7 +27,7 @@ Each on-screen asset binds to one numeric channel via `value_index`. Indices `0-
 
 ### Partial Update Examples
 
-The `values` and `texts` arrays are positional, but UDP indices can be skipped by using `null` (system slots 8–15 are populated locally).
+The `values` and `texts` arrays are positional, but UDP indices can be explicitly cleared with `null`. Any omitted indices retain their previous value/text; system slots 8–15 are populated locally.
 
 **Update only the first value:**
 ```json
