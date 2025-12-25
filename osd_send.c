@@ -65,6 +65,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 #include <unistd.h>
 
 #define MAX_PAYLOAD      1280
@@ -77,7 +79,6 @@
 #define INI_VAL_MAX      256
 
 #define MAX_INI_PATHS    32
-#define DEFAULT_INI_PATH "/tmp/aalink_ext.msg"
 #define DEFAULT_DEST_IP  "127.0.0.1"
 #define DEFAULT_PORT     7777
 #define DEFAULT_INTERVAL 64
@@ -642,7 +643,7 @@ static void usage_main(const char *prog)
         "  %s watch [options]\n"
         "\n"
         "Options (send/watch):\n"
-        "  --ini <file>              ini key=value file (default: %s)\n"
+        "  --ini <file>              ini key=value file\n"
         "  --dest <ip|@key>          destination IP (default: %s)\n"
         "  --port <n|@key>           UDP port (default: %d)\n"
         "  --values \"i=v,...\"        set values (v: number | @key | null | empty => \"\")\n"
@@ -666,7 +667,7 @@ static void usage_main(const char *prog)
         "  %s watch --ini /tmp/aalink_ext.msg --dest 10.6.0.1 --port 7777 --interval 64 \\\n"
         "    --values \"0=@used_rssi,1=@mcs\" --texts \"0=@used_source\"\n",
         prog, prog,
-        DEFAULT_INI_PATH, DEFAULT_DEST_IP, DEFAULT_PORT, DEFAULT_INTERVAL,
+        DEFAULT_DEST_IP, DEFAULT_PORT, DEFAULT_INTERVAL,
         prog, prog, prog);
 }
 
@@ -841,8 +842,6 @@ static int cmd_send(int argc, char **argv, const char *prog)
                 if (verbose) fprintf(stderr, "[send] ini not readable: %s (%s)\n", ini_paths[i], strerror(errno));
             }
         }
-    } else {
-        (void)ini_add_file(&ini, DEFAULT_INI_PATH);
     }
 
     /* Parse again for actual options */
@@ -1007,18 +1006,16 @@ static int cmd_watch(int argc, char **argv, const char *prog)
 
     if (!dest_raw) dest_raw = DEFAULT_DEST_IP;
 
-    if (ini_count == 0) {
-        ini_paths[ini_count++] = DEFAULT_INI_PATH;
-    }
-
     /* resolve dest/port (allow defaults if ini missing) */
     IniStore ini0;
     ini_init(&ini0);
     int have_ini0 = 0;
-    for (int i = 0; i < ini_count; i++) {
-        if (ini_add_file(&ini0, ini_paths[i])) have_ini0 = 1;
-        else if (verbose) {
-            fprintf(stderr, "[watch] ini not readable initially: %s (%s)\n", ini_paths[i], strerror(errno));
+    if (ini_count > 0) {
+        for (int i = 0; i < ini_count; i++) {
+            if (ini_add_file(&ini0, ini_paths[i])) have_ini0 = 1;
+            else if (verbose) {
+                fprintf(stderr, "[watch] ini not readable initially: %s (%s)\n", ini_paths[i], strerror(errno));
+            }
         }
     }
 
@@ -1067,14 +1064,16 @@ static int cmd_watch(int argc, char **argv, const char *prog)
         IniStore cur;
         ini_init(&cur);
         int ok = 0;
-        for (int i = 0; i < ini_count; i++) {
-            if (ini_add_file(&cur, ini_paths[i])) ok = 1;
+        if (ini_count > 0) {
+            for (int i = 0; i < ini_count; i++) {
+                if (ini_add_file(&cur, ini_paths[i])) ok = 1;
+            }
         }
 
         Payload pb;
         payload_init(&pb);
 
-        if (verbose && !ok) fprintf(stderr, "[watch] baseline: ini unreadable -> all watched @keys treated as null\n");
+        if (verbose && !ok && ini_count > 0) fprintf(stderr, "[watch] baseline: ini unreadable -> all watched @keys treated as null\n");
 
         for (int i = 0; i < 8; i++) {
             if (w.value_used[i] && w.value_rhs[i]) {
@@ -1120,17 +1119,51 @@ static int cmd_watch(int argc, char **argv, const char *prog)
         }
     }
 
+    /* state for polling efficiency */
+    struct FileState {
+        time_t mtime;
+        off_t size;
+    } fstates[MAX_INI_PATHS];
+    memset(fstates, 0, sizeof(fstates));
+
+    IniStore cur;
+    ini_init(&cur);
+    int loaded_once = 0;
+
     /* poll loop */
     for (;;) {
-        IniStore cur;
-        ini_init(&cur);
-        int ok = 0;
-        for (int i = 0; i < ini_count; i++) {
-            if (ini_add_file(&cur, ini_paths[i])) ok = 1;
+        int needs_reload = 0;
+        /* First run? always reload if we have files */
+        if (!loaded_once) needs_reload = 1;
+
+        if (ini_count > 0) {
+            for (int i = 0; i < ini_count; i++) {
+                struct stat st;
+                if (stat(ini_paths[i], &st) == 0) {
+                    if (st.st_mtime != fstates[i].mtime || st.st_size != fstates[i].size) {
+                        needs_reload = 1;
+                        fstates[i].mtime = st.st_mtime;
+                        fstates[i].size = st.st_size;
+                    }
+                } else {
+                    /* file missing or unreadable */
+                    if (fstates[i].mtime != 0 || fstates[i].size != 0) {
+                        /* it WAS present, now gone -> change */
+                        needs_reload = 1;
+                        fstates[i].mtime = 0;
+                        fstates[i].size = 0;
+                    }
+                }
+            }
         }
 
-        if (verbose && !ok) {
-            fprintf(stderr, "[watch] ini unreadable => all watched @keys resolve as null\n");
+        if (needs_reload) {
+            if (verbose) fprintf(stderr, "[watch] reloading ini files...\n");
+            ini_init(&cur);
+            for (int i = 0; i < ini_count; i++) {
+                (void)ini_add_file(&cur, ini_paths[i]);
+            }
+            loaded_once = 1;
         }
 
         int any_changed = 0;
