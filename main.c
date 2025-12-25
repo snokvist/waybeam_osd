@@ -918,7 +918,6 @@ static void parse_udp_values(const char *buf)
         if (!*p) break;
 
         if (strncmp(p, "null", 4) == 0) {
-            udp_values[i] = 0.0;
             p += 4;
         } else {
             char *endptr = NULL;
@@ -946,7 +945,6 @@ static void parse_udp_texts(const char *buf)
         if (!*p) break;
 
         if (strncmp(p, "null", 4) == 0) {
-            udp_texts[i][0] = '\0';
             p += 4;
         } else if (*p == '\"') {
             p++; // skip quote
