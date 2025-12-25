@@ -6,6 +6,7 @@
   "show_stats": false,
   "udp_stats": true,
   "idle_ms": 100,
+  "system_refresh_ms": 1000,
   "assets": [
     {
       "type": "bar",

@@ -58,6 +58,7 @@ typedef struct {
     int osd_y;
     int show_stats;
     int idle_ms;
+    int system_refresh_ms;
     int udp_stats;
 } app_config_t;
 
@@ -753,6 +754,7 @@ static void set_defaults(void)
     g_cfg.osd_y = 0;
     g_cfg.show_stats = 1;
     g_cfg.idle_ms = 100;
+    g_cfg.system_refresh_ms = 1000;
     g_cfg.udp_stats = 1;
 
     memset(udp_values, 0, sizeof(udp_values));
@@ -867,6 +869,9 @@ static void load_config(void)
     } else if (json_get_int(json, "refresh_ms", &v) == 0) {
         // Backward compatibility with older configs
         g_cfg.idle_ms = clamp_int(v, 10, 1000);
+    }
+    if (json_get_int(json, "system_refresh_ms", &v) == 0) {
+        g_cfg.system_refresh_ms = clamp_int(v, 100, 60000);
     }
 
     // Backwards-compatible single bar fields (used only if no assets array)
@@ -1443,7 +1448,8 @@ static bool read_encoder_stats_proc(double *fps_out, double *bitrate_out)
 static bool refresh_system_values(void)
 {
     uint64_t now = monotonic_ms64();
-    if (last_system_refresh_ms != 0 && now - last_system_refresh_ms < 1000) return false;
+    int refresh_ms = clamp_int(g_cfg.system_refresh_ms, 100, 60000);
+    if (last_system_refresh_ms != 0 && now - last_system_refresh_ms < (uint64_t)refresh_ms) return false;
     last_system_refresh_ms = now;
 
     bool changed = false;
