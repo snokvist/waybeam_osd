@@ -1340,15 +1340,45 @@ static bool set_system_value(int idx, double v)
     return true;
 }
 
+static double parse_temperature_line(const char *line)
+{
+    if (!line) return -1.0;
+    const char *p = line;
+    while (*p && !isdigit((unsigned char)*p) && *p != '-') p++;
+    if (*p == '\0') return -1.0;
+    double v = -1.0;
+    if (sscanf(p, "%lf", &v) == 1) return v;
+    return -1.0;
+}
+
+static double read_soc_temperature_sysfs(void)
+{
+    static const char *paths[] = {
+        "/sys/devices/system/cpu/cpufreq/temp_out",
+    };
+    char line[64];
+    for (int i = 0; i < (int)(sizeof(paths) / sizeof(paths[0])); i++) {
+        FILE *f = fopen(paths[i], "r");
+        if (!f) continue;
+        double temp = -1.0;
+        if (fgets(line, sizeof(line), f)) temp = parse_temperature_line(line);
+        fclose(f);
+        if (temp >= 0.0) return temp;
+    }
+    return -1.0;
+}
+
 static double read_soc_temperature(void)
 {
+    double temp = read_soc_temperature_sysfs();
+    if (temp >= 0.0) return temp;
+
     FILE *fp = popen("ipctool --temp 2>/dev/null", "r");
     if (!fp) return -1.0;
     char line[64];
-    double temp = -1.0;
+    temp = -1.0;
     if (fgets(line, sizeof(line), fp)) {
-        double v = 0.0;
-        if (sscanf(line, "%lf", &v) == 1) temp = v;
+        temp = parse_temperature_line(line);
     }
     pclose(fp);
     return temp;
