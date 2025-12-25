@@ -1225,10 +1225,6 @@ static int cmd_watch(int argc, char **argv, const char *prog)
                         fclose(ctx[i].fp);
                         ctx[i].fp = fopen(ctx[i].path, "r");
                         changed = 1;
-                    } else if (st.st_mtime != ctx[i].mtime || st.st_size != ctx[i].size) {
-                        /* File modified in place */
-                        if (verbose) fprintf(stderr, "[watch] file %d (%s) changed, reloading...\n", i, ctx[i].path);
-                        changed = 1;
                     }
                 }
 
@@ -1241,7 +1237,7 @@ static int cmd_watch(int argc, char **argv, const char *prog)
                     ini_init(&ctx[i].store);
                     ini_parse_stream(&ctx[i].store, ctx[i].fp);
 
-                    /* Refresh stats for inode check only */
+                    /* Refresh stats for inode check */
                     if (fstat(fileno(ctx[i].fp), &st) == 0) {
                          ctx[i].mtime = st.st_mtime;
                          ctx[i].size = st.st_size;
