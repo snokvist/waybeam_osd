@@ -72,10 +72,11 @@
 
 #define MAX_TEXT_LEN     96
 
-#define INI_MAX_KV       256
+#define INI_MAX_KV       512
 #define INI_KEY_MAX      64
 #define INI_VAL_MAX      256
 
+#define MAX_INI_PATHS    32
 #define DEFAULT_INI_PATH "/tmp/aalink_ext.msg"
 #define DEFAULT_DEST_IP  "127.0.0.1"
 #define DEFAULT_PORT     7777
@@ -284,13 +285,12 @@ static void strip_quotes_inplace(char *s)
     }
 }
 
-static int ini_load_file(IniStore *ini, const char *path)
+static int ini_add_file(IniStore *ini, const char *path)
 {
     if (!ini || !path || !*path) return 0;
     FILE *fp = fopen(path, "r");
     if (!fp) return 0;
 
-    ini->count = 0;
     ini->loaded = 1;
 
     char line[512];
@@ -795,7 +795,8 @@ static int cmd_send(int argc, char **argv, const char *prog)
 {
     const char *dest_raw = NULL;
     const char *port_raw = NULL;
-    const char *ini_path = NULL;
+    const char *ini_paths[MAX_INI_PATHS];
+    int ini_count = 0;
     const char *values_spec = NULL;
     const char *texts_spec = NULL;
     int print_json = 0;
@@ -823,18 +824,25 @@ static int cmd_send(int argc, char **argv, const char *prog)
     optind = 1;
     int opt, idx = 0;
     while ((opt = getopt_long(argc, argv, "hv", opts, &idx)) != -1) {
-        if (opt == 3) ini_path = optarg;
+        if (opt == 3) {
+            if (ini_count < MAX_INI_PATHS) {
+                ini_paths[ini_count++] = optarg;
+            } else {
+                fprintf(stderr, "Warning: too many ini files, ignoring %s\n", optarg);
+            }
+        }
         if (opt == 'h') { usage_main(prog); return 0; }
         if (opt == 'v') verbose = 1;
     }
 
-    if (ini_path) {
-        if (!ini_load_file(&ini, ini_path)) {
-            /* send should be script-friendly: if ini missing, still allow literal values/texts */
-            if (verbose) fprintf(stderr, "[send] ini not readable: %s (%s)\n", ini_path, strerror(errno));
+    if (ini_count > 0) {
+        for (int i = 0; i < ini_count; i++) {
+            if (!ini_add_file(&ini, ini_paths[i])) {
+                if (verbose) fprintf(stderr, "[send] ini not readable: %s (%s)\n", ini_paths[i], strerror(errno));
+            }
         }
     } else {
-        (void)ini_load_file(&ini, DEFAULT_INI_PATH);
+        (void)ini_add_file(&ini, DEFAULT_INI_PATH);
     }
 
     /* Parse again for actual options */
@@ -935,7 +943,8 @@ static int cmd_watch(int argc, char **argv, const char *prog)
 {
     const char *dest_raw = NULL;
     const char *port_raw = NULL;
-    const char *ini_path = NULL;
+    const char *ini_paths[MAX_INI_PATHS];
+    int ini_count = 0;
     int interval_ms = DEFAULT_INTERVAL;
     int verbose = 0;
 
@@ -960,7 +969,13 @@ static int cmd_watch(int argc, char **argv, const char *prog)
         switch (opt) {
         case 1: dest_raw = optarg; break;
         case 2: port_raw = optarg; break;
-        case 3: ini_path = optarg; break;
+        case 3:
+            if (ini_count < MAX_INI_PATHS) {
+                ini_paths[ini_count++] = optarg;
+            } else {
+                fprintf(stderr, "Warning: too many ini files, ignoring %s\n", optarg);
+            }
+            break;
         case 5:
             if (!parse_and_store_list_rhs(w.value_rhs, w.value_used, optarg)) { watchspec_free(&w); return 1; }
             break;
@@ -991,14 +1006,20 @@ static int cmd_watch(int argc, char **argv, const char *prog)
     }
 
     if (!dest_raw) dest_raw = DEFAULT_DEST_IP;
-    if (!ini_path) ini_path = DEFAULT_INI_PATH;
+
+    if (ini_count == 0) {
+        ini_paths[ini_count++] = DEFAULT_INI_PATH;
+    }
 
     /* resolve dest/port (allow defaults if ini missing) */
     IniStore ini0;
     ini_init(&ini0);
-    int have_ini0 = ini_load_file(&ini0, ini_path);
-    if (verbose && !have_ini0) {
-        fprintf(stderr, "[watch] ini not readable initially: %s (%s)\n", ini_path, strerror(errno));
+    int have_ini0 = 0;
+    for (int i = 0; i < ini_count; i++) {
+        if (ini_add_file(&ini0, ini_paths[i])) have_ini0 = 1;
+        else if (verbose) {
+            fprintf(stderr, "[watch] ini not readable initially: %s (%s)\n", ini_paths[i], strerror(errno));
+        }
     }
 
     char dest[64];
@@ -1038,14 +1059,17 @@ static int cmd_watch(int argc, char **argv, const char *prog)
     if (sock < 0) { perror("socket"); watchspec_free(&w); return 1; }
 
     if (verbose) {
-        fprintf(stderr, "[watch] start dst=%s:%d ini=%s interval=%dms\n", dest, port, ini_path, interval_ms);
+        fprintf(stderr, "[watch] start dst=%s:%d ini=%d files interval=%dms\n", dest, port, ini_count, interval_ms);
     }
 
     /* baseline send */
     {
         IniStore cur;
         ini_init(&cur);
-        int ok = ini_load_file(&cur, ini_path);
+        int ok = 0;
+        for (int i = 0; i < ini_count; i++) {
+            if (ini_add_file(&cur, ini_paths[i])) ok = 1;
+        }
 
         Payload pb;
         payload_init(&pb);
@@ -1055,7 +1079,8 @@ static int cmd_watch(int argc, char **argv, const char *prog)
         for (int i = 0; i < 8; i++) {
             if (w.value_used[i] && w.value_rhs[i]) {
                 double dv = 0.0;
-                ValueState st = ok ? watch_resolve_value(&cur, w.value_rhs[i], &dv, verbose, i) : VS_NULL;
+                /* if ok=0 (no ini loaded), we still try resolve in case it's literal or something, but store is empty so @key fails */
+                ValueState st = watch_resolve_value(&cur, w.value_rhs[i], &dv, verbose, i);
                 w.last_v_state[i] = st;
                 if (st == VS_NUM) { w.last_v[i] = dv; set_value_num(&pb, i, dv); }
                 else if (st == VS_EMPTY) { set_value_empty(&pb, i); }
@@ -1063,7 +1088,7 @@ static int cmd_watch(int argc, char **argv, const char *prog)
             }
             if (w.text_used[i] && w.text_rhs[i]) {
                 char t[MAX_TEXT_LEN + 1];
-                TextState st = ok ? watch_resolve_text(&cur, w.text_rhs[i], t, verbose, i) : TS_NULL;
+                TextState st = watch_resolve_text(&cur, w.text_rhs[i], t, verbose, i);
                 w.last_t_state[i] = st;
                 if (st == TS_STR) {
                     strncpy(w.last_t[i], t, MAX_TEXT_LEN);
@@ -1099,10 +1124,13 @@ static int cmd_watch(int argc, char **argv, const char *prog)
     for (;;) {
         IniStore cur;
         ini_init(&cur);
-        int ok = ini_load_file(&cur, ini_path);
+        int ok = 0;
+        for (int i = 0; i < ini_count; i++) {
+            if (ini_add_file(&cur, ini_paths[i])) ok = 1;
+        }
 
         if (verbose && !ok) {
-            fprintf(stderr, "[watch] ini unreadable: %s (%s) => all watched @keys resolve as null\n", ini_path, strerror(errno));
+            fprintf(stderr, "[watch] ini unreadable => all watched @keys resolve as null\n");
         }
 
         int any_changed = 0;
@@ -1112,7 +1140,7 @@ static int cmd_watch(int argc, char **argv, const char *prog)
         for (int i = 0; i < 8; i++) {
             if (w.value_used[i] && w.value_rhs[i]) {
                 double dv = 0.0;
-                ValueState st = ok ? watch_resolve_value(&cur, w.value_rhs[i], &dv, verbose, i) : VS_NULL;
+                ValueState st = watch_resolve_value(&cur, w.value_rhs[i], &dv, verbose, i);
 
                 int changed = 0;
                 if (st != w.last_v_state[i]) changed = 1;
@@ -1135,7 +1163,7 @@ static int cmd_watch(int argc, char **argv, const char *prog)
 
             if (w.text_used[i] && w.text_rhs[i]) {
                 char t[MAX_TEXT_LEN + 1];
-                TextState st = ok ? watch_resolve_text(&cur, w.text_rhs[i], t, verbose, i) : TS_NULL;
+                TextState st = watch_resolve_text(&cur, w.text_rhs[i], t, verbose, i);
 
                 int changed = 0;
                 if (st != w.last_t_state[i]) changed = 1;
