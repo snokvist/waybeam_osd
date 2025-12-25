@@ -1004,6 +1004,13 @@ static int cmd_watch(int argc, char **argv, const char *prog)
         return 1;
     }
 
+    if (ini_count == 0) {
+        fprintf(stderr, "Error: at least one --ini file must be specified\n");
+        usage_main(prog);
+        watchspec_free(&w);
+        return 1;
+    }
+
     if (!dest_raw) dest_raw = DEFAULT_DEST_IP;
 
     /* resolve dest/port (allow defaults if ini missing) */
