@@ -7,7 +7,7 @@
 - Keep payloads under 1280 bytes (anything larger is dropped).
 - Incoming UDP packets are applied in arrival order; the socket is fully drained whenever it becomes readable so every queued packet is processed. The last packet for a given index/property wins, and on-screen pushes are throttled to ~30 fps (about every 32 ms). `idle_ms` only caps the sleep when no data arrives.
 - Optional `texts` array (up to 8 strings, max 96 chars each) can be sent alongside `values`. These map to `text_index` on bar assets and override a static `label` if present. `null` entries are ignored (keep existing text); an empty string clears the text and falls back to the asset’s `label`. System text slots `8-15` are reserved for future data and come prefilled with descriptors (`temp`, `cpu`, `enc fps`, `bitrate`, `sys4`, `sys5`, `sys6`, `sys7`).
-- Optional `asset_updates` array lets senders retint, reposition, enable/disable, or fully reconfigure assets at runtime. Each object must contain an `id`; if the ID does not exist yet and there is room (max 8 assets), the asset slot is created on the fly. Valid keys include: `enabled` (bool), `type` (`"bar"` or `"text"`), `value_index`, `text_index`, `text_indices` (array), `text_inline`, `label`, `orientation`, `x`, `y`, `width`, `height`, `min`, `max`, `bar_color` (bars only), `text_color`, `background`, `background_opacity`, `segments` (bars only), and `rounded_outline` (bars only). Only valid values that differ from the current config are applied; disabled assets are removed from the screen immediately.
+- Optional `asset_updates` array lets senders retint, reposition, enable/disable, or fully reconfigure assets at runtime. Each object must contain an `id`; if the ID does not exist yet and there is room (max 8 assets), the asset slot is created on the fly. Valid keys include: `enabled` (bool), `type` (`"bar"` or `"text"`), `value_index`, `value_indices` (array, text only), `text_index`, `text_indices` (array), `text_inline`, `inline_separator` (text only), `label`, `orientation`, `x`, `y`, `width`, `height`, `min`, `max`, `bar_color` (bars only), `text_color`, `background`, `background_opacity`, `segments` (bars only), and `rounded_outline` (bars and text backgrounds). Only valid values that differ from the current config are applied; disabled assets are removed from the screen immediately.
 
 Example:
 ```json
@@ -71,17 +71,19 @@ The UDP socket is **drained fully** on every poll cycle, meaning every packet in
     - `type`: `"bar"` or `"text"`.
     - `enabled` (bool, optional): when `false`, the asset stays hidden until enabled by config reload or UDP `asset_updates`. Defaults to `true`.
     - `id` (int, optional): unique asset identifier for UDP `asset_updates`. Defaults to the array index when omitted.
-    - `value_index` (int): which numeric channel drives this asset (`0–7` for UDP `values[i]`, `8–15` for system values).
+    - `value_index` (int): which numeric channel drives this asset (`0–7` for UDP `values[i]`, `8–15` for system values). Text assets treat this as optional and typically rely on `value_indices` instead.
+    - `value_indices` (array<int/null>, text only): optional numeric channels aligned with `text_indices` positions. `null` skips the numeric half while still printing the text label. Useful for `text_inline` or multi-line readouts where each row shows `label: value`.
     - `text_index` (int, optional, bars/text): which text channel drives the descriptor (`0–7` from UDP `texts[i]`, `8–15` from the system text bank). `-1` or missing skips live text.
-    - `text_indices` (array<int>, text only): render multiple UDP text entries; empty strings are skipped.
-    - `text_inline` (bool, text only): when `true`, joins `text_indices` on a single line with spaces; otherwise stacks them on new lines. Default `false`.
+    - `text_indices` (array<int>, text only): render multiple UDP text entries; empty strings are skipped. When paired with `value_indices`, each position prints `text: value`.
+    - `text_inline` (bool, text only): when `true`, joins `text_indices` on a single line; otherwise stacks them on new lines. Default `false`.
+    - `inline_separator` (string, text only): separator inserted between inline entries (surrounded by spaces when present). Defaults to a single space.
     - `label` (string, optional, bars/text): static text descriptor. Used when no UDP text is present.
     - `orientation` (string, bars only): `"right"` (default) keeps the bar horizontal with the label to the right; `"left"` mirrors the layout with the label on the left and flips the fill so the bar grows from right-to-left. For `left`, the bar container anchors its right edge at `x` so left- and right-oriented bars can share the same coordinate and grow in opposite directions.
     - `x`, `y` (int): position relative to the OSD top-left. For `orientation: "left"`, `x` represents the right edge of the bar’s rounded container.
     - `width`, `height` (int): size in pixels. For text, enables wrapping.
     - `min`, `max` (float): input range mapped to 0–100% for bars.
     - `bar_color` (int): RGB hex value as a number; used by bar styles.
-    - `rounded_outline` (bool, bars only): enables the outlined capsule look. Defaults to `false`.
+    - `rounded_outline` (bool, bars/text): enables the outlined capsule look on bars or rounded backgrounds with padded text for text assets. Defaults to `false`.
     - `segments` (int, bars only): when greater than 1, divides the bar fill into that many evenly spaced blocks that extinguish one-by-one as the value drops (useful for battery-style indicators). Defaults to `0`/unset for a continuous fill.
     - `text_color` (int, optional): RGB hex value for labels/text content. Default white.
     - `background` (int, optional): index of a predefined palette of 11 background swatches (including a fully transparent entry and tinted fills). `-1` or omission keeps the default transparent look. For bars, the background is applied to a rounded container that extends across the bar and its label for a unified pill.
@@ -109,7 +111,7 @@ Example:
   "assets": [
     { "type": "bar", "value_index": 0, "text_index": 0, "label": "BAR CH0", "x": 40, "y": 200, "width": 320, "height": 32, "min": 0.0, "max": 1.0, "orientation": "right", "segments": 8, "bar_color": 2254540, "text_color": 16777215, "background": 4, "background_opacity": 70 },
     { "type": "bar", "value_index": 1, "text_index": 1, "label": "BAR CH1", "x": 420, "y": 140, "width": 220, "height": 24, "min": 0.0, "max": 1.0, "orientation": "left", "bar_color": 2254540, "text_color": 0, "background": 2, "background_opacity": 60, "rounded_outline": true },
-    { "type": "text", "text_indices": [2, 3, 4], "text_inline": false, "label": "Status", "x": 40, "y": 260, "width": 320, "height": 80, "background": 1, "background_opacity": 50, "text_color": 16777215 }
+    { "type": "text", "text_indices": [2, 3, 4], "value_indices": [null, 10, 8], "text_inline": true, "inline_separator": "|", "label": "Status", "x": 40, "y": 260, "width": 360, "height": 60, "background": 1, "background_opacity": 50, "rounded_outline": true, "text_color": 16777215 }
   ]
 }
 ```
