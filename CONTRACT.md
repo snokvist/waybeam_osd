@@ -78,7 +78,7 @@ The UDP socket is **drained fully** on every poll cycle, meaning every packet in
     - `text_inline` (bool, text only): when `true`, joins `text_indices` on a single line; otherwise stacks them on new lines. Default `false`.
     - `inline_separator` (string, text only): separator inserted between inline entries (surrounded by spaces when present). Defaults to a single space.
     - `label` (string, optional, bars/text): static text descriptor. Used when no UDP text is present.
-    - `orientation` (string, bars only): `"right"` (default) keeps the bar horizontal with the label to the right; `"left"` mirrors the layout with the label on the left and flips the fill so the bar grows from right-to-left. For `left`, the bar container anchors its right edge at `x` so left- and right-oriented bars can share the same coordinate and grow in opposite directions.
+    - `orientation` (string): `"right"` (default) keeps the bar horizontal with the label to the right; `"left"` mirrors the layout with the label on the left and flips the fill so the bar grows from right-to-left. For `left`, the bar container anchors its right edge at `x` so left- and right-oriented bars can share the same coordinate and grow in opposite directions. Text assets also accept `"center"` to center both the box origin and text alignment on `x`.
     - `x`, `y` (int): position relative to the OSD top-left. For `orientation: "left"`, `x` represents the right edge of the bar’s rounded container.
     - `width`, `height` (int): size in pixels. For text, enables wrapping.
     - `min`, `max` (float): input range mapped to 0–100% for bars.

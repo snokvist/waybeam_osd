@@ -70,6 +70,7 @@ typedef enum {
 typedef enum {
     ORIENTATION_RIGHT = 0,
     ORIENTATION_LEFT,
+    ORIENTATION_CENTER,
 } asset_orientation_t;
 
 typedef struct {
@@ -237,6 +238,7 @@ static asset_orientation_t parse_orientation_string(const char *str, asset_orien
 {
     if (!str) return def;
     if (strcmp(str, "left") == 0) return ORIENTATION_LEFT;
+    if (strcmp(str, "center") == 0) return ORIENTATION_CENTER;
     if (strcmp(str, "right") == 0) return ORIENTATION_RIGHT;
     return def;
 }
@@ -458,6 +460,7 @@ static lv_opa_t pct_to_opa(int pct)
 
 static void apply_background_style(lv_obj_t *obj, int bg_style, int bg_opacity_pct, lv_part_t part);
 static void layout_bar_asset(asset_t *asset);
+static void layout_text_asset(asset_t *asset);
 static void bar_draw_event_cb(lv_event_t *e);
 static void destroy_asset_visual(asset_t *asset);
 static void create_asset_visual(asset_t *asset);
@@ -553,8 +556,8 @@ static void apply_asset_styles(asset_t *asset)
                 int h = lv_obj_get_height(asset->obj);
                 if (h == 0 && cfg->height > 0) h = cfg->height;
                 if (cfg->rounded_outline) {
-                    radius = h > 0 ? h / 2 : 8;
-                    if (radius < 6) radius = 6;
+                    radius = h > 0 ? h / 3 : 8;
+                    if (radius < 4) radius = 4;
                     if (h > 0 && radius > h / 2) radius = h / 2;
                     lv_obj_set_style_radius(asset->obj, radius, 0);
                 } else {
@@ -756,6 +759,35 @@ static void layout_bar_asset(asset_t *asset)
             lv_obj_align(asset->label_obj, LV_ALIGN_LEFT_MID, label_x, 0);
         }
     }
+}
+
+static void layout_text_asset(asset_t *asset)
+{
+    if (!asset || !asset->obj) return;
+    const asset_cfg_t *cfg = &asset->cfg;
+    int width = cfg->width > 0 ? cfg->width : LV_SIZE_CONTENT;
+    int height = cfg->height > 0 ? cfg->height : LV_SIZE_CONTENT;
+    lv_obj_set_size(asset->obj, width, height);
+
+    lv_text_align_t align = LV_TEXT_ALIGN_LEFT;
+    lv_align_t obj_align = LV_ALIGN_TOP_LEFT;
+    switch (cfg->orientation) {
+        case ORIENTATION_CENTER:
+            align = LV_TEXT_ALIGN_CENTER;
+            obj_align = LV_ALIGN_TOP_MID;
+            break;
+        case ORIENTATION_LEFT:
+            align = LV_TEXT_ALIGN_LEFT;
+            obj_align = LV_ALIGN_TOP_LEFT;
+            break;
+        case ORIENTATION_RIGHT:
+        default:
+            align = LV_TEXT_ALIGN_RIGHT;
+            obj_align = LV_ALIGN_TOP_RIGHT;
+            break;
+    }
+    lv_obj_set_style_text_align(asset->obj, align, 0);
+    lv_obj_align(asset->obj, obj_align, to_canvas_x(cfg->x), to_canvas_y(cfg->y));
 }
 
 static int json_get_string_range(const char *start, const char *end, const char *key, char *buf, size_t buf_sz)
@@ -1284,10 +1316,7 @@ static void parse_udp_asset_updates(const char *buf)
         } else {
             if (relayout) {
                 if (asset->cfg.type == ASSET_TEXT) {
-                    int width = asset->cfg.width > 0 ? asset->cfg.width : LV_SIZE_CONTENT;
-                    int height = asset->cfg.height > 0 ? asset->cfg.height : LV_SIZE_CONTENT;
-                    lv_obj_set_size(asset->obj, width, height);
-                    lv_obj_set_pos(asset->obj, asset->cfg.x, asset->cfg.y);
+                    layout_text_asset(asset);
                 } else {
                     layout_bar_asset(asset);
                 }
@@ -1836,10 +1865,6 @@ static void destroy_asset_visual(asset_t *asset)
 static lv_obj_t *create_text_asset(asset_t *asset)
 {
     lv_obj_t *label = lv_label_create(lv_scr_act());
-    int width = asset->cfg.width > 0 ? asset->cfg.width : LV_SIZE_CONTENT;
-    int height = asset->cfg.height > 0 ? asset->cfg.height : LV_SIZE_CONTENT;
-    lv_obj_set_size(label, width, height);
-    lv_obj_align(label, LV_ALIGN_TOP_LEFT, to_canvas_x(asset->cfg.x), to_canvas_y(asset->cfg.y));
     lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
     apply_background_style(label, asset->cfg.bg_style, asset->cfg.bg_opacity_pct, 0);
     lv_obj_set_style_text_color(label, lv_color_hex(asset->cfg.text_color), 0);
@@ -1850,6 +1875,8 @@ static lv_obj_t *create_text_asset(asset_t *asset)
     lv_label_set_text(label, text_buf);
     strncpy(asset->last_label_text, text_buf, sizeof(asset->last_label_text) - 1);
     asset->last_label_text[sizeof(asset->last_label_text) - 1] = '\0';
+    asset->obj = label;
+    layout_text_asset(asset);
     return label;
 }
 

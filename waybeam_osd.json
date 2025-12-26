@@ -150,6 +150,7 @@
       "inline_separator": "|",
       "text_inline": true,
       "label": "Status",
+      "orientation": "center",
       "x": 20,
       "y": 140,
       "width": 360,
