@@ -556,8 +556,8 @@ static void apply_asset_styles(asset_t *asset)
                 int h = lv_obj_get_height(asset->obj);
                 if (h == 0 && cfg->height > 0) h = cfg->height;
                 if (cfg->rounded_outline) {
-                    radius = h > 0 ? h / 3 : 8;
-                    if (radius < 4) radius = 4;
+                    radius = h > 0 ? h / 4 : 6;
+                    if (radius < 3) radius = 3;
                     if (h > 0 && radius > h / 2) radius = h / 2;
                     lv_obj_set_style_radius(asset->obj, radius, 0);
                 } else {
