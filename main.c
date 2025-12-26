@@ -769,25 +769,32 @@ static void layout_text_asset(asset_t *asset)
     int height = cfg->height > 0 ? cfg->height : LV_SIZE_CONTENT;
     lv_obj_set_size(asset->obj, width, height);
 
+    // Resolve content-driven size before anchoring so we can offset correctly
+    if (width == LV_SIZE_CONTENT || height == LV_SIZE_CONTENT) {
+        lv_obj_update_layout(asset->obj);
+        width = lv_obj_get_width(asset->obj);
+        height = lv_obj_get_height(asset->obj);
+    }
+
     lv_text_align_t align = LV_TEXT_ALIGN_LEFT;
-    lv_align_t obj_align = LV_ALIGN_TOP_LEFT;
+    int pos_x = to_canvas_x(cfg->x);
+    int pos_y = to_canvas_y(cfg->y);
     switch (cfg->orientation) {
         case ORIENTATION_CENTER:
             align = LV_TEXT_ALIGN_CENTER;
-            obj_align = LV_ALIGN_TOP_MID;
+            pos_x -= width / 2;
             break;
         case ORIENTATION_LEFT:
-            align = LV_TEXT_ALIGN_LEFT;
-            obj_align = LV_ALIGN_TOP_LEFT;
+            align = LV_TEXT_ALIGN_RIGHT;
+            pos_x -= width;
             break;
         case ORIENTATION_RIGHT:
         default:
-            align = LV_TEXT_ALIGN_RIGHT;
-            obj_align = LV_ALIGN_TOP_RIGHT;
+            align = LV_TEXT_ALIGN_LEFT;
             break;
     }
     lv_obj_set_style_text_align(asset->obj, align, 0);
-    lv_obj_align(asset->obj, obj_align, to_canvas_x(cfg->x), to_canvas_y(cfg->y));
+    lv_obj_set_pos(asset->obj, pos_x, pos_y);
 }
 
 static int json_get_string_range(const char *start, const char *end, const char *key, char *buf, size_t buf_sz)
