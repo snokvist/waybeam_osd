@@ -6,7 +6,7 @@
   "show_stats": true,
   "udp_stats": true,
   "idle_ms": 100,
-  "system_refresh_ms": 750,
+  "system_refresh_ms": 250,
   "assets": [
     {
       "type": "bar",
@@ -145,19 +145,19 @@
       "type": "text",
       "enabled": true,
       "id": 7,
-      "text_indices": [3, 4, 8],
-      "value_indices": [null, null, 8],
+      "text_indices": [9, 10, 8],
+      "value_indices": [9, 10, 8],
       "inline_separator": "|",
       "text_inline": true,
-      "label": "Status",
       "orientation": "center",
-      "x": 20,
-      "y": 140,
-      "width": 360,
-      "height": 48,
-      "background": 1,
-      "background_opacity": 20,
+      "label": "Fallback text",
+      "x": 695,
+      "y": 150,
+      "width": 400,
+      "height": 80,
       "rounded_outline": true,
+      "background": 0,
+      "background_opacity": 20,
       "text_color": 16777215
     }
   ]
