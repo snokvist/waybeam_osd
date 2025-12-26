@@ -70,6 +70,7 @@ typedef enum {
 typedef enum {
     ORIENTATION_RIGHT = 0,
     ORIENTATION_LEFT,
+    ORIENTATION_CENTER,
 } asset_orientation_t;
 
 typedef struct {
@@ -91,7 +92,10 @@ typedef struct {
     int text_index;
     int text_indices[8];
     int text_indices_count;
+    int value_indices[8];
+    int value_indices_count;
     int text_inline;
+    char inline_separator[16];
     int rounded_outline;
     int segments;
     asset_orientation_t orientation;
@@ -234,6 +238,7 @@ static asset_orientation_t parse_orientation_string(const char *str, asset_orien
 {
     if (!str) return def;
     if (strcmp(str, "left") == 0) return ORIENTATION_LEFT;
+    if (strcmp(str, "center") == 0) return ORIENTATION_CENTER;
     if (strcmp(str, "right") == 0) return ORIENTATION_RIGHT;
     return def;
 }
@@ -419,7 +424,7 @@ static int json_get_bool_range(const char *start, const char *end, const char *k
     return -1;
 }
 
-static void json_get_int_array_range(const char *start, const char *end, const char *key, int *out, int max_count, int *out_count)
+static void json_get_int_array_range(const char *start, const char *end, const char *key, int *out, int max_count, int *out_count, int null_marker)
 {
     if (!out || max_count <= 0) return;
     const char *p = find_key_range(start, end, key);
@@ -431,11 +436,16 @@ static void json_get_int_array_range(const char *start, const char *end, const c
     while (p < end && count < max_count) {
         while (p < end && isspace((unsigned char)*p)) p++;
         if (p >= end || *p == ']') break;
-        char *endptr = NULL;
-        int v = (int)strtol(p, &endptr, 0);
-        if (!endptr || endptr == p || endptr > end) break;
-        out[count++] = v;
-        p = endptr;
+        if (strncmp(p, "null", 4) == 0) {
+            out[count++] = null_marker;
+            p += 4;
+        } else {
+            char *endptr = NULL;
+            int v = (int)strtol(p, &endptr, 0);
+            if (!endptr || endptr == p || endptr > end) break;
+            out[count++] = v;
+            p = endptr;
+        }
         while (p < end && *p != ',' && *p != ']') p++;
         if (p < end && *p == ',') p++;
     }
@@ -450,6 +460,7 @@ static lv_opa_t pct_to_opa(int pct)
 
 static void apply_background_style(lv_obj_t *obj, int bg_style, int bg_opacity_pct, lv_part_t part);
 static void layout_bar_asset(asset_t *asset);
+static void layout_text_asset(asset_t *asset);
 static void bar_draw_event_cb(lv_event_t *e);
 static void destroy_asset_visual(asset_t *asset);
 static void create_asset_visual(asset_t *asset);
@@ -482,8 +493,14 @@ static void init_asset_defaults(asset_t *a, int id)
     a->cfg.bg_style = -1;
     a->cfg.bg_opacity_pct = -1;
     a->cfg.text_indices_count = 0;
+    a->cfg.value_indices_count = 0;
     a->cfg.text_inline = 0;
     a->cfg.text_index = -1;
+    for (int i = 0; i < 8; i++) {
+        a->cfg.value_indices[i] = -1;
+        a->cfg.text_indices[i] = -1;
+    }
+    a->cfg.inline_separator[0] = '\0';
     a->cfg.orientation = ORIENTATION_RIGHT;
     a->cfg.rounded_outline = 0;
     a->cfg.segments = 0;
@@ -535,6 +552,23 @@ static void apply_asset_styles(asset_t *asset)
                 apply_background_style(asset->obj, cfg->bg_style, cfg->bg_opacity_pct, 0);
                 lv_obj_set_style_text_color(asset->obj, lv_color_hex(cfg->text_color), 0);
                 lv_obj_set_style_text_opa(asset->obj, LV_OPA_COVER, 0);
+                int radius = 0;
+                int h = lv_obj_get_height(asset->obj);
+                if (h == 0 && cfg->height > 0) h = cfg->height;
+                if (cfg->rounded_outline) {
+                    radius = h > 0 ? h / 4 : 6;
+                    if (radius < 3) radius = 3;
+                    if (h > 0 && radius > h / 2) radius = h / 2;
+                    lv_obj_set_style_radius(asset->obj, radius, 0);
+                } else {
+                    lv_obj_set_style_radius(asset->obj, 0, 0);
+                }
+                int pad = cfg->rounded_outline ? 6 : 2;
+                lv_obj_set_style_pad_top(asset->obj, pad, 0);
+                lv_obj_set_style_pad_bottom(asset->obj, pad, 0);
+                lv_obj_set_style_pad_left(asset->obj, pad + 2, 0);
+                lv_obj_set_style_pad_right(asset->obj, pad + 2, 0);
+                lv_obj_set_style_clip_corner(asset->obj, cfg->rounded_outline ? 1 : 0, 0);
             }
             break;
         default:
@@ -727,6 +761,42 @@ static void layout_bar_asset(asset_t *asset)
     }
 }
 
+static void layout_text_asset(asset_t *asset)
+{
+    if (!asset || !asset->obj) return;
+    const asset_cfg_t *cfg = &asset->cfg;
+    int width = cfg->width > 0 ? cfg->width : LV_SIZE_CONTENT;
+    int height = cfg->height > 0 ? cfg->height : LV_SIZE_CONTENT;
+    lv_obj_set_size(asset->obj, width, height);
+
+    // Resolve content-driven size before anchoring so we can offset correctly
+    if (width == LV_SIZE_CONTENT || height == LV_SIZE_CONTENT) {
+        lv_obj_update_layout(asset->obj);
+        width = lv_obj_get_width(asset->obj);
+        height = lv_obj_get_height(asset->obj);
+    }
+
+    lv_text_align_t align = LV_TEXT_ALIGN_LEFT;
+    int pos_x = to_canvas_x(cfg->x);
+    int pos_y = to_canvas_y(cfg->y);
+    switch (cfg->orientation) {
+        case ORIENTATION_CENTER:
+            align = LV_TEXT_ALIGN_CENTER;
+            pos_x -= width / 2;
+            break;
+        case ORIENTATION_LEFT:
+            align = LV_TEXT_ALIGN_RIGHT;
+            pos_x -= width;
+            break;
+        case ORIENTATION_RIGHT:
+        default:
+            align = LV_TEXT_ALIGN_LEFT;
+            break;
+    }
+    lv_obj_set_style_text_align(asset->obj, align, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_pos(asset->obj, pos_x, pos_y);
+}
+
 static int json_get_string_range(const char *start, const char *end, const char *key, char *buf, size_t buf_sz)
 {
     const char *p = find_key_range(start, end, key);
@@ -806,8 +876,12 @@ static void parse_assets_array(const char *json)
 
         int v = 0;
         float fv = 0.0f;
+        int value_index_set = 0;
         if (json_get_bool_range(obj_start, obj_end, "enabled", &v) == 0) a.cfg.enabled = v;
-        if (json_get_int_range(obj_start, obj_end, "value_index", &v) == 0) a.cfg.value_index = clamp_int(v, 0, TOTAL_VALUE_COUNT - 1);
+        if (json_get_int_range(obj_start, obj_end, "value_index", &v) == 0) {
+            a.cfg.value_index = clamp_int(v, 0, TOTAL_VALUE_COUNT - 1);
+            value_index_set = 1;
+        }
         if (json_get_int_range(obj_start, obj_end, "id", &v) == 0) a.cfg.id = clamp_int(v, 0, 63);
         if (json_get_int_range(obj_start, obj_end, "x", &v) == 0) a.cfg.x = v;
         if (json_get_int_range(obj_start, obj_end, "y", &v) == 0) a.cfg.y = v;
@@ -821,11 +895,20 @@ static void parse_assets_array(const char *json)
         if (json_get_int_range(obj_start, obj_end, "background_opacity", &v) == 0) a.cfg.bg_opacity_pct = clamp_int(v, 0, 100);
         if (json_get_int_range(obj_start, obj_end, "segments", &v) == 0) a.cfg.segments = clamp_int(v, 0, 64);
         if (json_get_int_range(obj_start, obj_end, "text_index", &v) == 0) a.cfg.text_index = clamp_int(v, -1, TOTAL_TEXT_COUNT - 1);
-        json_get_int_array_range(obj_start, obj_end, "text_indices", a.cfg.text_indices, 8, &a.cfg.text_indices_count);
+        json_get_int_array_range(obj_start, obj_end, "text_indices", a.cfg.text_indices, 8, &a.cfg.text_indices_count, -1);
         for (int i = 0; i < a.cfg.text_indices_count; i++) {
-            a.cfg.text_indices[i] = clamp_int(a.cfg.text_indices[i], 0, TOTAL_TEXT_COUNT - 1);
+            if (a.cfg.text_indices[i] >= 0) {
+                a.cfg.text_indices[i] = clamp_int(a.cfg.text_indices[i], 0, TOTAL_TEXT_COUNT - 1);
+            }
+        }
+        json_get_int_array_range(obj_start, obj_end, "value_indices", a.cfg.value_indices, 8, &a.cfg.value_indices_count, -1);
+        for (int i = 0; i < a.cfg.value_indices_count; i++) {
+            if (a.cfg.value_indices[i] >= 0) {
+                a.cfg.value_indices[i] = clamp_int(a.cfg.value_indices[i], 0, TOTAL_VALUE_COUNT - 1);
+            }
         }
         if (json_get_bool_range(obj_start, obj_end, "text_inline", &v) == 0) a.cfg.text_inline = v;
+        json_get_string_range(obj_start, obj_end, "inline_separator", a.cfg.inline_separator, sizeof(a.cfg.inline_separator));
         if (json_get_bool_range(obj_start, obj_end, "rounded_outline", &v) == 0) a.cfg.rounded_outline = v;
         json_get_string_range(obj_start, obj_end, "label", a.cfg.label, sizeof(a.cfg.label));
         char orient_buf[16];
@@ -835,6 +918,10 @@ static void parse_assets_array(const char *json)
 
         a.last_pct = -1;
         a.last_label_text[0] = '\0';
+
+        if (a.cfg.type == ASSET_TEXT && !value_index_set) {
+            a.cfg.value_index = -1;
+        }
 
         assets[asset_count++] = a;
         if (asset_count >= MAX_ASSETS) break;
@@ -1012,11 +1099,13 @@ static void parse_udp_asset_updates(const char *buf)
         }
 
         asset_t *asset = find_asset_by_id(id);
+        int new_asset = 0;
         if (!asset) {
             if (asset_count >= MAX_ASSETS) continue;
             asset = &assets[asset_count++];
             init_asset_defaults(asset, id);
             asset->cfg.enabled = 0;
+            new_asset = 1;
         }
 
         int v = 0;
@@ -1026,6 +1115,7 @@ static void parse_udp_asset_updates(const char *buf)
         int rerange = 0;
         int recreate = 0;
         int text_change = 0;
+        int type_changed = 0;
 
         int enabled_flag = asset->cfg.enabled;
         if (json_get_bool_range(obj_start, obj_end, "enabled", &v) == 0) {
@@ -1043,14 +1133,17 @@ static void parse_udp_asset_updates(const char *buf)
             if (new_type != asset->cfg.type) {
                 asset->cfg.type = new_type;
                 recreate = 1;
+                type_changed = 1;
             }
         }
 
+        int value_index_seen = 0;
         if (json_get_int_range(obj_start, obj_end, "value_index", &v) == 0) {
             int idx = clamp_int(v, 0, TOTAL_VALUE_COUNT - 1);
             if (idx != asset->cfg.value_index) {
                 asset->cfg.value_index = idx;
             }
+            value_index_seen = 1;
         }
 
         if (json_get_int_range(obj_start, obj_end, "text_index", &v) == 0) {
@@ -1064,13 +1157,32 @@ static void parse_udp_asset_updates(const char *buf)
         int indices_tmp[8] = {0};
         int idx_count = 0;
         if (find_key_range(obj_start, obj_end, "text_indices")) {
-            json_get_int_array_range(obj_start, obj_end, "text_indices", indices_tmp, 8, &idx_count);
+            json_get_int_array_range(obj_start, obj_end, "text_indices", indices_tmp, 8, &idx_count, -1);
             for (int i = 0; i < idx_count; i++) {
-                indices_tmp[i] = clamp_int(indices_tmp[i], 0, TOTAL_TEXT_COUNT - 1);
+                if (indices_tmp[i] >= 0) {
+                    indices_tmp[i] = clamp_int(indices_tmp[i], 0, TOTAL_TEXT_COUNT - 1);
+                }
             }
             if (idx_count != asset->cfg.text_indices_count || memcmp(indices_tmp, asset->cfg.text_indices, sizeof(int) * (size_t)idx_count) != 0) {
                 memcpy(asset->cfg.text_indices, indices_tmp, sizeof(int) * (size_t)idx_count);
                 asset->cfg.text_indices_count = idx_count;
+                text_change = 1;
+            }
+        }
+
+        int value_indices_tmp[8] = {0};
+        int value_idx_count = 0;
+        if (find_key_range(obj_start, obj_end, "value_indices")) {
+            json_get_int_array_range(obj_start, obj_end, "value_indices", value_indices_tmp, 8, &value_idx_count, -1);
+            for (int i = 0; i < value_idx_count; i++) {
+                if (value_indices_tmp[i] >= 0) {
+                    value_indices_tmp[i] = clamp_int(value_indices_tmp[i], 0, TOTAL_VALUE_COUNT - 1);
+                }
+            }
+            if (value_idx_count != asset->cfg.value_indices_count ||
+                memcmp(value_indices_tmp, asset->cfg.value_indices, sizeof(int) * (size_t)value_idx_count) != 0) {
+                memcpy(asset->cfg.value_indices, value_indices_tmp, sizeof(int) * (size_t)value_idx_count);
+                asset->cfg.value_indices_count = value_idx_count;
                 text_change = 1;
             }
         }
@@ -1081,6 +1193,19 @@ static void parse_udp_asset_updates(const char *buf)
                 asset->cfg.text_inline = inline_flag;
                 text_change = 1;
             }
+        }
+
+        char inline_sep_buf[sizeof(asset->cfg.inline_separator)];
+        if (json_get_string_range(obj_start, obj_end, "inline_separator", inline_sep_buf, sizeof(inline_sep_buf)) == 0) {
+            if (strcmp(inline_sep_buf, asset->cfg.inline_separator) != 0) {
+                strncpy(asset->cfg.inline_separator, inline_sep_buf, sizeof(asset->cfg.inline_separator) - 1);
+                asset->cfg.inline_separator[sizeof(asset->cfg.inline_separator) - 1] = '\0';
+                text_change = 1;
+            }
+        }
+
+        if ((type_changed || new_asset) && asset->cfg.type == ASSET_TEXT && !value_index_seen && asset->cfg.value_indices_count == 0) {
+            asset->cfg.value_index = -1;
         }
 
         if (json_get_bool_range(obj_start, obj_end, "rounded_outline", &v) == 0) {
@@ -1198,10 +1323,7 @@ static void parse_udp_asset_updates(const char *buf)
         } else {
             if (relayout) {
                 if (asset->cfg.type == ASSET_TEXT) {
-                    int width = asset->cfg.width > 0 ? asset->cfg.width : LV_SIZE_CONTENT;
-                    int height = asset->cfg.height > 0 ? asset->cfg.height : LV_SIZE_CONTENT;
-                    lv_obj_set_size(asset->obj, width, height);
-                    lv_obj_set_pos(asset->obj, asset->cfg.x, asset->cfg.y);
+                    layout_text_asset(asset);
                 } else {
                     layout_bar_asset(asset);
                 }
@@ -1248,6 +1370,86 @@ static const char *get_asset_text(const asset_t *asset)
     return "";
 }
 
+static void format_value_text(double v, char *buf, size_t buf_sz)
+{
+    if (!buf || buf_sz == 0) return;
+    double rounded = (v >= 0.0) ? (v + 0.5) : (v - 0.5);
+    double diff = v - rounded;
+    if (diff < 0.0) diff = -diff;
+    if (diff < 0.005) {
+        snprintf(buf, buf_sz, "%.0f", v);
+        return;
+    }
+    double abs_v = v < 0.0 ? -v : v;
+    if (abs_v < 10.0) {
+        snprintf(buf, buf_sz, "%.2f", v);
+    } else if (abs_v < 100.0) {
+        snprintf(buf, buf_sz, "%.1f", v);
+    } else {
+        snprintf(buf, buf_sz, "%.0f", v);
+    }
+}
+
+static void append_entry_separator(const asset_cfg_t *cfg, char *buf, size_t buf_sz, size_t *written)
+{
+    if (!cfg || !buf || !written) return;
+    if (*written >= buf_sz - 1) return;
+    if (cfg->text_inline) {
+        const char *sep = cfg->inline_separator;
+        size_t sep_len = strlen(sep);
+        if (sep_len == 0) {
+            buf[(*written)++] = ' ';
+            return;
+        }
+        buf[(*written)++] = ' ';
+        size_t to_copy = sep_len < buf_sz - 1 - *written ? sep_len : buf_sz - 1 - *written;
+        memcpy(buf + *written, sep, to_copy);
+        *written += to_copy;
+        if (*written < buf_sz - 1) {
+            buf[(*written)++] = ' ';
+        }
+    } else {
+        buf[(*written)++] = '\n';
+    }
+}
+
+static void append_text_value_entry(const asset_t *asset, const char *text, int value_idx, char *buf, size_t buf_sz, size_t *written)
+{
+    if (!asset || !buf || !written) return;
+    const asset_cfg_t *cfg = &asset->cfg;
+    int clamped_value_idx = (value_idx >= 0 && value_idx < TOTAL_VALUE_COUNT) ? value_idx : -1;
+    const char *t = text ? text : "";
+    bool has_text = t[0] != '\0';
+    bool has_value = clamped_value_idx >= 0;
+    if (!has_text && !has_value) return;
+
+    if (*written > 0) {
+        append_entry_separator(cfg, buf, buf_sz, written);
+    }
+
+    if (has_text) {
+        size_t len = strnlen(t, TEXT_SLOT_LEN - 1);
+        size_t to_copy = len < buf_sz - 1 - *written ? len : buf_sz - 1 - *written;
+        memcpy(buf + *written, t, to_copy);
+        *written += to_copy;
+        if (*written < buf_sz - 1) {
+            buf[(*written)++] = ':';
+            if (has_value && *written < buf_sz - 1) {
+                buf[(*written)++] = ' ';
+            }
+        }
+    }
+
+    if (has_value && *written < buf_sz - 1) {
+        char val_buf[64];
+        format_value_text(get_value_channel(clamped_value_idx), val_buf, sizeof(val_buf));
+        size_t len = strnlen(val_buf, sizeof(val_buf) - 1);
+        size_t to_copy = len < buf_sz - 1 - *written ? len : buf_sz - 1 - *written;
+        memcpy(buf + *written, val_buf, to_copy);
+        *written += to_copy;
+    }
+}
+
 static void compose_asset_text(const asset_t *asset, char *buf, size_t buf_sz)
 {
     if (!buf || buf_sz == 0) return;
@@ -1258,31 +1460,30 @@ static void compose_asset_text(const asset_t *asset, char *buf, size_t buf_sz)
         size_t written = 0;
         if (asset->cfg.text_indices_count > 0) {
             for (int i = 0; i < asset->cfg.text_indices_count; i++) {
-                int idx = clamp_int(asset->cfg.text_indices[i], 0, TOTAL_TEXT_COUNT - 1);
-                const char *t = get_text_channel(idx);
-                if (t[0] == '\0') continue;
-                if (written > 0 && written < buf_sz - 1) {
-                    buf[written++] = asset->cfg.text_inline ? ' ' : '\n';
+                int idx = asset->cfg.text_indices[i];
+                const char *t = "";
+                if (idx >= 0 && idx < TOTAL_TEXT_COUNT) {
+                    t = get_text_channel(idx);
                 }
-                size_t len = strnlen(t, TEXT_SLOT_LEN - 1);
-                size_t to_copy = len < buf_sz - 1 - written ? len : buf_sz - 1 - written;
-                memcpy(buf + written, t, to_copy);
-                written += to_copy;
+                int value_idx = (i < asset->cfg.value_indices_count) ? asset->cfg.value_indices[i] : -1;
+                append_text_value_entry(asset, t, value_idx, buf, buf_sz, &written);
                 if (written >= buf_sz - 1) break;
             }
         }
 
         if (written == 0 && asset->cfg.text_index >= 0 && asset->cfg.text_index < TOTAL_TEXT_COUNT) {
             const char *t = get_text_channel(asset->cfg.text_index);
-            size_t len = strnlen(t, TEXT_SLOT_LEN - 1);
-            size_t to_copy = len < buf_sz - 1 ? len : buf_sz - 1;
-            memcpy(buf, t, to_copy);
-            written = to_copy;
+            int value_idx = (asset->cfg.value_indices_count > 0) ? asset->cfg.value_indices[0] : asset->cfg.value_index;
+            append_text_value_entry(asset, t, value_idx, buf, buf_sz, &written);
         }
 
         if (written == 0 && asset->cfg.label[0] != '\0') {
-            strncpy(buf, asset->cfg.label, buf_sz - 1);
-            buf[buf_sz - 1] = '\0';
+            int value_idx = (asset->cfg.value_indices_count > 0) ? asset->cfg.value_indices[0] : asset->cfg.value_index;
+            append_text_value_entry(asset, asset->cfg.label, value_idx, buf, buf_sz, &written);
+        }
+
+        if (written == 0) {
+            buf[0] = '\0';
         } else {
             buf[written] = '\0';
         }
@@ -1671,10 +1872,6 @@ static void destroy_asset_visual(asset_t *asset)
 static lv_obj_t *create_text_asset(asset_t *asset)
 {
     lv_obj_t *label = lv_label_create(lv_scr_act());
-    int width = asset->cfg.width > 0 ? asset->cfg.width : LV_SIZE_CONTENT;
-    int height = asset->cfg.height > 0 ? asset->cfg.height : LV_SIZE_CONTENT;
-    lv_obj_set_size(label, width, height);
-    lv_obj_align(label, LV_ALIGN_TOP_LEFT, to_canvas_x(asset->cfg.x), to_canvas_y(asset->cfg.y));
     lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
     apply_background_style(label, asset->cfg.bg_style, asset->cfg.bg_opacity_pct, 0);
     lv_obj_set_style_text_color(label, lv_color_hex(asset->cfg.text_color), 0);
@@ -1685,6 +1882,8 @@ static lv_obj_t *create_text_asset(asset_t *asset)
     lv_label_set_text(label, text_buf);
     strncpy(asset->last_label_text, text_buf, sizeof(asset->last_label_text) - 1);
     asset->last_label_text[sizeof(asset->last_label_text) - 1] = '\0';
+    asset->obj = label;
+    layout_text_asset(asset);
     return label;
 }
 
@@ -1783,6 +1982,7 @@ static void update_assets_from_channels(void)
                         lv_label_set_text(assets[i].obj, text_buf);
                         strncpy(assets[i].last_label_text, text_buf, sizeof(assets[i].last_label_text) - 1);
                         assets[i].last_label_text[sizeof(assets[i].last_label_text) - 1] = '\0';
+                        layout_text_asset(&assets[i]);
                     }
                 }
                 continue;
