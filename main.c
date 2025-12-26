@@ -793,7 +793,7 @@ static void layout_text_asset(asset_t *asset)
             align = LV_TEXT_ALIGN_LEFT;
             break;
     }
-    lv_obj_set_style_text_align(asset->obj, align, 0);
+    lv_obj_set_style_text_align(asset->obj, align, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_pos(asset->obj, pos_x, pos_y);
 }
 
@@ -1982,6 +1982,7 @@ static void update_assets_from_channels(void)
                         lv_label_set_text(assets[i].obj, text_buf);
                         strncpy(assets[i].last_label_text, text_buf, sizeof(assets[i].last_label_text) - 1);
                         assets[i].last_label_text[sizeof(assets[i].last_label_text) - 1] = '\0';
+                        layout_text_asset(&assets[i]);
                     }
                 }
                 continue;
