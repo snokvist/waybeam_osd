@@ -57,6 +57,10 @@ The UDP socket is **drained fully** on every poll cycle, meaning every packet in
 
 **Conclusion:** Multiple independent senders **can** share the display if they use sparse arrays (`null` for unowned indices) or target mutually exclusive asset IDs.
 
+## CLI sender/watch helper
+- The `waybeam` helper (`osd_send.c`) can build and send/watch UDP payloads using `--values`/`--texts` maps that point to literals or `@key` references from one or more `--ini` files. Extra sources can be pulled from local radios over their control sockets: `--hostapd <[iface,]sta-mac>` sends `STA <mac>` against `/run|/var/run/hostapd` (auto-selects an interface when omitted), and `--wpa-cli <iface>` sends `SIGNAL_POLL` against `/run|/var/run/wpa_supplicant/<iface>`. Parsed fields (e.g., `signal`, `rx_packets`, `tx_packets`, `RSSI`, `LINKSPEED`) are merged on top of INI entries so CLI-derived values take precedence for the same key.
+- In `watch` mode, INI files and control-socket outputs are refreshed every interval. If a query fails or a field disappears, the key resolves to `null` (ignored) rather than reusing stale data, so downstream `@key` lookups track the live radio state.
+
 ## Local config file (`config.json`)
 - JSON file read at startup; missing keys fall back to defaults. Send `SIGHUP` to the running process to reload the file without restarting (asset layout, stats toggle, and `idle_ms` update in-place; resolution still follows the startup config).
 - Top-level fields:

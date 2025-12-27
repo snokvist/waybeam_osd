@@ -60,13 +60,17 @@
 #include <ctype.h>
 #include <errno.h>
 #include <getopt.h>
+#include <dirent.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <sys/types.h>
+#include <sys/un.h>
 #include <unistd.h>
 
 #define MAX_PAYLOAD      1280
@@ -340,6 +344,248 @@ static int resolve_ini_ref(const IniStore *ini, const char *in, char *out, size_
     strncpy(out, in, out_sz - 1);
     out[out_sz - 1] = '\0';
     return 1;
+}
+
+static void ini_merge(IniStore *dst, const IniStore *src)
+{
+    if (!dst || !src || !src->loaded) return;
+    for (int i = 0; i < src->count; i++) {
+        (void)ini_set(dst, src->kv[i].key, src->kv[i].val);
+    }
+    dst->loaded = 1;
+}
+
+static int ini_parse_kv_buffer(IniStore *ini, const char *buf)
+{
+    if (!ini || !buf) return 0;
+
+    int added = 0;
+    const char *p = buf;
+    while (*p) {
+        char line[512];
+        size_t n = 0;
+        while (p[n] != '\0' && p[n] != '\n' && p[n] != '\r' && n + 1 < sizeof(line)) {
+            line[n] = p[n];
+            n++;
+        }
+        line[n] = '\0';
+
+        while (p[n] == '\n' || p[n] == '\r') n++;
+        p += n;
+
+        char *t = trim(line);
+        if (!*t) continue;
+        char *eq = strchr(t, '=');
+        if (!eq) continue;
+        *eq = '\0';
+        char *k = trim(t);
+        char *v = trim(eq + 1);
+        if (ini_set(ini, k, v)) added++;
+    }
+    return added;
+}
+
+static int build_local_ctrl(char *path, size_t path_sz)
+{
+    static int counter = 0;
+    if (!path || path_sz == 0) return 0;
+    int n = snprintf(path, path_sz, "/tmp/waybeam_ctrl_%ld_%d", (long)getpid(), counter++);
+    if (n <= 0 || (size_t)n >= path_sz) return 0;
+    return 1;
+}
+
+static int ctrl_request_unix(const char *dst_path, const char *cmd, char *out, size_t out_sz, int timeout_ms, int verbose)
+{
+    if (!dst_path || !cmd || !out || out_sz == 0) return 0;
+
+    int s = socket(AF_UNIX, SOCK_DGRAM, 0);
+    if (s < 0) {
+        if (verbose) perror("socket(AF_UNIX)");
+        return 0;
+    }
+
+    char local_path[108];
+    struct sockaddr_un local;
+    memset(&local, 0, sizeof(local));
+    local.sun_family = AF_UNIX;
+    if (!build_local_ctrl(local_path, sizeof(local_path))) {
+        close(s);
+        return 0;
+    }
+    strncpy(local.sun_path, local_path, sizeof(local.sun_path) - 1);
+    unlink(local.sun_path);
+    if (bind(s, (struct sockaddr *)&local, sizeof(local)) < 0) {
+        if (verbose) perror("bind(ctrl local)");
+        close(s);
+        unlink(local.sun_path);
+        return 0;
+    }
+
+    struct sockaddr_un dst;
+    memset(&dst, 0, sizeof(dst));
+    dst.sun_family = AF_UNIX;
+    strncpy(dst.sun_path, dst_path, sizeof(dst.sun_path) - 1);
+
+    if (connect(s, (struct sockaddr *)&dst, sizeof(dst)) < 0) {
+        if (verbose) perror("connect(ctrl)");
+        close(s);
+        unlink(local.sun_path);
+        return 0;
+    }
+
+    if (timeout_ms < 0) timeout_ms = 1000;
+    struct timeval tv;
+    tv.tv_sec = timeout_ms / 1000;
+    tv.tv_usec = (timeout_ms % 1000) * 1000;
+    if (setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0) {
+        if (verbose) perror("setsockopt(SO_RCVTIMEO)");
+    }
+
+    size_t cmd_len = strlen(cmd);
+    if (send(s, cmd, cmd_len, 0) != (ssize_t)cmd_len) {
+        if (verbose) perror("send(ctrl)");
+        close(s);
+        unlink(local.sun_path);
+        return 0;
+    }
+
+    ssize_t r = recv(s, out, out_sz - 1, 0);
+    if (r < 0) {
+        if (verbose) perror("recv(ctrl)");
+        close(s);
+        unlink(local.sun_path);
+        return 0;
+    }
+    out[r] = '\0';
+
+    close(s);
+    unlink(local.sun_path);
+    return 1;
+}
+
+static int ctrl_request_with_dirs(const char **dirs, const char *ifname, const char *cmd, char *out, size_t out_sz, int timeout_ms, int verbose)
+{
+    if (!dirs || !cmd || !out || out_sz == 0) return 0;
+
+    char path[256];
+    for (int i = 0; dirs[i]; i++) {
+        if (ifname && *ifname) {
+            int n = snprintf(path, sizeof(path), "%s/%s", dirs[i], ifname);
+            if (n <= 0 || (size_t)n >= sizeof(path)) continue;
+            if (ctrl_request_unix(path, cmd, out, out_sz, timeout_ms, verbose)) return 1;
+            continue;
+        }
+
+        DIR *d = opendir(dirs[i]);
+        if (!d) continue;
+        struct dirent *de;
+        while ((de = readdir(d))) {
+            if (de->d_name[0] == '.') continue;
+            int n = snprintf(path, sizeof(path), "%s/%s", dirs[i], de->d_name);
+            if (n <= 0 || (size_t)n >= sizeof(path)) continue;
+            if (ctrl_request_unix(path, cmd, out, out_sz, timeout_ms, verbose)) {
+                closedir(d);
+                return 1;
+            }
+        }
+        closedir(d);
+    }
+    if (verbose) fprintf(stderr, "[ctrl] no control socket found for %s\n", ifname ? ifname : "(auto)");
+    return 0;
+}
+
+static void parse_hostapd_opt(const char *arg, char *iface_out, size_t iface_sz, char *mac_out, size_t mac_sz)
+{
+    if (!arg) return;
+    char tmp[128];
+    strncpy(tmp, arg, sizeof(tmp) - 1);
+    tmp[sizeof(tmp) - 1] = '\0';
+
+    char *comma = strchr(tmp, ',');
+    if (comma) {
+        *comma = '\0';
+        char *iface = trim(tmp);
+        char *mac = trim(comma + 1);
+        if (iface_out && iface_sz > 0) {
+            strncpy(iface_out, iface, iface_sz - 1);
+            iface_out[iface_sz - 1] = '\0';
+        }
+        if (mac_out && mac_sz > 0) {
+            strncpy(mac_out, mac, mac_sz - 1);
+            mac_out[mac_sz - 1] = '\0';
+        }
+    } else {
+        if (mac_out && mac_sz > 0) {
+            strncpy(mac_out, arg, mac_sz - 1);
+            mac_out[mac_sz - 1] = '\0';
+        }
+    }
+}
+
+static int load_hostapd_metrics(IniStore *out, const char *ifname, const char *sta_mac, int verbose)
+{
+    if (!out) return 0;
+    ini_init(out);
+    if (!sta_mac || !*sta_mac) return 0;
+
+    char cmd[128];
+    snprintf(cmd, sizeof(cmd), "STA %s", sta_mac);
+
+    static const char *dirs[] = { "/run/hostapd", "/var/run/hostapd", NULL };
+    char buf[2048];
+    if (!ctrl_request_with_dirs(dirs, ifname, cmd, buf, sizeof(buf), 1000, verbose)) {
+        if (verbose) fprintf(stderr, "[hostapd] control request failed\n");
+        return 0;
+    }
+
+    out->loaded = 1;
+    (void)ini_parse_kv_buffer(out, buf);
+    if (verbose) fprintf(stderr, "[hostapd] parsed %d fields\n", out->count);
+    return 1;
+}
+
+static int load_wpa_metrics(IniStore *out, const char *iface, int verbose)
+{
+    if (!out) return 0;
+    ini_init(out);
+    if (!iface || !*iface) return 0;
+
+    static const char *dirs[] = { "/run/wpa_supplicant", "/var/run/wpa_supplicant", NULL };
+    char buf[2048];
+    if (!ctrl_request_with_dirs(dirs, iface, "SIGNAL_POLL", buf, sizeof(buf), 1000, verbose)) {
+        if (verbose) fprintf(stderr, "[wpa] control request failed\n");
+        return 0;
+    }
+
+    out->loaded = 1;
+    (void)ini_parse_kv_buffer(out, buf);
+    if (verbose) fprintf(stderr, "[wpa] parsed %d fields\n", out->count);
+    return 1;
+}
+
+static void refresh_cli_store(IniStore *cli, const char *hostapd_iface, const char *hostapd_sta, const char *wpa_iface, int verbose)
+{
+    if (!cli) return;
+    ini_init(cli);
+
+    IniStore tmp;
+    int any = 0;
+
+    if (hostapd_sta && *hostapd_sta) {
+        if (load_hostapd_metrics(&tmp, hostapd_iface, hostapd_sta, verbose)) {
+            ini_merge(cli, &tmp);
+            any = 1;
+        }
+    }
+
+    if (wpa_iface && *wpa_iface) {
+        if (load_wpa_metrics(&tmp, wpa_iface, verbose)) {
+            ini_merge(cli, &tmp);
+            any = 1;
+        }
+    }
+
+    if (!any) ini_init(cli);
 }
 
 
@@ -656,6 +902,8 @@ static void usage_main(const char *prog)
         "  --port <n|@key>           UDP port (default: %d)\n"
         "  --values \"i=v,...\"        set values (v: number | @key | null | empty => \"\")\n"
         "  --texts  \"i=s,...\"        set texts  (s: text   | @key | null | empty => \"\")\n"
+        "  --hostapd <[iface,]sta>   pull hostapd STA stats via control socket (overrides ini keys)\n"
+        "  --wpa-cli <iface>         pull wpa_supplicant signal_poll via control socket (overrides ini keys)\n"
         "  --print-json              (send) print JSON instead of sending\n"
         "  --verbose, -v             extra debug output\n"
         "\n"
@@ -710,6 +958,30 @@ static int watchspec_any(const WatchSpec *w)
     return 0;
 }
 
+typedef struct {
+    IniStore store;
+    FILE *fp;
+    const char *path;
+    time_t mtime;
+    off_t size;
+    ino_t inode;
+} IniContext;
+
+static const char *lookup_from_sources(const IniStore *cli, const IniContext *ctx, int ctx_count, const char *key)
+{
+    if (!key || !*key) return NULL;
+
+    const char *v = NULL;
+    if (cli && cli->loaded) v = ini_get(cli, key);
+    if (v) return v;
+
+    for (int i = ctx_count - 1; i >= 0; i--) {
+        v = ini_get(&ctx[i].store, key);
+        if (v) return v;
+    }
+    return NULL;
+}
+
 static int parse_and_store_list_rhs(char **rhs_arr, int used_arr[8], const char *spec)
 {
     if (!spec) return 0;
@@ -757,9 +1029,15 @@ static int cmd_send(int argc, char **argv, const char *prog)
     const char *texts_spec = NULL;
     int print_json = 0;
     int verbose = 0;
+    const char *hostapd_opt = NULL;
+    const char *wpa_iface = NULL;
+    char hostapd_iface[64] = {0};
+    char hostapd_sta[64] = {0};
 
     IniStore ini;
     ini_init(&ini);
+    IniStore cli_store;
+    ini_init(&cli_store);
 
     Payload payload;
     payload_init(&payload);
@@ -770,6 +1048,8 @@ static int cmd_send(int argc, char **argv, const char *prog)
         {"ini",  required_argument, 0, 3},
         {"values", required_argument, 0, 5},
         {"texts", required_argument, 0, 7},
+        {"hostapd", required_argument, 0, 11},
+        {"wpa-cli", required_argument, 0, 12},
         {"print-json", no_argument, 0, 9},
         {"verbose", no_argument, 0, 'v'},
         {"help", no_argument, 0, 'h'},
@@ -809,6 +1089,8 @@ static int cmd_send(int argc, char **argv, const char *prog)
         case 3: /* already handled */ break;
         case 5: values_spec = optarg; break;
         case 7: texts_spec = optarg; break;
+        case 11: hostapd_opt = optarg; break;
+        case 12: wpa_iface = optarg; break;
         case 9: print_json = 1; break;
         case 'v': verbose = 1; break;
         case 'h':
@@ -817,6 +1099,10 @@ static int cmd_send(int argc, char **argv, const char *prog)
             return (opt == 'h') ? 0 : 1;
         }
     }
+
+    parse_hostapd_opt(hostapd_opt, hostapd_iface, sizeof(hostapd_iface), hostapd_sta, sizeof(hostapd_sta));
+    refresh_cli_store(&cli_store, hostapd_iface, hostapd_sta, wpa_iface, verbose);
+    ini_merge(&ini, &cli_store);
 
     if (!dest_raw) dest_raw = DEFAULT_DEST_IP;
 
@@ -901,6 +1187,12 @@ static int cmd_watch(int argc, char **argv, const char *prog)
     int ini_count = 0;
     int interval_ms = DEFAULT_INTERVAL;
     int verbose = 0;
+    const char *hostapd_opt = NULL;
+    const char *wpa_iface = NULL;
+    char hostapd_iface[64] = {0};
+    char hostapd_sta[64] = {0};
+    IniStore cli_store;
+    ini_init(&cli_store);
 
     WatchSpec w;
     watchspec_init(&w);
@@ -912,6 +1204,8 @@ static int cmd_watch(int argc, char **argv, const char *prog)
         {"values", required_argument, 0, 5},
         {"texts", required_argument, 0, 7},
         {"interval", required_argument, 0, 10},
+        {"hostapd", required_argument, 0, 11},
+        {"wpa-cli", required_argument, 0, 12},
         {"verbose", no_argument, 0, 'v'},
         {"help", no_argument, 0, 'h'},
         {0,0,0,0}
@@ -938,6 +1232,12 @@ static int cmd_watch(int argc, char **argv, const char *prog)
             break;
         case 10:
             interval_ms = atoi(optarg);
+            break;
+        case 11:
+            hostapd_opt = optarg;
+            break;
+        case 12:
+            wpa_iface = optarg;
             break;
         case 'v':
             verbose = 1;
@@ -967,16 +1267,6 @@ static int cmd_watch(int argc, char **argv, const char *prog)
     }
 
     if (!dest_raw) dest_raw = DEFAULT_DEST_IP;
-
-    /* Persistent state for polling efficiency */
-    typedef struct {
-        IniStore store;
-        FILE *fp;
-        const char *path;
-        time_t mtime;
-        off_t size;
-        ino_t inode;
-    } IniContext;
 
     IniContext *ctx = (IniContext *)calloc(ini_count, sizeof(IniContext));
     if (!ctx) {
@@ -1008,33 +1298,21 @@ static int cmd_watch(int argc, char **argv, const char *prog)
         }
     }
 
-    char dest[64];
-    /* Helper to map ctx array to stores for resolve_ini_ref_multi without refactoring it heavily */
-    /* Actually we can just cast or update resolve to take context, but let's just make a temp array of pointers? */
-    /* Or easier: resolve_ini_ref_multi currently takes (IniStore*, int).
-       We have an array of structs that contain IniStore. We can't pass that array directly.
-       We need to refactor resolve_ini_ref_multi or copy stores?
-       Refactoring resolve is cleaner. */
+    parse_hostapd_opt(hostapd_opt, hostapd_iface, sizeof(hostapd_iface), hostapd_sta, sizeof(hostapd_sta));
+    refresh_cli_store(&cli_store, hostapd_iface, hostapd_sta, wpa_iface, verbose);
 
-    /* Hack: we can't easily pass stride. Let's make a temp array of pointers or just iterate manually here?
-       Wait, resolve_ini_ref_multi is used in the loop.
-       Let's update resolve_ini_ref_multi to take stride? No, just loop here manually for dest/port.
-    */
+    char dest[64];
     if (dest_raw[0] == '@') {
         const char *k = dest_raw + 1;
-        const char *found = NULL;
-        for (int i = ini_count - 1; i >= 0; i--) {
-            const char *v = ini_get(&ctx[i].store, k);
-            if (v) { found = v; break; }
-        }
+        const char *found = lookup_from_sources(&cli_store, ctx, ini_count, k);
 
         if (!found || !*found) {
-             strncpy(dest, DEFAULT_DEST_IP, sizeof(dest) - 1);
-             dest[sizeof(dest) - 1] = '\0';
-             if (verbose) fprintf(stderr, "[watch] --dest %s missing => default %s\n", dest_raw, dest);
+            strncpy(dest, DEFAULT_DEST_IP, sizeof(dest) - 1);
+            dest[sizeof(dest) - 1] = '\0';
+            if (verbose) fprintf(stderr, "[watch] --dest %s missing => default %s\n", dest_raw, dest);
         } else {
-             strncpy(dest, found, sizeof(dest) - 1);
-             dest[sizeof(dest) - 1] = '\0';
+            strncpy(dest, found, sizeof(dest) - 1);
+            dest[sizeof(dest) - 1] = '\0';
         }
     } else {
         strncpy(dest, dest_raw, sizeof(dest) - 1);
@@ -1053,14 +1331,11 @@ static int cmd_watch(int argc, char **argv, const char *prog)
             resolved = 1;
         } else {
             const char *key = port_raw + 1;
-             for (int i = ini_count - 1; i >= 0; i--) {
-                const char *v = ini_get(&ctx[i].store, key);
-                if (v) {
-                    strncpy(pbuf, v, sizeof(pbuf)-1);
-                    pbuf[sizeof(pbuf)-1] = '\0';
-                    resolved = 1;
-                    break;
-                }
+            const char *v = lookup_from_sources(&cli_store, ctx, ini_count, key);
+            if (v) {
+                strncpy(pbuf, v, sizeof(pbuf)-1);
+                pbuf[sizeof(pbuf)-1] = '\0';
+                resolved = 1;
             }
         }
 
@@ -1112,11 +1387,7 @@ static int cmd_watch(int argc, char **argv, const char *prog)
                 else if (rhs[0] == '\0') st = VS_EMPTY;
                 else if (rhs[0] == '@') {
                     const char *k = rhs + 1;
-                    const char *found = NULL;
-                    for (int j = ini_count - 1; j >= 0; j--) {
-                        const char *v = ini_get(&ctx[j].store, k);
-                        if (v) { found = v; break; }
-                    }
+                    const char *found = lookup_from_sources(&cli_store, ctx, ini_count, k);
                     if (!found) {
                         if (verbose) fprintf(stderr, "[watch] values[%d] missing %s => null\n", i, rhs);
                         st = VS_NULL;
@@ -1149,11 +1420,7 @@ static int cmd_watch(int argc, char **argv, const char *prog)
                 else if (rhs[0] == '\0') { t[0]='\0'; st = TS_STR; }
                 else if (rhs[0] == '@') {
                     const char *k = rhs + 1;
-                    const char *found = NULL;
-                    for (int j = ini_count - 1; j >= 0; j--) {
-                        const char *v = ini_get(&ctx[j].store, k);
-                        if (v) { found = v; break; }
-                    }
+                    const char *found = lookup_from_sources(&cli_store, ctx, ini_count, k);
                     if (!found) {
                         if (verbose) fprintf(stderr, "[watch] texts[%d] missing %s => null\n", i, rhs);
                         st = TS_NULL;
@@ -1258,6 +1525,8 @@ static int cmd_watch(int argc, char **argv, const char *prog)
             }
         }
 
+        refresh_cli_store(&cli_store, hostapd_iface, hostapd_sta, wpa_iface, verbose);
+
         int any_changed = 0;
         Payload pb;
         payload_init(&pb);
@@ -1273,11 +1542,7 @@ static int cmd_watch(int argc, char **argv, const char *prog)
                 else if (rhs[0] == '\0') st = VS_EMPTY;
                 else if (rhs[0] == '@') {
                     const char *k = rhs + 1;
-                    const char *found = NULL;
-                    for (int j = ini_count - 1; j >= 0; j--) {
-                        const char *v = ini_get(&ctx[j].store, k);
-                        if (v) { found = v; break; }
-                    }
+                    const char *found = lookup_from_sources(&cli_store, ctx, ini_count, k);
                     if (!found) {
                         /* Keep silent if missing, or verbose? Previous log had verbose */
                          if (verbose) fprintf(stderr, "[watch] values[%d] missing %s => null\n", i, rhs);
@@ -1322,11 +1587,7 @@ static int cmd_watch(int argc, char **argv, const char *prog)
                 else if (rhs[0] == '\0') { t[0]='\0'; st = TS_STR; }
                 else if (rhs[0] == '@') {
                     const char *k = rhs + 1;
-                    const char *found = NULL;
-                    for (int j = ini_count - 1; j >= 0; j--) {
-                        const char *v = ini_get(&ctx[j].store, k);
-                        if (v) { found = v; break; }
-                    }
+                    const char *found = lookup_from_sources(&cli_store, ctx, ini_count, k);
                     if (!found) {
                         if (verbose) fprintf(stderr, "[watch] texts[%d] missing %s => null\n", i, rhs);
                         st = TS_NULL;
