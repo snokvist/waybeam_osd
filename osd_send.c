@@ -1259,8 +1259,9 @@ static int cmd_watch(int argc, char **argv, const char *prog)
         return 1;
     }
 
-    if (ini_count == 0) {
-        fprintf(stderr, "Error: at least one --ini file must be specified\n");
+    int has_cli_source = (hostapd_opt && *hostapd_opt) || (wpa_iface && *wpa_iface);
+    if (ini_count == 0 && !has_cli_source) {
+        fprintf(stderr, "Error: at least one --ini, --hostapd, or --wpa-cli must be specified\n");
         usage_main(prog);
         watchspec_free(&w);
         return 1;
@@ -1268,11 +1269,14 @@ static int cmd_watch(int argc, char **argv, const char *prog)
 
     if (!dest_raw) dest_raw = DEFAULT_DEST_IP;
 
-    IniContext *ctx = (IniContext *)calloc(ini_count, sizeof(IniContext));
-    if (!ctx) {
-        perror("calloc");
-        watchspec_free(&w);
-        return 1;
+    IniContext *ctx = NULL;
+    if (ini_count > 0) {
+        ctx = (IniContext *)calloc(ini_count, sizeof(IniContext));
+        if (!ctx) {
+            perror("calloc");
+            watchspec_free(&w);
+            return 1;
+        }
     }
 
     /* Initial load of all files */
@@ -1372,7 +1376,8 @@ static int cmd_watch(int argc, char **argv, const char *prog)
         Payload pb;
         payload_init(&pb);
 
-        if (verbose && !have_ini0) fprintf(stderr, "[watch] baseline: ini unreadable -> all watched @keys treated as null\n");
+        if (verbose && ini_count > 0 && !have_ini0) fprintf(stderr, "[watch] baseline: ini unreadable -> all watched @keys treated as null\n");
+        if (verbose && ini_count == 0 && has_cli_source) fprintf(stderr, "[watch] baseline: using control-socket data only (no ini files)\n");
 
         /* We must duplicate the logic here or make a helper. Inline for now. */
         for (int i = 0; i < 8; i++) {
