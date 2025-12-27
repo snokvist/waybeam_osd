@@ -563,7 +563,51 @@ static int load_wpa_metrics(IniStore *out, const char *iface, int verbose)
     return 1;
 }
 
-static void refresh_cli_store(IniStore *cli, const char *hostapd_iface, const char *hostapd_sta, const char *wpa_iface, int verbose)
+static int load_8812eu_metrics(IniStore *out, const char *iface, int verbose)
+{
+    if (!out) return 0;
+    ini_init(out);
+    if (!iface || !*iface) return 0;
+
+    char path_a[256];
+    char path_b[256];
+    snprintf(path_a, sizeof(path_a), "/proc/net/rtl88x2eu/%s/rssi_a", iface);
+    snprintf(path_b, sizeof(path_b), "/proc/net/rtl88x2eu/%s/rssi_b", iface);
+
+    FILE *fa = fopen(path_a, "r");
+    FILE *fb = fopen(path_b, "r");
+    if (!fa && !fb) {
+        if (verbose) fprintf(stderr, "[8812eu] rssi files missing for %s\n", iface);
+        if (fa) fclose(fa);
+        if (fb) fclose(fb);
+        return 0;
+    }
+
+    char buf[64];
+    if (fa) {
+        if (fgets(buf, sizeof(buf), fa)) {
+            char *t = trim(buf);
+            (void)ini_set(out, "rssi_a", t);
+        }
+        fclose(fa);
+    }
+    if (fb) {
+        if (fgets(buf, sizeof(buf), fb)) {
+            char *t = trim(buf);
+            (void)ini_set(out, "rssi_b", t);
+        }
+        fclose(fb);
+    }
+
+    out->loaded = 1;
+    if (verbose) fprintf(stderr, "[8812eu] parsed rssi fields for %s (a=%s, b=%s)\n",
+        iface,
+        ini_get(out, "rssi_a") ? ini_get(out, "rssi_a") : "null",
+        ini_get(out, "rssi_b") ? ini_get(out, "rssi_b") : "null");
+    return 1;
+}
+
+static void refresh_cli_store(IniStore *cli, const char *hostapd_iface, const char *hostapd_sta, const char *wpa_iface, const char *rtl8812_iface, int verbose)
 {
     if (!cli) return;
     ini_init(cli);
@@ -580,6 +624,13 @@ static void refresh_cli_store(IniStore *cli, const char *hostapd_iface, const ch
 
     if (wpa_iface && *wpa_iface) {
         if (load_wpa_metrics(&tmp, wpa_iface, verbose)) {
+            ini_merge(cli, &tmp);
+            any = 1;
+        }
+    }
+
+    if (rtl8812_iface && *rtl8812_iface) {
+        if (load_8812eu_metrics(&tmp, rtl8812_iface, verbose)) {
             ini_merge(cli, &tmp);
             any = 1;
         }
@@ -904,6 +955,7 @@ static void usage_main(const char *prog)
         "  --texts  \"i=s,...\"        set texts  (s: text   | @key | null | empty => \"\")\n"
         "  --hostapd <[iface,]sta>   pull hostapd STA stats via control socket (overrides ini keys)\n"
         "  --wpa-cli <iface>         pull wpa_supplicant signal_poll via control socket (overrides ini keys)\n"
+        "  --8812eu <iface>          pull rtl88x2eu RSSI files (/proc/net/rtl88x2eu/<iface>/rssi_*)\n"
         "  --print-json              (send) print JSON instead of sending\n"
         "  --verbose, -v             extra debug output\n"
         "\n"
@@ -1031,6 +1083,7 @@ static int cmd_send(int argc, char **argv, const char *prog)
     int verbose = 0;
     const char *hostapd_opt = NULL;
     const char *wpa_iface = NULL;
+    const char *rtl8812_iface = NULL;
     char hostapd_iface[64] = {0};
     char hostapd_sta[64] = {0};
 
@@ -1050,6 +1103,7 @@ static int cmd_send(int argc, char **argv, const char *prog)
         {"texts", required_argument, 0, 7},
         {"hostapd", required_argument, 0, 11},
         {"wpa-cli", required_argument, 0, 12},
+        {"8812eu", required_argument, 0, 13},
         {"print-json", no_argument, 0, 9},
         {"verbose", no_argument, 0, 'v'},
         {"help", no_argument, 0, 'h'},
@@ -1091,6 +1145,7 @@ static int cmd_send(int argc, char **argv, const char *prog)
         case 7: texts_spec = optarg; break;
         case 11: hostapd_opt = optarg; break;
         case 12: wpa_iface = optarg; break;
+        case 13: rtl8812_iface = optarg; break;
         case 9: print_json = 1; break;
         case 'v': verbose = 1; break;
         case 'h':
@@ -1101,7 +1156,7 @@ static int cmd_send(int argc, char **argv, const char *prog)
     }
 
     parse_hostapd_opt(hostapd_opt, hostapd_iface, sizeof(hostapd_iface), hostapd_sta, sizeof(hostapd_sta));
-    refresh_cli_store(&cli_store, hostapd_iface, hostapd_sta, wpa_iface, verbose);
+    refresh_cli_store(&cli_store, hostapd_iface, hostapd_sta, wpa_iface, rtl8812_iface, verbose);
     ini_merge(&ini, &cli_store);
 
     if (!dest_raw) dest_raw = DEFAULT_DEST_IP;
@@ -1189,6 +1244,7 @@ static int cmd_watch(int argc, char **argv, const char *prog)
     int verbose = 0;
     const char *hostapd_opt = NULL;
     const char *wpa_iface = NULL;
+    const char *rtl8812_iface = NULL;
     char hostapd_iface[64] = {0};
     char hostapd_sta[64] = {0};
     IniStore cli_store;
@@ -1206,6 +1262,7 @@ static int cmd_watch(int argc, char **argv, const char *prog)
         {"interval", required_argument, 0, 10},
         {"hostapd", required_argument, 0, 11},
         {"wpa-cli", required_argument, 0, 12},
+        {"8812eu", required_argument, 0, 13},
         {"verbose", no_argument, 0, 'v'},
         {"help", no_argument, 0, 'h'},
         {0,0,0,0}
@@ -1239,6 +1296,9 @@ static int cmd_watch(int argc, char **argv, const char *prog)
         case 12:
             wpa_iface = optarg;
             break;
+        case 13:
+            rtl8812_iface = optarg;
+            break;
         case 'v':
             verbose = 1;
             break;
@@ -1259,7 +1319,7 @@ static int cmd_watch(int argc, char **argv, const char *prog)
         return 1;
     }
 
-    int has_cli_source = (hostapd_opt && *hostapd_opt) || (wpa_iface && *wpa_iface);
+    int has_cli_source = (hostapd_opt && *hostapd_opt) || (wpa_iface && *wpa_iface) || (rtl8812_iface && *rtl8812_iface);
     if (ini_count == 0 && !has_cli_source) {
         fprintf(stderr, "Error: at least one --ini, --hostapd, or --wpa-cli must be specified\n");
         usage_main(prog);
@@ -1303,7 +1363,7 @@ static int cmd_watch(int argc, char **argv, const char *prog)
     }
 
     parse_hostapd_opt(hostapd_opt, hostapd_iface, sizeof(hostapd_iface), hostapd_sta, sizeof(hostapd_sta));
-    refresh_cli_store(&cli_store, hostapd_iface, hostapd_sta, wpa_iface, verbose);
+    refresh_cli_store(&cli_store, hostapd_iface, hostapd_sta, wpa_iface, rtl8812_iface, verbose);
 
     char dest[64];
     if (dest_raw[0] == '@') {
@@ -1530,7 +1590,7 @@ static int cmd_watch(int argc, char **argv, const char *prog)
             }
         }
 
-        refresh_cli_store(&cli_store, hostapd_iface, hostapd_sta, wpa_iface, verbose);
+        refresh_cli_store(&cli_store, hostapd_iface, hostapd_sta, wpa_iface, rtl8812_iface, verbose);
 
         int any_changed = 0;
         Payload pb;
