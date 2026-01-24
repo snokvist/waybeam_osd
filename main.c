@@ -18,6 +18,13 @@
 
 #include "lvgl/lvgl.h"
 #include "lvgl/src/draw/lv_draw_private.h"
+#if defined(__has_include)
+#if __has_include("lvgl/src/libs/lodepng/lodepng.h")
+#include "lvgl/src/libs/lodepng/lodepng.h"
+#endif
+#else
+#include "lvgl/src/libs/lodepng/lodepng.h"
+#endif
 #include "msp_glyph_atlas.h"
 #include "mi_sys.h"
 #include "mi_rgn.h"
@@ -114,7 +121,6 @@ typedef struct {
     asset_orientation_t orientation;
     char image_path[256];
     char image_path_resolved[260];
-    int image_size_override;
 } asset_cfg_t;
 
 typedef struct {
@@ -122,6 +128,8 @@ typedef struct {
     lv_obj_t *container_obj;
     lv_obj_t *obj;
     lv_obj_t *label_obj;
+    lv_image_dsc_t image_desc;
+    uint8_t *image_rgba;
     int last_pct;
     char last_label_text[1024];
 } asset_t;
@@ -216,6 +224,24 @@ static int to_canvas_x(int x)
 static int to_canvas_y(int y)
 {
     return y - osd_offset_y;
+}
+
+static void normalize_fs_path(const char *src, char *dst, size_t dst_size)
+{
+    if (!dst || dst_size == 0) return;
+    if (!src) {
+        dst[0] = '\0';
+        return;
+    }
+
+    if (src[0] != '\0' && src[1] == ':' &&
+        (toupper((unsigned char)src[0]) == LV_FS_DEFAULT_DRIVER_LETTER ||
+         toupper((unsigned char)src[0]) == LV_FS_STDIO_LETTER)) {
+        src += 2;
+    }
+
+    strncpy(dst, src, dst_size - 1);
+    dst[dst_size - 1] = '\0';
 }
 
 static asset_orientation_t parse_orientation_string(const char *str, asset_orientation_t def)
@@ -478,7 +504,7 @@ static void init_asset_defaults(asset_t *a, int id)
     a->cfg.label[0] = '\0';
     a->cfg.image_path[0] = '\0';
     a->cfg.image_path_resolved[0] = '\0';
-    a->cfg.image_size_override = 0;
+    a->image_rgba = NULL;
     a->last_pct = -1;
     a->last_label_text[0] = '\0';
 }
@@ -804,7 +830,9 @@ static void setup_glyphs(void)
         .glyph_h = 0,
     };
 
-    if (glyph_atlas_load_png(&g_glyph_atlas, g_cfg.glyph_atlas_path, &layout_override) != 0) {
+    char atlas_path[sizeof(g_cfg.glyph_atlas_path)];
+    normalize_fs_path(g_cfg.glyph_atlas_path, atlas_path, sizeof(atlas_path));
+    if (glyph_atlas_load_png(&g_glyph_atlas, atlas_path, &layout_override) != 0) {
         return;
     }
 
@@ -867,15 +895,11 @@ static void parse_assets_array(const char *json)
         if (json_get_int_range(obj_start, obj_end, "id", &v) == 0) a.cfg.id = clamp_int(v, 0, 63);
         if (json_get_int_range(obj_start, obj_end, "x", &v) == 0) a.cfg.x = v;
         if (json_get_int_range(obj_start, obj_end, "y", &v) == 0) a.cfg.y = v;
-        int width_set = 0;
-        int height_set = 0;
         if (json_get_int_range(obj_start, obj_end, "width", &v) == 0) {
             a.cfg.width = v;
-            width_set = 1;
         }
         if (json_get_int_range(obj_start, obj_end, "height", &v) == 0) {
             a.cfg.height = v;
-            height_set = 1;
         }
         if (json_get_float_range(obj_start, obj_end, "min", &fv) == 0) a.cfg.min = fv;
         if (json_get_float_range(obj_start, obj_end, "max", &fv) == 0) a.cfg.max = fv;
@@ -896,19 +920,8 @@ static void parse_assets_array(const char *json)
         }
 
         if (a.cfg.type == ASSET_IMAGE) {
-            a.cfg.image_size_override = width_set || height_set;
-            if (!a.cfg.image_size_override) {
-                a.cfg.width = 0;
-                a.cfg.height = 0;
-            }
-            fprintf(stderr,
-                    "Image asset %d parsed size override=%d width_set=%d height_set=%d size=%dx%d\n",
-                    a.cfg.id,
-                    a.cfg.image_size_override,
-                    width_set,
-                    height_set,
-                    a.cfg.width,
-                    a.cfg.height);
+            a.cfg.width = 0;
+            a.cfg.height = 0;
         }
 
         if (a.cfg.type == ASSET_IMAGE && a.cfg.image_path[0] == '\0') {
@@ -1118,7 +1131,7 @@ static void parse_udp_asset_updates(const char *buf)
             if (new_type != asset->cfg.type) {
                 asset->cfg.type = new_type;
                 recreate = 1;
-                if (new_type == ASSET_IMAGE && !asset->cfg.image_size_override) {
+                if (new_type == ASSET_IMAGE) {
                     asset->cfg.width = 0;
                     asset->cfg.height = 0;
                 }
@@ -1235,19 +1248,17 @@ static void parse_udp_asset_updates(const char *buf)
             }
         }
         if (json_get_int_range(obj_start, obj_end, "width", &v) == 0) {
-            if (asset->cfg.width != v) {
+            if (asset->cfg.type != ASSET_IMAGE && asset->cfg.width != v) {
                 asset->cfg.width = v;
                 relayout = 1;
                 recreate = asset->cfg.type == ASSET_TEXT ? 1 : recreate;
-                if (asset->cfg.type == ASSET_IMAGE) asset->cfg.image_size_override = 1;
             }
         }
         if (json_get_int_range(obj_start, obj_end, "height", &v) == 0) {
-            if (asset->cfg.height != v) {
+            if (asset->cfg.type != ASSET_IMAGE && asset->cfg.height != v) {
                 asset->cfg.height = v;
                 relayout = 1;
                 recreate = asset->cfg.type == ASSET_TEXT ? 1 : recreate;
-                if (asset->cfg.type == ASSET_IMAGE) asset->cfg.image_size_override = 1;
             }
         }
         if (json_get_float_range(obj_start, obj_end, "min", &fv) == 0) {
@@ -1285,11 +1296,6 @@ static void parse_udp_asset_updates(const char *buf)
                     lv_obj_set_size(asset->obj, width, height);
                     lv_obj_set_pos(asset->obj, asset->cfg.x, asset->cfg.y);
                 } else if (asset->cfg.type == ASSET_IMAGE) {
-                    if (asset->cfg.width > 0 || asset->cfg.height > 0) {
-                        int width = asset->cfg.width > 0 ? asset->cfg.width : LV_SIZE_CONTENT;
-                        int height = asset->cfg.height > 0 ? asset->cfg.height : LV_SIZE_CONTENT;
-                        lv_obj_set_size(asset->obj, width, height);
-                    }
                     lv_obj_set_pos(asset->obj, asset->cfg.x, asset->cfg.y);
                 } else {
                     layout_bar_asset(asset);
@@ -1634,6 +1640,14 @@ static lv_obj_t *create_bar(asset_t *asset)
     return bar;
 }
 
+static void release_image_data(asset_t *asset)
+{
+    if (!asset) return;
+    free(asset->image_rgba);
+    asset->image_rgba = NULL;
+    memset(&asset->image_desc, 0, sizeof(asset->image_desc));
+}
+
 static void destroy_asset_visual(asset_t *asset)
 {
     if (!asset) return;
@@ -1648,6 +1662,7 @@ static void destroy_asset_visual(asset_t *asset)
     asset->obj = NULL;
     asset->last_pct = -1;
     asset->last_label_text[0] = '\0';
+    release_image_data(asset);
 }
 
 static lv_obj_t *create_text_asset(asset_t *asset)
@@ -1678,31 +1693,45 @@ static lv_obj_t *create_image_asset(asset_t *asset)
         return NULL;
     }
     if (asset->cfg.image_path_resolved[0] == '\0') {
-        const char *src = asset->cfg.image_path;
-        if (src[0] != '\0' && src[1] == ':' &&
-            (toupper((unsigned char)src[0]) == LV_FS_DEFAULT_DRIVER_LETTER ||
-             toupper((unsigned char)src[0]) == LV_FS_STDIO_LETTER)) {
-            src += 2;
-        }
-        strncpy(asset->cfg.image_path_resolved, src,
-                sizeof(asset->cfg.image_path_resolved) - 1);
-        asset->cfg.image_path_resolved[sizeof(asset->cfg.image_path_resolved) - 1] = '\0';
+        normalize_fs_path(asset->cfg.image_path,
+                          asset->cfg.image_path_resolved,
+                          sizeof(asset->cfg.image_path_resolved));
     }
-    lv_fs_file_t file;
-    if (lv_fs_open(&file, asset->cfg.image_path_resolved, LV_FS_MODE_RD) != LV_FS_RES_OK) {
-        fprintf(stderr, "Image asset %d failed to open %s\n", asset->cfg.id, asset->cfg.image_path_resolved);
+
+    release_image_data(asset);
+
+    unsigned width = 0;
+    unsigned height = 0;
+    uint8_t *rgba = NULL;
+    unsigned error = lodepng_decode32_file(&rgba, &width, &height, asset->cfg.image_path_resolved);
+    if (error != 0 || !rgba || width == 0 || height == 0) {
+        fprintf(stderr, "Image asset %d failed to decode %s\n", asset->cfg.id, asset->cfg.image_path_resolved);
+        free(rgba);
         return NULL;
     }
-    lv_fs_close(&file);
+
+    size_t pixels = (size_t)width * (size_t)height;
+    for (size_t i = 0; i < pixels; i++) {
+        uint8_t r = rgba[i * 4 + 0];
+        uint8_t g = rgba[i * 4 + 1];
+        uint8_t b = rgba[i * 4 + 2];
+        uint8_t a = rgba[i * 4 + 3];
+        rgba[i * 4 + 0] = a;
+        rgba[i * 4 + 1] = r;
+        rgba[i * 4 + 2] = g;
+        rgba[i * 4 + 3] = b;
+    }
+
+    asset->image_rgba = rgba;
+    asset->image_desc.header.cf = LV_COLOR_FORMAT_ARGB8888;
+    asset->image_desc.header.w = (uint32_t)width;
+    asset->image_desc.header.h = (uint32_t)height;
+    asset->image_desc.data_size = (uint32_t)(pixels * 4);
+    asset->image_desc.data = asset->image_rgba;
 
     lv_obj_t *img = lv_image_create(lv_scr_act());
-    lv_image_set_src(img, asset->cfg.image_path_resolved);
+    lv_image_set_src(img, &asset->image_desc);
     lv_obj_set_pos(img, to_canvas_x(asset->cfg.x), to_canvas_y(asset->cfg.y));
-    if (asset->cfg.image_size_override && (asset->cfg.width > 0 || asset->cfg.height > 0)) {
-        int width = asset->cfg.width > 0 ? asset->cfg.width : LV_SIZE_CONTENT;
-        int height = asset->cfg.height > 0 ? asset->cfg.height : LV_SIZE_CONTENT;
-        lv_obj_set_size(img, width, height);
-    }
     lv_obj_move_foreground(img);
     lv_obj_update_layout(img);
     return img;
