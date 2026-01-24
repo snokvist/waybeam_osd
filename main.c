@@ -1675,6 +1675,7 @@ static lv_obj_t *create_image_asset(asset_t *asset)
         int width = asset->cfg.width > 0 ? asset->cfg.width : LV_SIZE_CONTENT;
         int height = asset->cfg.height > 0 ? asset->cfg.height : LV_SIZE_CONTENT;
         lv_obj_set_size(img, width, height);
+        fprintf(stderr, "Image asset %d using configured size %dx%d\n", asset->cfg.id, width, height);
     }
     lv_obj_move_foreground(img);
     lv_obj_update_layout(img);
@@ -1692,6 +1693,9 @@ static lv_obj_t *create_image_asset(asset_t *asset)
         fprintf(stderr,
                 "Image asset %d size mismatch: png=%dx%d decoded=%dx%d\n",
                 asset->cfg.id, png_w, png_h, img_w, img_h);
+        fprintf(stderr,
+                "Image asset %d decoder mismatch: check LVGL PNG decoder registration and FS paths\n",
+                asset->cfg.id);
     }
     if (img_w <= 0 || img_h <= 0) {
         fprintf(stderr, "Image asset %d has zero size after decode\n", asset->cfg.id);
