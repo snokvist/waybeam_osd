@@ -17,6 +17,8 @@
 
 #include "lvgl/lvgl.h"
 #include "lvgl/src/draw/lv_draw_private.h"
+#include "lvgl/src/others/imgfont/lv_imgfont.h"
+#include "lvgl/src/libs/lodepng/lv_lodepng.h"
 #include "mi_sys.h"
 #include "mi_rgn.h"
 #include "mi_vpe.h"
@@ -60,6 +62,8 @@ typedef struct {
     int idle_ms;
     int system_refresh_ms;
     int udp_stats;
+    char font_path[256];
+    int font_size;
 } app_config_t;
 
 typedef enum {
@@ -138,6 +142,7 @@ static asset_t assets[8];
 static int asset_count = 0;
 static int rgn_pos_x = 0;
 static int rgn_pos_y = 0;
+static lv_font_t *custom_font = NULL;
 
 #define MAX_ASSETS (int)(sizeof(assets) / sizeof(assets[0]))
 
@@ -584,6 +589,11 @@ static void apply_asset_styles(asset_t *asset)
         lv_obj_set_style_text_color(asset->label_obj, lv_color_hex(cfg->text_color), 0);
         lv_obj_set_style_text_opa(asset->label_obj, LV_OPA_COVER, 0);
     }
+
+    if (custom_font && cfg->type == ASSET_TEXT) {
+        if (asset->obj) lv_obj_set_style_text_font(asset->obj, custom_font, 0);
+        if (asset->label_obj) lv_obj_set_style_text_font(asset->label_obj, custom_font, 0);
+    }
 }
 
 static void apply_background_style(lv_obj_t *obj, int bg_style, int bg_opacity_pct, lv_part_t part)
@@ -826,6 +836,8 @@ static void set_defaults(void)
     g_cfg.idle_ms = 100;
     g_cfg.system_refresh_ms = 1000;
     g_cfg.udp_stats = 1;
+    g_cfg.font_path[0] = '\0';
+    g_cfg.font_size = 32;
 
     memset(udp_values, 0, sizeof(udp_values));
     memset(udp_texts, 0, sizeof(udp_texts));
@@ -934,6 +946,18 @@ static void parse_assets_array(const char *json)
     }
 }
 
+static const void * get_imgfont_path_cb(const lv_font_t * font, uint32_t unicode, uint32_t unicode_next, int32_t * offset_y, void * user_data)
+{
+    LV_UNUSED(font);
+    LV_UNUSED(unicode_next);
+    LV_UNUSED(offset_y);
+    LV_UNUSED(user_data);
+
+    static char path[512];
+    snprintf(path, sizeof(path), "A:/%s/%u.png", g_cfg.font_path, unicode);
+    return path;
+}
+
 static void load_config(void)
 {
     set_defaults();
@@ -972,6 +996,22 @@ static void load_config(void)
 
     // Preferred structured assets list
     parse_assets_array(json);
+
+    if (json_get_string_range(json, json + strlen(json), "font_path", g_cfg.font_path, sizeof(g_cfg.font_path)) != 0) g_cfg.font_path[0] = '\0';
+    if (json_get_int(json, "font_size", &v) == 0) g_cfg.font_size = v;
+
+    if (g_cfg.font_path[0] != '\0') {
+        if (custom_font) {
+            lv_imgfont_destroy(custom_font);
+            custom_font = NULL;
+        }
+        custom_font = lv_imgfont_create(g_cfg.font_size, get_imgfont_path_cb, NULL);
+        if (!custom_font) {
+            fprintf(stderr, "Failed to create imgfont\n");
+        } else {
+            printf("Loaded imgfont from %s size %d\n", g_cfg.font_path, g_cfg.font_size);
+        }
+    }
 
     free(json);
 }
@@ -2175,6 +2215,7 @@ int main(void)
 
     printf("Initializing LVGL...\n");
     init_lvgl();
+    lv_lodepng_init();
 
     // Transparent screen
     lv_obj_set_style_bg_opa(lv_scr_act(), LV_OPA_TRANSP, LV_PART_MAIN);
