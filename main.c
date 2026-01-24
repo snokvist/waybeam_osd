@@ -122,7 +122,6 @@ typedef struct {
     lv_obj_t *container_obj;
     lv_obj_t *obj;
     lv_obj_t *label_obj;
-    lv_obj_t *debug_obj;
     int last_pct;
     char last_label_text[1024];
 } asset_t;
@@ -165,7 +164,6 @@ static MI_RGN_ChnPortParam_t stRgnChnAttr;
 static MI_RGN_CanvasInfo_t g_cached_canvas_info;
 static int g_canvas_info_valid = 0;
 static int g_canvas_dirty = 0;
-static int g_image_debug_rect = -1;
 
 // UI
 static lv_obj_t *stats_label = NULL;
@@ -208,26 +206,6 @@ static float clamp_float(float v, float lo, float hi) {
     if (v < lo) return lo;
     if (v > hi) return hi;
     return v;
-}
-
-static int image_debug_rect_enabled(void)
-{
-    if (g_image_debug_rect < 0) {
-        const char *env = getenv("WAYBEAM_IMAGE_DEBUG_RECT");
-        if (!env || env[0] == '\0') {
-            g_image_debug_rect = 0;
-        } else if (env[0] == '0' && env[1] == '\0') {
-            g_image_debug_rect = 0;
-        } else if (strcasecmp(env, "false") == 0) {
-            g_image_debug_rect = 0;
-        } else {
-            g_image_debug_rect = 1;
-        }
-        fprintf(stderr, "Image debug rect %s (WAYBEAM_IMAGE_DEBUG_RECT=%s)\n",
-                g_image_debug_rect ? "enabled" : "disabled",
-                env ? env : "(unset)");
-    }
-    return g_image_debug_rect;
 }
 
 static int to_canvas_x(int x)
@@ -1664,12 +1642,10 @@ static void destroy_asset_visual(asset_t *asset)
     } else {
         if (asset->label_obj) lv_obj_del(asset->label_obj);
         if (asset->obj) lv_obj_del(asset->obj);
-        if (asset->debug_obj) lv_obj_del(asset->debug_obj);
     }
     asset->container_obj = NULL;
     asset->label_obj = NULL;
     asset->obj = NULL;
-    asset->debug_obj = NULL;
     asset->last_pct = -1;
     asset->last_label_text[0] = '\0';
 }
@@ -1692,33 +1668,6 @@ static lv_obj_t *create_text_asset(asset_t *asset)
     strncpy(asset->last_label_text, text_buf, sizeof(asset->last_label_text) - 1);
     asset->last_label_text[sizeof(asset->last_label_text) - 1] = '\0';
     return label;
-}
-
-static int read_png_header(const char *path, int *out_w, int *out_h, int *out_bit_depth, int *out_color_type)
-{
-    lv_fs_file_t file;
-    if (lv_fs_open(&file, path, LV_FS_MODE_RD) != LV_FS_RES_OK) {
-        return -1;
-    }
-
-    uint8_t header[29] = {0};
-    uint32_t read_bytes = 0;
-    lv_fs_read(&file, header, sizeof(header), &read_bytes);
-    lv_fs_close(&file);
-
-    if (read_bytes < sizeof(header)) return -1;
-    if (memcmp(header, "\x89PNG\r\n\x1a\n", 8) != 0) return -1;
-
-    int w = (header[16] << 24) | (header[17] << 16) | (header[18] << 8) | header[19];
-    int h = (header[20] << 24) | (header[21] << 16) | (header[22] << 8) | header[23];
-    int bit_depth = header[24];
-    int color_type = header[25];
-
-    if (out_w) *out_w = w;
-    if (out_h) *out_h = h;
-    if (out_bit_depth) *out_bit_depth = bit_depth;
-    if (out_color_type) *out_color_type = color_type;
-    return 0;
 }
 
 static lv_obj_t *create_image_asset(asset_t *asset)
@@ -1746,67 +1695,16 @@ static lv_obj_t *create_image_asset(asset_t *asset)
     }
     lv_fs_close(&file);
 
-    int png_w = 0;
-    int png_h = 0;
-    int png_depth = 0;
-    int png_color = 0;
-    if (read_png_header(asset->cfg.image_path_resolved, &png_w, &png_h, &png_depth, &png_color) == 0) {
-        fprintf(stderr, "Image asset %d PNG header %dx%d depth=%d color=%d\n",
-                asset->cfg.id, png_w, png_h, png_depth, png_color);
-    } else {
-        fprintf(stderr, "Image asset %d could not read PNG header\n", asset->cfg.id);
-    }
-
     lv_obj_t *img = lv_image_create(lv_scr_act());
     lv_image_set_src(img, asset->cfg.image_path_resolved);
     lv_obj_set_pos(img, to_canvas_x(asset->cfg.x), to_canvas_y(asset->cfg.y));
-    fprintf(stderr, "Image asset %d pre-size override=%d size=%dx%d\n",
-            asset->cfg.id,
-            asset->cfg.image_size_override,
-            asset->cfg.width,
-            asset->cfg.height);
     if (asset->cfg.image_size_override && (asset->cfg.width > 0 || asset->cfg.height > 0)) {
         int width = asset->cfg.width > 0 ? asset->cfg.width : LV_SIZE_CONTENT;
         int height = asset->cfg.height > 0 ? asset->cfg.height : LV_SIZE_CONTENT;
         lv_obj_set_size(img, width, height);
-        fprintf(stderr, "Image asset %d using configured size %dx%d\n", asset->cfg.id, width, height);
     }
     lv_obj_move_foreground(img);
     lv_obj_update_layout(img);
-    int img_w = lv_obj_get_width(img);
-    int img_h = lv_obj_get_height(img);
-    if (image_debug_rect_enabled()) {
-        int rect_w = img_w > 0 ? img_w : 16;
-        int rect_h = img_h > 0 ? img_h : 16;
-        asset->debug_obj = lv_obj_create(lv_scr_act());
-        lv_obj_remove_style_all(asset->debug_obj);
-        lv_obj_set_size(asset->debug_obj, rect_w, rect_h);
-        lv_obj_set_pos(asset->debug_obj, to_canvas_x(asset->cfg.x), to_canvas_y(asset->cfg.y));
-        lv_obj_set_style_bg_color(asset->debug_obj, lv_color_hex(0xFF00FF), 0);
-        lv_obj_set_style_bg_opa(asset->debug_obj, LV_OPA_COVER, 0);
-        lv_obj_set_style_border_width(asset->debug_obj, 0, 0);
-        lv_obj_move_foreground(asset->debug_obj);
-        fprintf(stderr, "Image asset %d debug rect enabled size=%dx%d\n", asset->cfg.id, rect_w, rect_h);
-    }
-    fprintf(stderr,
-            "Image asset %d src=%s pos=%d,%d size=%dx%d\n",
-            asset->cfg.id,
-            asset->cfg.image_path_resolved,
-            to_canvas_x(asset->cfg.x),
-            to_canvas_y(asset->cfg.y),
-            img_w,
-            img_h);
-    if (png_w > 0 && png_h > 0 && (img_w != png_w || img_h != png_h)) {
-        fprintf(stderr,
-                "Image asset %d size mismatch: png=%dx%d decoded=%dx%d\n",
-                asset->cfg.id, png_w, png_h, img_w, img_h);
-        fprintf(stderr,
-                "Image asset %d decoder mismatch: check LVGL PNG decoder registration and FS paths\n",
-                asset->cfg.id);
-    }
-    if (img_w <= 0 || img_h <= 0) {
-        fprintf(stderr, "Image asset %d has zero size after decode\n", asset->cfg.id);
-    }
     return img;
 }
 
