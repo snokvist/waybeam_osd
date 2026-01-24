@@ -102,7 +102,7 @@
       "bar_color": 65280,
       "text_color": 65280
     },
-        {
+    {
       "type": "bar",
       "enabled": false,
       "id": 5,
@@ -121,6 +121,7 @@
       "max": 1.0,
       "bar_color": 65280,
       "text_color": 0
+    },
     { 
      "type": "image", 
      "id": 6, 
