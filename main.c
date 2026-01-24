@@ -38,10 +38,27 @@ static lv_color_t *buf1 = NULL;
 static lv_color_t *buf2 = NULL;
 
 #if LV_USE_FS_STDIO
+#if defined(__has_include)
+#if __has_include("lvgl/src/libs/fsdrv/lv_fs_stdio.h")
+#include "lvgl/src/libs/fsdrv/lv_fs_stdio.h"
+#else
 void lv_fs_stdio_init(void);
 #endif
+#else
+void lv_fs_stdio_init(void);
+#endif
+#endif
+
 #if LV_USE_LODEPNG
+#if defined(__has_include)
+#if __has_include("lvgl/src/libs/lodepng/lv_lodepng.h")
+#include "lvgl/src/libs/lodepng/lv_lodepng.h"
+#else
 void lv_lodepng_init(void);
+#endif
+#else
+void lv_lodepng_init(void);
+#endif
 #endif
 
 typedef struct {
