@@ -36,16 +36,14 @@ static lv_color32_t *buf2 = NULL;
 
 #if LV_USE_FS_STDIO
 #if defined(__has_include)
-#if __has_include("lvgl/src/libs/fsdrv/lv_fs_stdio.h")
-#include "lvgl/src/libs/fsdrv/lv_fs_stdio.h"
-#define HAVE_LV_FS_STDIO_HEADER 1
+#define HAVE_LV_FS_STDIO_HEADER __has_include("lvgl/src/libs/fsdrv/lv_fs_stdio.h")
 #else
-void lv_fs_stdio_init(void);
 #define HAVE_LV_FS_STDIO_HEADER 0
 #endif
+#if HAVE_LV_FS_STDIO_HEADER
+#include "lvgl/src/libs/fsdrv/lv_fs_stdio.h"
 #else
 void lv_fs_stdio_init(void);
-#define HAVE_LV_FS_STDIO_HEADER 0
 #endif
 #else
 #define HAVE_LV_FS_STDIO_HEADER 0
@@ -53,16 +51,14 @@ void lv_fs_stdio_init(void);
 
 #if LV_USE_LODEPNG
 #if defined(__has_include)
-#if __has_include("lvgl/src/libs/lodepng/lv_lodepng.h")
-#include "lvgl/src/libs/lodepng/lv_lodepng.h"
-#define HAVE_LV_LODEPNG_WRAPPER 1
+#define HAVE_LV_LODEPNG_WRAPPER __has_include("lvgl/src/libs/lodepng/lv_lodepng.h")
 #else
-void lv_lodepng_init(void);
 #define HAVE_LV_LODEPNG_WRAPPER 0
 #endif
+#if HAVE_LV_LODEPNG_WRAPPER
+#include "lvgl/src/libs/lodepng/lv_lodepng.h"
 #else
 void lv_lodepng_init(void);
-#define HAVE_LV_LODEPNG_WRAPPER 0
 #endif
 #else
 #define HAVE_LV_LODEPNG_WRAPPER 0
