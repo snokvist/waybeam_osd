@@ -18,8 +18,6 @@
 
 #include "lvgl/lvgl.h"
 #include "lvgl/src/draw/lv_draw_private.h"
-#include "lvgl/src/libs/fsdrv/lv_fs_stdio.h"
-#include "lvgl/src/libs/lodepng/lv_lodepng.h"
 #include "msp_glyph_atlas.h"
 #include "mi_sys.h"
 #include "mi_rgn.h"
@@ -38,6 +36,13 @@
 // LVGL buffers - allocated at runtime for ARGB8888 (32-bit per pixel)
 static lv_color_t *buf1 = NULL;
 static lv_color_t *buf2 = NULL;
+
+#if LV_USE_FS_STDIO
+void lv_fs_stdio_init(void);
+#endif
+#if LV_USE_LODEPNG
+void lv_lodepng_init(void);
+#endif
 
 typedef struct {
     int width;
