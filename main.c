@@ -802,14 +802,6 @@ static void parse_assets_array(const char *json)
                 a.cfg.width = 0;
                 a.cfg.height = 0;
             }
-            fprintf(stderr,
-                    "Image asset %d parsed size override=%d width_set=%d height_set=%d size=%dx%d\n",
-                    a.cfg.id,
-                    a.cfg.image_size_override,
-                    width_set,
-                    height_set,
-                    a.cfg.width,
-                    a.cfg.height);
         }
 
         if (a.cfg.type == ASSET_IMAGE && a.cfg.image_path[0] == '\0') {
@@ -1443,16 +1435,10 @@ void init_lvgl(void)
     lv_tick_set_cb(my_get_milliseconds);
 
 #if LV_USE_FS_STDIO
-    fprintf(stderr, "LVGL fs stdio support enabled\n");
     lv_fs_stdio_init();
-#else
-    fprintf(stderr, "LVGL fs stdio support disabled at build time\n");
 #endif
 #if LV_USE_LODEPNG
-    fprintf(stderr, "LVGL lodepng support enabled\n");
     lv_lodepng_init();
-#else
-    fprintf(stderr, "LVGL lodepng support disabled at build time\n");
 #endif
 
     size_t buf_size = (size_t)osd_width * BUF_ROWS * sizeof(lv_color32_t);
