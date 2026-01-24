@@ -7,6 +7,8 @@
   "udp_stats": false,
   "idle_ms": 100,
   "system_refresh_ms": 1000,
+  "font_path": "/usr/share/fonts/osd",
+  "font_size": 32,
   "assets": [
     {
       "type": "bar",
@@ -156,6 +158,18 @@
       "height": 20,
       "background": 0,
       "background_opacity": 20,
+      "text_color": 16777215
+    },
+    {
+      "type": "text",
+      "enabled": false,
+      "id": 8,
+      "label": "A",
+      "x": 100,
+      "y": 100,
+      "width": 32,
+      "height": 32,
+      "background": -1,
       "text_color": 16777215
     }
   ]
