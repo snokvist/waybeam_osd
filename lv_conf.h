@@ -69,7 +69,7 @@
 
 #if LV_USE_STDLIB_MALLOC == LV_STDLIB_BUILTIN
     /** Size of memory available for `lv_malloc()` in bytes (>= 2kB) */
-    #define LV_MEM_SIZE (64 * 1024U)          /**< [bytes] */
+    #define LV_MEM_SIZE (2048 * 1024U)          /**< [bytes] */
 
     /** Size of the memory expand for `lv_malloc()` in bytes */
     #define LV_MEM_POOL_EXPAND_SIZE 0
@@ -846,12 +846,12 @@
 /** Setting a default driver letter allows skipping the driver prefix in filepaths.
  *  Documentation about how to use the below driver-identifier letters can be found at
  *  https://docs.lvgl.io/master/details/main-modules/fs.html#lv-fs-identifier-letters . */
-#define LV_FS_DEFAULT_DRIVER_LETTER '\0'
+#define LV_FS_DEFAULT_DRIVER_LETTER 'A'
 
 /** API for fopen, fread, etc. */
-#define LV_USE_FS_STDIO 0
+#define LV_USE_FS_STDIO 1
 #if LV_USE_FS_STDIO
-    #define LV_FS_STDIO_LETTER '\0'     /**< Set an upper-case driver-identifier letter for this driver (e.g. 'A'). */
+    #define LV_FS_STDIO_LETTER 'A'      /**< Set an upper-case driver-identifier letter for this driver (e.g. 'A'). */
     #define LV_FS_STDIO_PATH ""         /**< Set the working directory. File/directory paths will be appended to it. */
     #define LV_FS_STDIO_CACHE_SIZE 0    /**< >0 to cache this number of bytes in lv_fs_read() */
 #endif
@@ -914,7 +914,7 @@
 #endif
 
 /** LODEPNG decoder library */
-#define LV_USE_LODEPNG 0
+#define LV_USE_LODEPNG 1
 
 /** PNG decoder(libpng) library */
 #define LV_USE_LIBPNG 0
