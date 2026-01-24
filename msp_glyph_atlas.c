@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "lvgl/lvgl.h"
 #include "lvgl/src/libs/lodepng/lodepng.h"
 
 #define DEFAULT_GRID_COLS 16
@@ -79,7 +80,7 @@ int glyph_atlas_load_png(glyph_atlas_t *atlas, const char *path, const glyph_lay
     uint8_t *rgba = NULL;
     unsigned error = lodepng_decode32_file(&rgba, &width, &height, path);
     if (error != 0 || !rgba || width == 0 || height == 0) {
-        free(rgba);
+        lv_free(rgba);
         return -1;
     }
 
@@ -93,7 +94,7 @@ int glyph_atlas_load_png(glyph_atlas_t *atlas, const char *path, const glyph_lay
 void glyph_atlas_release(glyph_atlas_t *atlas)
 {
     if (!atlas) return;
-    free(atlas->rgba);
+    lv_free(atlas->rgba);
     atlas->rgba = NULL;
     atlas->width = 0;
     atlas->height = 0;
