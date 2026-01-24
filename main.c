@@ -860,6 +860,10 @@ static void parse_assets_array(const char *json)
             a.cfg.orientation = parse_orientation_string(orient_buf, ORIENTATION_RIGHT);
         }
 
+        if (a.cfg.type == ASSET_IMAGE && a.cfg.image_path[0] == '\0') {
+            fprintf(stderr, "Image asset %d missing image_path in config\n", a.cfg.id);
+        }
+
         a.last_pct = -1;
         a.last_label_text[0] = '\0';
 
@@ -1605,7 +1609,10 @@ static lv_obj_t *create_text_asset(asset_t *asset)
 static lv_obj_t *create_image_asset(asset_t *asset)
 {
     if (!asset) return NULL;
-    if (asset->cfg.image_path[0] == '\0') return NULL;
+    if (asset->cfg.image_path[0] == '\0') {
+        fprintf(stderr, "Image asset %d has no image_path\n", asset->cfg.id);
+        return NULL;
+    }
     if (asset->cfg.image_path[0] == '/' &&
         asset->cfg.image_path[1] != '\0' &&
         asset->cfg.image_path_resolved[0] == '\0') {
@@ -1616,6 +1623,13 @@ static lv_obj_t *create_image_asset(asset_t *asset)
                 sizeof(asset->cfg.image_path_resolved) - 1);
         asset->cfg.image_path_resolved[sizeof(asset->cfg.image_path_resolved) - 1] = '\0';
     }
+    lv_fs_file_t file;
+    if (lv_fs_open(&file, asset->cfg.image_path_resolved, LV_FS_MODE_RD) != LV_FS_RES_OK) {
+        fprintf(stderr, "Image asset %d failed to open %s\n", asset->cfg.id, asset->cfg.image_path_resolved);
+        return NULL;
+    }
+    lv_fs_close(&file);
+
     lv_obj_t *img = lv_image_create(lv_scr_act());
     lv_image_set_src(img, asset->cfg.image_path_resolved);
     lv_obj_set_pos(img, to_canvas_x(asset->cfg.x), to_canvas_y(asset->cfg.y));
