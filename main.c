@@ -34,34 +34,12 @@
 static lv_color32_t *buf1 = NULL;
 static lv_color32_t *buf2 = NULL;
 
-#if defined(__has_include)
-#define HAS_INCLUDE(path) __has_include(path)
-#else
-#define HAS_INCLUDE(path) 0
-#endif
-
 #if LV_USE_FS_STDIO
-#if HAS_INCLUDE("lvgl/src/libs/fsdrv/lv_fs_stdio.h")
-#define HAVE_LV_FS_STDIO_HEADER 1
-#include "lvgl/src/libs/fsdrv/lv_fs_stdio.h"
-#else
-#define HAVE_LV_FS_STDIO_HEADER 0
 void lv_fs_stdio_init(void);
-#endif
-#else
-#define HAVE_LV_FS_STDIO_HEADER 0
 #endif
 
 #if LV_USE_LODEPNG
-#if HAS_INCLUDE("lvgl/src/libs/lodepng/lv_lodepng.h")
-#define HAVE_LV_LODEPNG_WRAPPER 1
-#include "lvgl/src/libs/lodepng/lv_lodepng.h"
-#else
-#define HAVE_LV_LODEPNG_WRAPPER 0
 void lv_lodepng_init(void);
-#endif
-#else
-#define HAVE_LV_LODEPNG_WRAPPER 0
 #endif
 
 typedef struct {
@@ -1465,17 +1443,13 @@ void init_lvgl(void)
     lv_tick_set_cb(my_get_milliseconds);
 
 #if LV_USE_FS_STDIO
-    fprintf(stderr,
-            "LVGL fs stdio support enabled; header %s\n",
-            HAVE_LV_FS_STDIO_HEADER ? "present" : "missing");
+    fprintf(stderr, "LVGL fs stdio support enabled\n");
     lv_fs_stdio_init();
 #else
     fprintf(stderr, "LVGL fs stdio support disabled at build time\n");
 #endif
 #if LV_USE_LODEPNG
-    fprintf(stderr,
-            "LVGL lodepng support enabled; using %s\n",
-            HAVE_LV_LODEPNG_WRAPPER ? "lv_lodepng wrapper" : "external lodepng");
+    fprintf(stderr, "LVGL lodepng support enabled\n");
     lv_lodepng_init();
 #else
     fprintf(stderr, "LVGL lodepng support disabled at build time\n");
