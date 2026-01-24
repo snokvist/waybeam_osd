@@ -71,6 +71,7 @@
 #define BUILD_BUF        1900
 
 #define MAX_TEXT_LEN     96
+#define MAX_GLYPH_REQUESTS 256
 
 #define INI_MAX_KV       256
 #define INI_KEY_MAX      64
@@ -113,6 +114,13 @@ typedef struct {
 
     TextState texts_state[8];
     char texts[8][MAX_TEXT_LEN + 1];
+
+    int glyph_count;
+    struct {
+        int id;
+        int row;
+        int col;
+    } glyphs[MAX_GLYPH_REQUESTS];
 } Payload;
 
 /* ------------------------- helpers ------------------------- */
@@ -379,6 +387,17 @@ static int set_text_null(Payload *p, int idx)
     return 1;
 }
 
+static int add_glyph_request(Payload *p, int id, int row, int col)
+{
+    if (!p) return 0;
+    if (p->glyph_count >= MAX_GLYPH_REQUESTS) return 0;
+    p->glyphs[p->glyph_count].id = id;
+    p->glyphs[p->glyph_count].row = row;
+    p->glyphs[p->glyph_count].col = col;
+    p->glyph_count++;
+    return 1;
+}
+
 static int any_values(const Payload *p)
 {
     for (int i = 0; i < 8; i++) if (p->values_state[i] != VS_ABSENT) return 1;
@@ -389,6 +408,11 @@ static int any_texts(const Payload *p)
 {
     for (int i = 0; i < 8; i++) if (p->texts_state[i] != TS_ABSENT) return 1;
     return 0;
+}
+
+static int any_glyphs(const Payload *p)
+{
+    return p->glyph_count > 0;
 }
 
 static int serialize_payload(const Payload *p, char *out, size_t out_cap)
@@ -440,6 +464,21 @@ static int serialize_payload(const Payload *p, char *out, size_t out_cap)
         if (!appendf(out, out_cap, &len, "]")) return -1;
     }
 
+    if (any_glyphs(p)) {
+        if (!appendf(out, out_cap, &len, "%s\"glyphs\":[", first ? "" : ",")) return -1;
+        first = 0;
+        for (int i = 0; i < p->glyph_count; i++) {
+            const char *sep = (i == 0) ? "" : ",";
+            if (!appendf(out, out_cap, &len,
+                         "%s{\"id\":%d,\"row\":%d,\"col\":%d}",
+                         sep,
+                         p->glyphs[i].id,
+                         p->glyphs[i].row,
+                         p->glyphs[i].col)) return -1;
+        }
+        if (!appendf(out, out_cap, &len, "]")) return -1;
+    }
+
     if (!appendf(out, out_cap, &len, "}")) return -1;
 
     if (len > MAX_PAYLOAD) return -2;
@@ -474,6 +513,70 @@ static int parse_index_value_pair(const char *s, int *idx, char *val_buf, size_t
         val_buf[val_sz - 1] = '\0';
     }
     *idx = i;
+    return 1;
+}
+
+static int parse_glyph_id_list(const char *spec, int *out_ids, int max_ids, int *out_count)
+{
+    if (!spec || !out_ids || !out_count) return 0;
+    *out_count = 0;
+
+    char buf[900];
+    strncpy(buf, spec, sizeof(buf) - 1);
+    buf[sizeof(buf) - 1] = '\0';
+
+    char *save = NULL;
+    for (char *tok = strtok_r(buf, ",", &save); tok; tok = strtok_r(NULL, ",", &save)) {
+        tok = trim(tok);
+        if (!*tok) continue;
+
+        char *dash = strchr(tok, '-');
+        if (dash) {
+            *dash = '\0';
+            char *end_str = dash + 1;
+            int start = 0;
+            int end = 0;
+            if (!parse_int(trim(tok), &start) || !parse_int(trim(end_str), &end)) return 0;
+            if (start > end) return 0;
+            for (int v = start; v <= end; v++) {
+                if (*out_count >= max_ids) return 0;
+                out_ids[(*out_count)++] = v;
+            }
+        } else {
+            int id = 0;
+            if (!parse_int(tok, &id)) return 0;
+            if (*out_count >= max_ids) return 0;
+            out_ids[(*out_count)++] = id;
+        }
+    }
+    return 1;
+}
+
+static int apply_glyphs_list_send(Payload *p, const char *spec, int start_row, int start_col, int cols, int verbose)
+{
+    if (!spec) return 1;
+    if (cols <= 0) cols = 1;
+
+    int ids[MAX_GLYPH_REQUESTS];
+    int count = 0;
+    if (!parse_glyph_id_list(spec, ids, MAX_GLYPH_REQUESTS, &count)) {
+        fprintf(stderr, "Bad --glyphs list: %s\n", spec);
+        return 0;
+    }
+
+    for (int i = 0; i < count; i++) {
+        int offset = start_col + i;
+        int row = start_row + (offset / cols);
+        int col = offset % cols;
+        if (!add_glyph_request(p, ids[i], row, col)) {
+            fprintf(stderr, "Too many glyphs (max %d)\n", MAX_GLYPH_REQUESTS);
+            return 0;
+        }
+        if (verbose) {
+            fprintf(stderr, "[send] glyph id=%d row=%d col=%d\n", ids[i], row, col);
+        }
+    }
+
     return 1;
 }
 
@@ -647,6 +750,10 @@ static void usage_main(const char *prog)
         "  --port <n|@key>           UDP port (default: %d)\n"
         "  --values \"i=v,...\"        set values (v: number | @key | null | empty => \"\")\n"
         "  --texts  \"i=s,...\"        set texts  (s: text   | @key | null | empty => \"\")\n"
+        "  --glyphs \"id,id,...\"      send glyph IDs (supports ranges: 32-47)\n"
+        "  --glyph-row <n>            glyph grid start row (default: 0)\n"
+        "  --glyph-col <n>            glyph grid start col (default: 0)\n"
+        "  --glyph-cols <n>           glyphs per row when auto-placing (default: 16)\n"
         "  --print-json              (send) print JSON instead of sending\n"
         "  --verbose, -v             extra debug output\n"
         "\n"
@@ -660,6 +767,7 @@ static void usage_main(const char *prog)
         "\n"
         "Examples:\n"
         "  %s send --values \"0=-52\" --texts \"0=Trollvinter\"\n"
+        "  %s send --glyphs \"32-47\" --glyph-row 0 --glyph-col 0 --glyph-cols 16\n"
         "  %s send --ini /tmp/aalink_ext.msg --dest 10.6.0.1 --port 7777 \\\n"
         "    --values \"0=@used_rssi,1=@mcs,2=@width\" \\\n"
         "    --texts  \"0=@used_source,1=@gs_string\"\n"
@@ -667,7 +775,7 @@ static void usage_main(const char *prog)
         "    --values \"0=@used_rssi,1=@mcs\" --texts \"0=@used_source\"\n",
         prog, prog,
         DEFAULT_INI_PATH, DEFAULT_DEST_IP, DEFAULT_PORT, DEFAULT_INTERVAL,
-        prog, prog, prog);
+        prog, prog, prog, prog);
 }
 
 /* ------------------------- watch spec ------------------------- */
@@ -798,6 +906,10 @@ static int cmd_send(int argc, char **argv, const char *prog)
     const char *ini_path = NULL;
     const char *values_spec = NULL;
     const char *texts_spec = NULL;
+    const char *glyphs_spec = NULL;
+    int glyph_row = 0;
+    int glyph_col = 0;
+    int glyph_cols = 16;
     int print_json = 0;
     int verbose = 0;
 
@@ -813,6 +925,10 @@ static int cmd_send(int argc, char **argv, const char *prog)
         {"ini",  required_argument, 0, 3},
         {"values", required_argument, 0, 5},
         {"texts", required_argument, 0, 7},
+        {"glyphs", required_argument, 0, 11},
+        {"glyph-row", required_argument, 0, 12},
+        {"glyph-col", required_argument, 0, 13},
+        {"glyph-cols", required_argument, 0, 14},
         {"print-json", no_argument, 0, 9},
         {"verbose", no_argument, 0, 'v'},
         {"help", no_argument, 0, 'h'},
@@ -847,6 +963,10 @@ static int cmd_send(int argc, char **argv, const char *prog)
         case 3: /* already handled */ break;
         case 5: values_spec = optarg; break;
         case 7: texts_spec = optarg; break;
+        case 11: glyphs_spec = optarg; break;
+        case 12: glyph_row = atoi(optarg); break;
+        case 13: glyph_col = atoi(optarg); break;
+        case 14: glyph_cols = atoi(optarg); break;
         case 9: print_json = 1; break;
         case 'v': verbose = 1; break;
         case 'h':
@@ -896,6 +1016,9 @@ static int cmd_send(int argc, char **argv, const char *prog)
     }
     if (texts_spec) {
         if (!apply_texts_list_send(&payload, &ini, texts_spec, verbose)) return 1;
+    }
+    if (glyphs_spec) {
+        if (!apply_glyphs_list_send(&payload, glyphs_spec, glyph_row, glyph_col, glyph_cols, verbose)) return 1;
     }
 
     char out[BUILD_BUF];

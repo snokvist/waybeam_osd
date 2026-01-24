@@ -46,21 +46,11 @@ static glyph_layout_t layout_from_png(unsigned width, unsigned height, const gly
     return layout;
 }
 
-static uint8_t quantize_4bit(uint8_t value)
-{
-    uint8_t q = (value >> 4) & 0x0F;
-    return (uint8_t)(q * 17);
-}
-
 static void blend_pixel(uint32_t *dst, uint8_t r, uint8_t g, uint8_t b, uint8_t a)
 {
     if (a == 0) return;
     if (a == 255) {
-        uint8_t qr = quantize_4bit(r);
-        uint8_t qg = quantize_4bit(g);
-        uint8_t qb = quantize_4bit(b);
-        uint8_t qa = quantize_4bit(a);
-        *dst = ((uint32_t)qa << 24) | ((uint32_t)qr << 16) | ((uint32_t)qg << 8) | qb;
+        *dst = ((uint32_t)a << 24) | ((uint32_t)r << 16) | ((uint32_t)g << 8) | b;
         return;
     }
 
@@ -75,11 +65,6 @@ static void blend_pixel(uint32_t *dst, uint8_t r, uint8_t g, uint8_t b, uint8_t 
     uint8_t out_r = (uint8_t)((r * a + dr * inv + 127) / 255);
     uint8_t out_g = (uint8_t)((g * a + dg * inv + 127) / 255);
     uint8_t out_b = (uint8_t)((b * a + db * inv + 127) / 255);
-
-    out_a = quantize_4bit(out_a);
-    out_r = quantize_4bit(out_r);
-    out_g = quantize_4bit(out_g);
-    out_b = quantize_4bit(out_b);
 
     *dst = ((uint32_t)out_a << 24) | ((uint32_t)out_r << 16) | ((uint32_t)out_g << 8) | out_b;
 }

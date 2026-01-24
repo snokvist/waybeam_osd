@@ -7,7 +7,7 @@
 - Keep payloads under 1280 bytes (anything larger is dropped).
 - The UDP socket is fully drained whenever it becomes readable, processing all queued packets in order. This ensures that even if multiple packets arrive in the same poll cycle, all side effects (like sparse index updates or asset property changes) are applied, with the last packet for any given index/property "winning". Incoming packets trigger an immediate refresh when received, while `idle_ms` only caps the sleep when no data arrives.
 - Optional `texts` array (up to 8 strings, max 95 chars each) can be sent alongside `values`. These map to `text_index` on bar assets and override a static `label` if present. Missing or empty entries fall back to the asset’s `label`.
-- Optional `asset_updates` array lets senders retint, reposition, enable/disable, or fully reconfigure assets at runtime. Each object must contain an `id`; if the ID does not exist yet and there is room (max 8 assets), the asset slot is created on the fly. Valid keys include: `enabled` (bool), `type` (`"bar"`, `"text"`, or `"image"`), `value_index`, `text_index`, `text_indices` (array), `text_inline`, `label`, `image_path` (image only), `orientation`, `x`, `y`, `width`, `height`, `min`, `max`, `bar_color` (bars only), `text_color`, `background`, `background_opacity`, `segments` (bars only), and `rounded_outline` (bars only). Only valid values that differ from the current config are applied; disabled assets are removed from the screen immediately.
+- Optional `asset_updates` array lets senders retint, reposition, enable/disable, or fully reconfigure assets at runtime. Each object must contain an `id`; if the ID does not exist yet and there is room (max 8 assets), the asset slot is created on the fly. Valid keys include: `enabled` (bool), `type` (`"bar"`, `"text"`, or `"image"`), `value_index`, `text_index`, `text_indices` (array), `text_inline`, `label`, `image_path` (image only), `orientation`, `x`, `y`, `width`, `height` (bars/text only), `min`, `max`, `bar_color` (bars only), `text_color`, `background`, `background_opacity`, `segments` (bars only), and `rounded_outline` (bars only). Only valid values that differ from the current config are applied; disabled assets are removed from the screen immediately.
 - Optional `glyphs` array lets senders blit glyphs from the configured PNG atlas. Each entry is an object with `id` (glyph index), `row`, and `col` (grid position). The glyph array replaces the current glyph list each time it is sent; omit the field to keep the previous list.
 
 Example:
@@ -86,9 +86,10 @@ Each on-screen asset binds to one `values[i]` entry via `value_index`. For bar a
     - `text_inline` (bool, text only): when `true`, joins `text_indices` on a single line with spaces; otherwise stacks them on new lines. Default `false`.
     - `label` (string, optional, bars/text): static text descriptor. Used when no UDP text is present.
     - `image_path` (string, image only): local filesystem path to a PNG image (absolute paths are accepted); omit to hide the image.
+    - Image assets always render at the PNG’s native dimensions; `width`/`height` are ignored.
     - `orientation` (string, bars only): `"right"` (default) keeps the bar horizontal with the label to the right; `"left"` mirrors the layout with the label on the left and flips the fill so the bar grows from right-to-left. For `left`, the bar container anchors its right edge at `x` so left- and right-oriented bars can share the same coordinate and grow in opposite directions.
     - `x`, `y` (int): position relative to the OSD top-left. For `orientation: "left"`, `x` represents the right edge of the bar’s rounded container.
-    - `width`, `height` (int): size in pixels. For text, enables wrapping.
+    - `width`, `height` (int, bars/text only): size in pixels. For text, enables wrapping.
     - `min`, `max` (float): input range mapped to 0–100% for bars.
     - `bar_color` (int): RGB hex value as a number; used by bar styles.
     - `rounded_outline` (bool, bars only): enables the outlined capsule look. Defaults to `false`.

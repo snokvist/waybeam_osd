@@ -18,6 +18,7 @@
 
 #include "lvgl/lvgl.h"
 #include "lvgl/src/draw/lv_draw_private.h"
+#include "lvgl/src/libs/lodepng/lodepng.h"
 #include "msp_glyph_atlas.h"
 #include "mi_sys.h"
 #include "mi_rgn.h"
@@ -114,7 +115,6 @@ typedef struct {
     asset_orientation_t orientation;
     char image_path[256];
     char image_path_resolved[260];
-    int image_size_override;
 } asset_cfg_t;
 
 typedef struct {
@@ -122,6 +122,8 @@ typedef struct {
     lv_obj_t *container_obj;
     lv_obj_t *obj;
     lv_obj_t *label_obj;
+    lv_image_dsc_t image_dsc;
+    uint8_t *image_data;
     int last_pct;
     char last_label_text[1024];
 } asset_t;
@@ -442,6 +444,7 @@ static void bar_draw_event_cb(lv_event_t *e);
 static void destroy_asset_visual(asset_t *asset);
 static void create_asset_visual(asset_t *asset);
 static void maybe_attach_asset_label(asset_t *asset);
+static void release_image_data(asset_t *asset);
 
 static asset_t *find_asset_by_id(int id)
 {
@@ -478,9 +481,18 @@ static void init_asset_defaults(asset_t *a, int id)
     a->cfg.label[0] = '\0';
     a->cfg.image_path[0] = '\0';
     a->cfg.image_path_resolved[0] = '\0';
-    a->cfg.image_size_override = 0;
+    a->image_data = NULL;
+    memset(&a->image_dsc, 0, sizeof(a->image_dsc));
     a->last_pct = -1;
     a->last_label_text[0] = '\0';
+}
+
+static void release_image_data(asset_t *asset)
+{
+    if (!asset) return;
+    free(asset->image_data);
+    asset->image_data = NULL;
+    memset(&asset->image_dsc, 0, sizeof(asset->image_dsc));
 }
 
 static void style_bar_container(asset_t *asset, lv_color_t fallback_color, lv_opa_t fallback_opa)
@@ -765,6 +777,9 @@ static void set_defaults(void)
     g_cfg.glyph_page_count = 0;
     g_cfg.glyph_atlas_path[0] = '\0';
 
+    for (int i = 0; i < asset_count; i++) {
+        release_image_data(&assets[i]);
+    }
     memset(assets, 0, sizeof(assets));
     asset_count = 1;
     init_asset_defaults(&assets[0], 0);
@@ -867,15 +882,11 @@ static void parse_assets_array(const char *json)
         if (json_get_int_range(obj_start, obj_end, "id", &v) == 0) a.cfg.id = clamp_int(v, 0, 63);
         if (json_get_int_range(obj_start, obj_end, "x", &v) == 0) a.cfg.x = v;
         if (json_get_int_range(obj_start, obj_end, "y", &v) == 0) a.cfg.y = v;
-        int width_set = 0;
-        int height_set = 0;
         if (json_get_int_range(obj_start, obj_end, "width", &v) == 0) {
             a.cfg.width = v;
-            width_set = 1;
         }
         if (json_get_int_range(obj_start, obj_end, "height", &v) == 0) {
             a.cfg.height = v;
-            height_set = 1;
         }
         if (json_get_float_range(obj_start, obj_end, "min", &fv) == 0) a.cfg.min = fv;
         if (json_get_float_range(obj_start, obj_end, "max", &fv) == 0) a.cfg.max = fv;
@@ -896,19 +907,8 @@ static void parse_assets_array(const char *json)
         }
 
         if (a.cfg.type == ASSET_IMAGE) {
-            a.cfg.image_size_override = width_set || height_set;
-            if (!a.cfg.image_size_override) {
-                a.cfg.width = 0;
-                a.cfg.height = 0;
-            }
-            fprintf(stderr,
-                    "Image asset %d parsed size override=%d width_set=%d height_set=%d size=%dx%d\n",
-                    a.cfg.id,
-                    a.cfg.image_size_override,
-                    width_set,
-                    height_set,
-                    a.cfg.width,
-                    a.cfg.height);
+            a.cfg.width = 0;
+            a.cfg.height = 0;
         }
 
         if (a.cfg.type == ASSET_IMAGE && a.cfg.image_path[0] == '\0') {
@@ -1092,6 +1092,7 @@ static void parse_udp_asset_updates(const char *buf)
             asset->cfg.enabled = 0;
         }
 
+        asset_type_t prev_type = asset->cfg.type;
         int v = 0;
         float fv = 0.0f;
         int restyle = 0;
@@ -1117,11 +1118,15 @@ static void parse_udp_asset_updates(const char *buf)
             }
             if (new_type != asset->cfg.type) {
                 asset->cfg.type = new_type;
-                recreate = 1;
-                if (new_type == ASSET_IMAGE && !asset->cfg.image_size_override) {
+                if (prev_type == ASSET_IMAGE && new_type != ASSET_IMAGE) {
+                    release_image_data(asset);
+                }
+                if (new_type == ASSET_IMAGE) {
                     asset->cfg.width = 0;
                     asset->cfg.height = 0;
+                    release_image_data(asset);
                 }
+                recreate = 1;
             }
         }
 
@@ -1171,7 +1176,10 @@ static void parse_udp_asset_updates(const char *buf)
             text_change = 1;
         }
         if (json_get_string_range(obj_start, obj_end, "image_path", asset->cfg.image_path, sizeof(asset->cfg.image_path)) == 0) {
-            recreate = asset->cfg.type == ASSET_IMAGE ? 1 : recreate;
+            if (asset->cfg.type == ASSET_IMAGE) {
+                release_image_data(asset);
+                recreate = 1;
+            }
             asset->cfg.image_path_resolved[0] = '\0';
         }
 
@@ -1235,19 +1243,17 @@ static void parse_udp_asset_updates(const char *buf)
             }
         }
         if (json_get_int_range(obj_start, obj_end, "width", &v) == 0) {
-            if (asset->cfg.width != v) {
+            if (asset->cfg.type != ASSET_IMAGE && asset->cfg.width != v) {
                 asset->cfg.width = v;
                 relayout = 1;
                 recreate = asset->cfg.type == ASSET_TEXT ? 1 : recreate;
-                if (asset->cfg.type == ASSET_IMAGE) asset->cfg.image_size_override = 1;
             }
         }
         if (json_get_int_range(obj_start, obj_end, "height", &v) == 0) {
-            if (asset->cfg.height != v) {
+            if (asset->cfg.type != ASSET_IMAGE && asset->cfg.height != v) {
                 asset->cfg.height = v;
                 relayout = 1;
                 recreate = asset->cfg.type == ASSET_TEXT ? 1 : recreate;
-                if (asset->cfg.type == ASSET_IMAGE) asset->cfg.image_size_override = 1;
             }
         }
         if (json_get_float_range(obj_start, obj_end, "min", &fv) == 0) {
@@ -1285,11 +1291,6 @@ static void parse_udp_asset_updates(const char *buf)
                     lv_obj_set_size(asset->obj, width, height);
                     lv_obj_set_pos(asset->obj, asset->cfg.x, asset->cfg.y);
                 } else if (asset->cfg.type == ASSET_IMAGE) {
-                    if (asset->cfg.width > 0 || asset->cfg.height > 0) {
-                        int width = asset->cfg.width > 0 ? asset->cfg.width : LV_SIZE_CONTENT;
-                        int height = asset->cfg.height > 0 ? asset->cfg.height : LV_SIZE_CONTENT;
-                        lv_obj_set_size(asset->obj, width, height);
-                    }
                     lv_obj_set_pos(asset->obj, asset->cfg.x, asset->cfg.y);
                 } else {
                     layout_bar_asset(asset);
@@ -1670,13 +1671,12 @@ static lv_obj_t *create_text_asset(asset_t *asset)
     return label;
 }
 
-static lv_obj_t *create_image_asset(asset_t *asset)
+static int load_image_asset_data(asset_t *asset)
 {
-    if (!asset) return NULL;
-    if (asset->cfg.image_path[0] == '\0') {
-        fprintf(stderr, "Image asset %d has no image_path\n", asset->cfg.id);
-        return NULL;
-    }
+    if (!asset) return -1;
+    if (asset->image_data) return 0;
+    if (asset->cfg.image_path[0] == '\0') return -1;
+
     if (asset->cfg.image_path_resolved[0] == '\0') {
         const char *src = asset->cfg.image_path;
         if (src[0] != '\0' && src[1] == ':' &&
@@ -1688,21 +1688,51 @@ static lv_obj_t *create_image_asset(asset_t *asset)
                 sizeof(asset->cfg.image_path_resolved) - 1);
         asset->cfg.image_path_resolved[sizeof(asset->cfg.image_path_resolved) - 1] = '\0';
     }
-    lv_fs_file_t file;
-    if (lv_fs_open(&file, asset->cfg.image_path_resolved, LV_FS_MODE_RD) != LV_FS_RES_OK) {
-        fprintf(stderr, "Image asset %d failed to open %s\n", asset->cfg.id, asset->cfg.image_path_resolved);
+
+    unsigned width = 0;
+    unsigned height = 0;
+    uint8_t *rgba = NULL;
+    unsigned error = lodepng_decode32_file(&rgba, &width, &height, asset->cfg.image_path_resolved);
+    if (error != 0 || !rgba || width == 0 || height == 0) {
+        free(rgba);
+        fprintf(stderr, "Image asset %d failed to decode %s\n", asset->cfg.id, asset->cfg.image_path_resolved);
+        return -1;
+    }
+
+    size_t total = (size_t)width * (size_t)height;
+    uint8_t *src = rgba;
+    uint32_t *dst = (uint32_t *)rgba;
+    for (size_t i = 0; i < total; i++) {
+        uint8_t r = src[i * 4 + 0];
+        uint8_t g = src[i * 4 + 1];
+        uint8_t b = src[i * 4 + 2];
+        uint8_t a = src[i * 4 + 3];
+        dst[i] = ((uint32_t)a << 24) | ((uint32_t)r << 16) | ((uint32_t)g << 8) | b;
+    }
+
+    asset->image_data = rgba;
+    asset->image_dsc.header.cf = LV_COLOR_FORMAT_ARGB8888;
+    asset->image_dsc.header.w = (uint32_t)width;
+    asset->image_dsc.header.h = (uint32_t)height;
+    asset->image_dsc.data_size = (uint32_t)(total * 4);
+    asset->image_dsc.data = asset->image_data;
+    return 0;
+}
+
+static lv_obj_t *create_image_asset(asset_t *asset)
+{
+    if (!asset) return NULL;
+    if (asset->cfg.image_path[0] == '\0') {
+        fprintf(stderr, "Image asset %d has no image_path\n", asset->cfg.id);
         return NULL;
     }
-    lv_fs_close(&file);
+    if (load_image_asset_data(asset) != 0) {
+        return NULL;
+    }
 
     lv_obj_t *img = lv_image_create(lv_scr_act());
-    lv_image_set_src(img, asset->cfg.image_path_resolved);
+    lv_image_set_src(img, &asset->image_dsc);
     lv_obj_set_pos(img, to_canvas_x(asset->cfg.x), to_canvas_y(asset->cfg.y));
-    if (asset->cfg.image_size_override && (asset->cfg.width > 0 || asset->cfg.height > 0)) {
-        int width = asset->cfg.width > 0 ? asset->cfg.width : LV_SIZE_CONTENT;
-        int height = asset->cfg.height > 0 ? asset->cfg.height : LV_SIZE_CONTENT;
-        lv_obj_set_size(img, width, height);
-    }
     lv_obj_move_foreground(img);
     lv_obj_update_layout(img);
     return img;
@@ -1770,6 +1800,7 @@ static void destroy_assets(void)
 {
     for (int i = 0; i < asset_count; i++) {
         destroy_asset_visual(&assets[i]);
+        release_image_data(&assets[i]);
     }
 
     asset_count = 0;
