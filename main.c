@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/time.h>
 #include <poll.h>
 #include <signal.h>
@@ -17,6 +18,7 @@
 
 #include "lvgl/lvgl.h"
 #include "lvgl/src/draw/lv_draw_private.h"
+#include "msp_glyph_atlas.h"
 #include "mi_sys.h"
 #include "mi_rgn.h"
 #include "mi_vpe.h"
@@ -29,10 +31,35 @@
 #define UDP_MAX_PACKET 1280
 #define MAX_ASSETS 8
 #define UDP_TEXT_LEN 96
+#define MAX_GLYPH_REQUESTS 256
 
 // LVGL buffers - allocated at runtime for ARGB8888 (32-bit per pixel)
-static lv_color_t *buf1 = NULL;
-static lv_color_t *buf2 = NULL;
+static lv_color32_t *buf1 = NULL;
+static lv_color32_t *buf2 = NULL;
+
+#if LV_USE_FS_STDIO
+#if defined(__has_include)
+#if __has_include("lvgl/src/libs/fsdrv/lv_fs_stdio.h")
+#include "lvgl/src/libs/fsdrv/lv_fs_stdio.h"
+#else
+void lv_fs_stdio_init(void);
+#endif
+#else
+void lv_fs_stdio_init(void);
+#endif
+#endif
+
+#if LV_USE_LODEPNG
+#if defined(__has_include)
+#if __has_include("lvgl/src/libs/lodepng/lv_lodepng.h")
+#include "lvgl/src/libs/lodepng/lv_lodepng.h"
+#else
+void lv_lodepng_init(void);
+#endif
+#else
+void lv_lodepng_init(void);
+#endif
+#endif
 
 typedef struct {
     int width;
@@ -42,11 +69,19 @@ typedef struct {
     int show_stats;
     int idle_ms;
     int udp_stats;
+    int glyphs_enabled;
+    int glyph_origin_x;
+    int glyph_origin_y;
+    int glyph_grid_cols;
+    int glyph_grid_rows;
+    int glyph_page_count;
+    char glyph_atlas_path[256];
 } app_config_t;
 
 typedef enum {
     ASSET_BAR = 0,
     ASSET_TEXT,
+    ASSET_IMAGE,
 } asset_type_t;
 
 typedef enum {
@@ -77,6 +112,9 @@ typedef struct {
     int rounded_outline;
     int segments;
     asset_orientation_t orientation;
+    char image_path[256];
+    char image_path_resolved[260];
+    int image_size_override;
 } asset_cfg_t;
 
 typedef struct {
@@ -84,6 +122,7 @@ typedef struct {
     lv_obj_t *container_obj;
     lv_obj_t *obj;
     lv_obj_t *label_obj;
+    lv_obj_t *debug_obj;
     int last_pct;
     char last_label_text[1024];
 } asset_t;
@@ -126,6 +165,7 @@ static MI_RGN_ChnPortParam_t stRgnChnAttr;
 static MI_RGN_CanvasInfo_t g_cached_canvas_info;
 static int g_canvas_info_valid = 0;
 static int g_canvas_dirty = 0;
+static int g_image_debug_rect = -1;
 
 // UI
 static lv_obj_t *stats_label = NULL;
@@ -142,6 +182,19 @@ static int udp_sock = -1;
 static double udp_values[MAX_ASSETS] = {0};
 static char udp_texts[MAX_ASSETS][UDP_TEXT_LEN] = {{0}};
 static int idle_cap_ms = 100;
+static glyph_atlas_t g_glyph_atlas;
+static lv_obj_t *glyph_canvas = NULL;
+static uint8_t *glyph_canvas_buf = NULL;
+static int g_glyphs_dirty = 0;
+
+typedef struct {
+    int id;
+    int row;
+    int col;
+} glyph_request_t;
+
+static glyph_request_t g_glyph_requests[MAX_GLYPH_REQUESTS];
+static int g_glyph_request_count = 0;
 // -------------------------
 // Utility helpers
 // -------------------------
@@ -155,6 +208,26 @@ static float clamp_float(float v, float lo, float hi) {
     if (v < lo) return lo;
     if (v > hi) return hi;
     return v;
+}
+
+static int image_debug_rect_enabled(void)
+{
+    if (g_image_debug_rect < 0) {
+        const char *env = getenv("WAYBEAM_IMAGE_DEBUG_RECT");
+        if (!env || env[0] == '\0') {
+            g_image_debug_rect = 0;
+        } else if (env[0] == '0' && env[1] == '\0') {
+            g_image_debug_rect = 0;
+        } else if (strcasecmp(env, "false") == 0) {
+            g_image_debug_rect = 0;
+        } else {
+            g_image_debug_rect = 1;
+        }
+        fprintf(stderr, "Image debug rect %s (WAYBEAM_IMAGE_DEBUG_RECT=%s)\n",
+                g_image_debug_rect ? "enabled" : "disabled",
+                env ? env : "(unset)");
+    }
+    return g_image_debug_rect;
 }
 
 static int to_canvas_x(int x)
@@ -425,6 +498,9 @@ static void init_asset_defaults(asset_t *a, int id)
     a->cfg.rounded_outline = 0;
     a->cfg.segments = 0;
     a->cfg.label[0] = '\0';
+    a->cfg.image_path[0] = '\0';
+    a->cfg.image_path_resolved[0] = '\0';
+    a->cfg.image_size_override = 0;
     a->last_pct = -1;
     a->last_label_text[0] = '\0';
 }
@@ -472,6 +548,12 @@ static void apply_asset_styles(asset_t *asset)
                 apply_background_style(asset->obj, cfg->bg_style, cfg->bg_opacity_pct, 0);
                 lv_obj_set_style_text_color(asset->obj, lv_color_hex(cfg->text_color), 0);
                 lv_obj_set_style_text_opa(asset->obj, LV_OPA_COVER, 0);
+            }
+            break;
+        case ASSET_IMAGE:
+            if (asset->obj) {
+                apply_background_style(asset->obj, cfg->bg_style, cfg->bg_opacity_pct, 0);
+                lv_obj_set_style_img_opa(asset->obj, LV_OPA_COVER, 0);
             }
             break;
         default:
@@ -683,6 +765,11 @@ static int json_get_string_range(const char *start, const char *end, const char 
     return 0;
 }
 
+static int json_get_string(const char *json, const char *key, char *buf, size_t buf_sz)
+{
+    return json_get_string_range(json, json + strlen(json), key, buf, buf_sz);
+}
+
 static void set_defaults(void)
 {
     g_cfg.width = DEFAULT_SCREEN_WIDTH;
@@ -692,10 +779,70 @@ static void set_defaults(void)
     g_cfg.show_stats = 1;
     g_cfg.idle_ms = 100;
     g_cfg.udp_stats = 0;
+    g_cfg.glyphs_enabled = 0;
+    g_cfg.glyph_origin_x = 0;
+    g_cfg.glyph_origin_y = 0;
+    g_cfg.glyph_grid_cols = 16;
+    g_cfg.glyph_grid_rows = 16;
+    g_cfg.glyph_page_count = 0;
+    g_cfg.glyph_atlas_path[0] = '\0';
 
     memset(assets, 0, sizeof(assets));
     asset_count = 1;
     init_asset_defaults(&assets[0], 0);
+}
+
+static void release_glyph_resources(void)
+{
+    if (glyph_canvas) {
+        lv_obj_del(glyph_canvas);
+        glyph_canvas = NULL;
+    }
+    free(glyph_canvas_buf);
+    glyph_canvas_buf = NULL;
+    glyph_atlas_release(&g_glyph_atlas);
+}
+
+static void clear_glyph_canvas(void)
+{
+    if (!glyph_canvas_buf) return;
+    size_t len = (size_t)osd_width * (size_t)osd_height * 4;
+    memset(glyph_canvas_buf, 0, len);
+}
+
+static void setup_glyphs(void)
+{
+    release_glyph_resources();
+    g_glyph_request_count = 0;
+    g_glyphs_dirty = 0;
+
+    if (!g_cfg.glyphs_enabled || g_cfg.glyph_atlas_path[0] == '\0') return;
+
+    glyph_layout_t layout_override = {
+        .grid_cols = g_cfg.glyph_grid_cols,
+        .grid_rows = g_cfg.glyph_grid_rows,
+        .page_count = g_cfg.glyph_page_count,
+        .glyph_w = 0,
+        .glyph_h = 0,
+    };
+
+    if (glyph_atlas_load_png(&g_glyph_atlas, g_cfg.glyph_atlas_path, &layout_override) != 0) {
+        return;
+    }
+
+    size_t buf_size = (size_t)osd_width * (size_t)osd_height * 4;
+    glyph_canvas_buf = (uint8_t *)malloc(buf_size);
+    if (!glyph_canvas_buf) {
+        glyph_atlas_release(&g_glyph_atlas);
+        return;
+    }
+    clear_glyph_canvas();
+
+    glyph_canvas = lv_canvas_create(lv_scr_act());
+    lv_canvas_set_buffer(glyph_canvas, glyph_canvas_buf, osd_width, osd_height, LV_COLOR_FORMAT_ARGB8888);
+    lv_obj_align(glyph_canvas, LV_ALIGN_TOP_LEFT, 0, 0);
+    lv_obj_move_foreground(glyph_canvas);
+    g_glyphs_dirty = 1;
 }
 
 static void parse_assets_array(const char *json)
@@ -728,6 +875,8 @@ static void parse_assets_array(const char *json)
         if (json_get_string_range(obj_start, obj_end, "type", type_buf, sizeof(type_buf)) == 0) {
             if (strcmp(type_buf, "text") == 0) {
                 a.cfg.type = ASSET_TEXT;
+            } else if (strcmp(type_buf, "image") == 0) {
+                a.cfg.type = ASSET_IMAGE;
             } else {
                 a.cfg.type = ASSET_BAR;
             }
@@ -740,8 +889,16 @@ static void parse_assets_array(const char *json)
         if (json_get_int_range(obj_start, obj_end, "id", &v) == 0) a.cfg.id = clamp_int(v, 0, 63);
         if (json_get_int_range(obj_start, obj_end, "x", &v) == 0) a.cfg.x = v;
         if (json_get_int_range(obj_start, obj_end, "y", &v) == 0) a.cfg.y = v;
-        if (json_get_int_range(obj_start, obj_end, "width", &v) == 0) a.cfg.width = v;
-        if (json_get_int_range(obj_start, obj_end, "height", &v) == 0) a.cfg.height = v;
+        int width_set = 0;
+        int height_set = 0;
+        if (json_get_int_range(obj_start, obj_end, "width", &v) == 0) {
+            a.cfg.width = v;
+            width_set = 1;
+        }
+        if (json_get_int_range(obj_start, obj_end, "height", &v) == 0) {
+            a.cfg.height = v;
+            height_set = 1;
+        }
         if (json_get_float_range(obj_start, obj_end, "min", &fv) == 0) a.cfg.min = fv;
         if (json_get_float_range(obj_start, obj_end, "max", &fv) == 0) a.cfg.max = fv;
         if (json_get_int_range(obj_start, obj_end, "bar_color", &v) == 0) a.cfg.color = (uint32_t)v;
@@ -754,9 +911,30 @@ static void parse_assets_array(const char *json)
         if (json_get_bool_range(obj_start, obj_end, "text_inline", &v) == 0) a.cfg.text_inline = v;
         if (json_get_bool_range(obj_start, obj_end, "rounded_outline", &v) == 0) a.cfg.rounded_outline = v;
         json_get_string_range(obj_start, obj_end, "label", a.cfg.label, sizeof(a.cfg.label));
+        json_get_string_range(obj_start, obj_end, "image_path", a.cfg.image_path, sizeof(a.cfg.image_path));
         char orient_buf[16];
         if (json_get_string_range(obj_start, obj_end, "orientation", orient_buf, sizeof(orient_buf)) == 0) {
             a.cfg.orientation = parse_orientation_string(orient_buf, ORIENTATION_RIGHT);
+        }
+
+        if (a.cfg.type == ASSET_IMAGE) {
+            a.cfg.image_size_override = width_set || height_set;
+            if (!a.cfg.image_size_override) {
+                a.cfg.width = 0;
+                a.cfg.height = 0;
+            }
+            fprintf(stderr,
+                    "Image asset %d parsed size override=%d width_set=%d height_set=%d size=%dx%d\n",
+                    a.cfg.id,
+                    a.cfg.image_size_override,
+                    width_set,
+                    height_set,
+                    a.cfg.width,
+                    a.cfg.height);
+        }
+
+        if (a.cfg.type == ASSET_IMAGE && a.cfg.image_path[0] == '\0') {
+            fprintf(stderr, "Image asset %d missing image_path in config\n", a.cfg.id);
         }
 
         a.last_pct = -1;
@@ -790,6 +968,13 @@ static void load_config(void)
     if (json_get_int(json, "osd_y", &v) == 0) g_cfg.osd_y = v;
     if (json_get_bool(json, "show_stats", &v) == 0) g_cfg.show_stats = v;
     if (json_get_bool(json, "udp_stats", &v) == 0) g_cfg.udp_stats = v;
+    if (json_get_bool(json, "glyphs_enabled", &v) == 0) g_cfg.glyphs_enabled = v;
+    if (json_get_int(json, "glyph_origin_x", &v) == 0) g_cfg.glyph_origin_x = v;
+    if (json_get_int(json, "glyph_origin_y", &v) == 0) g_cfg.glyph_origin_y = v;
+    if (json_get_int(json, "glyph_grid_cols", &v) == 0) g_cfg.glyph_grid_cols = clamp_int(v, 1, 64);
+    if (json_get_int(json, "glyph_grid_rows", &v) == 0) g_cfg.glyph_grid_rows = clamp_int(v, 1, 64);
+    if (json_get_int(json, "glyph_page_count", &v) == 0) g_cfg.glyph_page_count = clamp_int(v, 0, 64);
+    json_get_string(json, "glyph_atlas_path", g_cfg.glyph_atlas_path, sizeof(g_cfg.glyph_atlas_path));
     if (json_get_int(json, "idle_ms", &v) == 0) {
         g_cfg.idle_ms = clamp_int(v, 10, 1000);
     } else if (json_get_int(json, "refresh_ms", &v) == 0) {
@@ -947,12 +1132,18 @@ static void parse_udp_asset_updates(const char *buf)
             asset_type_t new_type = asset->cfg.type;
             if (strcmp(type_buf, "text") == 0) {
                 new_type = ASSET_TEXT;
+            } else if (strcmp(type_buf, "image") == 0) {
+                new_type = ASSET_IMAGE;
             } else {
                 new_type = ASSET_BAR;
             }
             if (new_type != asset->cfg.type) {
                 asset->cfg.type = new_type;
                 recreate = 1;
+                if (new_type == ASSET_IMAGE && !asset->cfg.image_size_override) {
+                    asset->cfg.width = 0;
+                    asset->cfg.height = 0;
+                }
             }
         }
 
@@ -1001,6 +1192,10 @@ static void parse_udp_asset_updates(const char *buf)
         if (json_get_string_range(obj_start, obj_end, "label", asset->cfg.label, sizeof(asset->cfg.label)) == 0) {
             text_change = 1;
         }
+        if (json_get_string_range(obj_start, obj_end, "image_path", asset->cfg.image_path, sizeof(asset->cfg.image_path)) == 0) {
+            recreate = asset->cfg.type == ASSET_IMAGE ? 1 : recreate;
+            asset->cfg.image_path_resolved[0] = '\0';
+        }
 
         char orient_buf[16];
         if (json_get_string_range(obj_start, obj_end, "orientation", orient_buf, sizeof(orient_buf)) == 0) {
@@ -1013,7 +1208,7 @@ static void parse_udp_asset_updates(const char *buf)
 
         if (json_get_int_range(obj_start, obj_end, "bar_color", &v) == 0) {
             uint32_t color = (uint32_t)v;
-            if (asset->cfg.type != ASSET_TEXT && asset->cfg.color != color) {
+            if (asset->cfg.type == ASSET_BAR && asset->cfg.color != color) {
                 asset->cfg.color = color;
                 restyle = 1;
             }
@@ -1066,6 +1261,7 @@ static void parse_udp_asset_updates(const char *buf)
                 asset->cfg.width = v;
                 relayout = 1;
                 recreate = asset->cfg.type == ASSET_TEXT ? 1 : recreate;
+                if (asset->cfg.type == ASSET_IMAGE) asset->cfg.image_size_override = 1;
             }
         }
         if (json_get_int_range(obj_start, obj_end, "height", &v) == 0) {
@@ -1073,6 +1269,7 @@ static void parse_udp_asset_updates(const char *buf)
                 asset->cfg.height = v;
                 relayout = 1;
                 recreate = asset->cfg.type == ASSET_TEXT ? 1 : recreate;
+                if (asset->cfg.type == ASSET_IMAGE) asset->cfg.image_size_override = 1;
             }
         }
         if (json_get_float_range(obj_start, obj_end, "min", &fv) == 0) {
@@ -1109,6 +1306,13 @@ static void parse_udp_asset_updates(const char *buf)
                     int height = asset->cfg.height > 0 ? asset->cfg.height : LV_SIZE_CONTENT;
                     lv_obj_set_size(asset->obj, width, height);
                     lv_obj_set_pos(asset->obj, asset->cfg.x, asset->cfg.y);
+                } else if (asset->cfg.type == ASSET_IMAGE) {
+                    if (asset->cfg.width > 0 || asset->cfg.height > 0) {
+                        int width = asset->cfg.width > 0 ? asset->cfg.width : LV_SIZE_CONTENT;
+                        int height = asset->cfg.height > 0 ? asset->cfg.height : LV_SIZE_CONTENT;
+                        lv_obj_set_size(asset->obj, width, height);
+                    }
+                    lv_obj_set_pos(asset->obj, asset->cfg.x, asset->cfg.y);
                 } else {
                     layout_bar_asset(asset);
                 }
@@ -1127,7 +1331,7 @@ static void parse_udp_asset_updates(const char *buf)
         if (text_change) {
             int wants_label = (asset->cfg.label[0] != '\0') || (asset->cfg.text_index >= 0);
             int label_created = 0;
-            if (asset->cfg.type != ASSET_TEXT) {
+            if (asset->cfg.type == ASSET_BAR) {
                 if (wants_label && !asset->label_obj) {
                     maybe_attach_asset_label(asset);
                     label_created = asset->label_obj != NULL;
@@ -1143,6 +1347,45 @@ static void parse_udp_asset_updates(const char *buf)
             }
         }
     }
+}
+
+static void parse_udp_glyphs(const char *buf)
+{
+    const char *p = strstr(buf, "\"glyphs\"");
+    if (!p) return;
+    const char *arr = strchr(p, '[');
+    if (!arr) return;
+    p = arr + 1;
+
+    g_glyph_request_count = 0;
+    while (*p && g_glyph_request_count < MAX_GLYPH_REQUESTS) {
+        while (*p && *p != '{' && *p != ']') p++;
+        if (*p == ']') break;
+        const char *obj_start = p;
+        int depth = 1;
+        p++;
+        while (*p && depth > 0) {
+            if (*p == '{') depth++;
+            else if (*p == '}') depth--;
+            p++;
+        }
+        const char *obj_end = p;
+        if (depth != 0) break;
+
+        int id = 0;
+        int row = 0;
+        int col = 0;
+        if (json_get_int_range(obj_start, obj_end, "id", &id) != 0) continue;
+        if (json_get_int_range(obj_start, obj_end, "row", &row) != 0) continue;
+        if (json_get_int_range(obj_start, obj_end, "col", &col) != 0) continue;
+
+        glyph_request_t *req = &g_glyph_requests[g_glyph_request_count++];
+        req->id = id;
+        req->row = row;
+        req->col = col;
+    }
+
+    g_glyphs_dirty = 1;
 }
 
 static const char *get_asset_text(const asset_t *asset)
@@ -1215,9 +1458,28 @@ static bool poll_udp(void)
         parse_udp_values(buf);
         parse_udp_texts(buf);
         parse_udp_asset_updates(buf);
+        parse_udp_glyphs(buf);
         processed_any = true;
     }
     return processed_any;
+}
+
+static void render_glyphs(void)
+{
+    if (!glyph_canvas || !glyph_canvas_buf) return;
+    if (!g_cfg.glyphs_enabled || !g_glyph_atlas.rgba) return;
+    if (!g_glyphs_dirty) return;
+
+    clear_glyph_canvas();
+    for (int i = 0; i < g_glyph_request_count; i++) {
+        glyph_request_t *req = &g_glyph_requests[i];
+        glyph_blit_glyph(&g_glyph_atlas, req->id, req->row, req->col,
+                         (uint32_t *)glyph_canvas_buf,
+                         osd_width, osd_height, osd_width,
+                         g_cfg.glyph_origin_x, g_cfg.glyph_origin_y);
+    }
+    lv_obj_invalidate(glyph_canvas);
+    g_glyphs_dirty = 0;
 }
 
 // -------------------------
@@ -1343,9 +1605,16 @@ void init_lvgl(void)
     // Set LVGL tick callback
     lv_tick_set_cb(my_get_milliseconds);
 
-    size_t buf_size = (size_t)osd_width * BUF_ROWS * sizeof(lv_color_t);
-    buf1 = (lv_color_t *)malloc(buf_size);
-    buf2 = (lv_color_t *)malloc(buf_size);
+#if LV_USE_FS_STDIO
+    lv_fs_stdio_init();
+#endif
+#if LV_USE_LODEPNG
+    lv_lodepng_init();
+#endif
+
+    size_t buf_size = (size_t)osd_width * BUF_ROWS * sizeof(lv_color32_t);
+    buf1 = (lv_color32_t *)malloc(buf_size);
+    buf2 = (lv_color32_t *)malloc(buf_size);
     if (!buf1 || !buf2) {
         fprintf(stderr, "Failed to allocate LVGL buffers\n");
         exit(1);
@@ -1395,10 +1664,12 @@ static void destroy_asset_visual(asset_t *asset)
     } else {
         if (asset->label_obj) lv_obj_del(asset->label_obj);
         if (asset->obj) lv_obj_del(asset->obj);
+        if (asset->debug_obj) lv_obj_del(asset->debug_obj);
     }
     asset->container_obj = NULL;
     asset->label_obj = NULL;
     asset->obj = NULL;
+    asset->debug_obj = NULL;
     asset->last_pct = -1;
     asset->last_label_text[0] = '\0';
 }
@@ -1423,6 +1694,122 @@ static lv_obj_t *create_text_asset(asset_t *asset)
     return label;
 }
 
+static int read_png_header(const char *path, int *out_w, int *out_h, int *out_bit_depth, int *out_color_type)
+{
+    lv_fs_file_t file;
+    if (lv_fs_open(&file, path, LV_FS_MODE_RD) != LV_FS_RES_OK) {
+        return -1;
+    }
+
+    uint8_t header[29] = {0};
+    uint32_t read_bytes = 0;
+    lv_fs_read(&file, header, sizeof(header), &read_bytes);
+    lv_fs_close(&file);
+
+    if (read_bytes < sizeof(header)) return -1;
+    if (memcmp(header, "\x89PNG\r\n\x1a\n", 8) != 0) return -1;
+
+    int w = (header[16] << 24) | (header[17] << 16) | (header[18] << 8) | header[19];
+    int h = (header[20] << 24) | (header[21] << 16) | (header[22] << 8) | header[23];
+    int bit_depth = header[24];
+    int color_type = header[25];
+
+    if (out_w) *out_w = w;
+    if (out_h) *out_h = h;
+    if (out_bit_depth) *out_bit_depth = bit_depth;
+    if (out_color_type) *out_color_type = color_type;
+    return 0;
+}
+
+static lv_obj_t *create_image_asset(asset_t *asset)
+{
+    if (!asset) return NULL;
+    if (asset->cfg.image_path[0] == '\0') {
+        fprintf(stderr, "Image asset %d has no image_path\n", asset->cfg.id);
+        return NULL;
+    }
+    if (asset->cfg.image_path_resolved[0] == '\0') {
+        const char *src = asset->cfg.image_path;
+        if (src[0] != '\0' && src[1] == ':' &&
+            (toupper((unsigned char)src[0]) == LV_FS_DEFAULT_DRIVER_LETTER ||
+             toupper((unsigned char)src[0]) == LV_FS_STDIO_LETTER)) {
+            src += 2;
+        }
+        strncpy(asset->cfg.image_path_resolved, src,
+                sizeof(asset->cfg.image_path_resolved) - 1);
+        asset->cfg.image_path_resolved[sizeof(asset->cfg.image_path_resolved) - 1] = '\0';
+    }
+    lv_fs_file_t file;
+    if (lv_fs_open(&file, asset->cfg.image_path_resolved, LV_FS_MODE_RD) != LV_FS_RES_OK) {
+        fprintf(stderr, "Image asset %d failed to open %s\n", asset->cfg.id, asset->cfg.image_path_resolved);
+        return NULL;
+    }
+    lv_fs_close(&file);
+
+    int png_w = 0;
+    int png_h = 0;
+    int png_depth = 0;
+    int png_color = 0;
+    if (read_png_header(asset->cfg.image_path_resolved, &png_w, &png_h, &png_depth, &png_color) == 0) {
+        fprintf(stderr, "Image asset %d PNG header %dx%d depth=%d color=%d\n",
+                asset->cfg.id, png_w, png_h, png_depth, png_color);
+    } else {
+        fprintf(stderr, "Image asset %d could not read PNG header\n", asset->cfg.id);
+    }
+
+    lv_obj_t *img = lv_image_create(lv_scr_act());
+    lv_image_set_src(img, asset->cfg.image_path_resolved);
+    lv_obj_set_pos(img, to_canvas_x(asset->cfg.x), to_canvas_y(asset->cfg.y));
+    fprintf(stderr, "Image asset %d pre-size override=%d size=%dx%d\n",
+            asset->cfg.id,
+            asset->cfg.image_size_override,
+            asset->cfg.width,
+            asset->cfg.height);
+    if (asset->cfg.image_size_override && (asset->cfg.width > 0 || asset->cfg.height > 0)) {
+        int width = asset->cfg.width > 0 ? asset->cfg.width : LV_SIZE_CONTENT;
+        int height = asset->cfg.height > 0 ? asset->cfg.height : LV_SIZE_CONTENT;
+        lv_obj_set_size(img, width, height);
+        fprintf(stderr, "Image asset %d using configured size %dx%d\n", asset->cfg.id, width, height);
+    }
+    lv_obj_move_foreground(img);
+    lv_obj_update_layout(img);
+    int img_w = lv_obj_get_width(img);
+    int img_h = lv_obj_get_height(img);
+    if (image_debug_rect_enabled()) {
+        int rect_w = img_w > 0 ? img_w : 16;
+        int rect_h = img_h > 0 ? img_h : 16;
+        asset->debug_obj = lv_obj_create(lv_scr_act());
+        lv_obj_remove_style_all(asset->debug_obj);
+        lv_obj_set_size(asset->debug_obj, rect_w, rect_h);
+        lv_obj_set_pos(asset->debug_obj, to_canvas_x(asset->cfg.x), to_canvas_y(asset->cfg.y));
+        lv_obj_set_style_bg_color(asset->debug_obj, lv_color_hex(0xFF00FF), 0);
+        lv_obj_set_style_bg_opa(asset->debug_obj, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(asset->debug_obj, 0, 0);
+        lv_obj_move_foreground(asset->debug_obj);
+        fprintf(stderr, "Image asset %d debug rect enabled size=%dx%d\n", asset->cfg.id, rect_w, rect_h);
+    }
+    fprintf(stderr,
+            "Image asset %d src=%s pos=%d,%d size=%dx%d\n",
+            asset->cfg.id,
+            asset->cfg.image_path_resolved,
+            to_canvas_x(asset->cfg.x),
+            to_canvas_y(asset->cfg.y),
+            img_w,
+            img_h);
+    if (png_w > 0 && png_h > 0 && (img_w != png_w || img_h != png_h)) {
+        fprintf(stderr,
+                "Image asset %d size mismatch: png=%dx%d decoded=%dx%d\n",
+                asset->cfg.id, png_w, png_h, img_w, img_h);
+        fprintf(stderr,
+                "Image asset %d decoder mismatch: check LVGL PNG decoder registration and FS paths\n",
+                asset->cfg.id);
+    }
+    if (img_w <= 0 || img_h <= 0) {
+        fprintf(stderr, "Image asset %d has zero size after decode\n", asset->cfg.id);
+    }
+    return img;
+}
+
 static void create_asset_visual(asset_t *asset)
 {
     if (!asset || !asset->cfg.enabled) return;
@@ -1435,13 +1822,16 @@ static void create_asset_visual(asset_t *asset)
         case ASSET_TEXT:
             asset->obj = create_text_asset(asset);
             break;
+        case ASSET_IMAGE:
+            asset->obj = create_image_asset(asset);
+            break;
         default:
             asset->obj = create_bar(asset);
             maybe_attach_asset_label(asset);
             break;
     }
 
-    if (asset->container_obj && asset->cfg.type != ASSET_TEXT) {
+    if (asset->container_obj && asset->cfg.type == ASSET_BAR) {
         layout_bar_asset(asset);
     }
 
@@ -1451,7 +1841,7 @@ static void create_asset_visual(asset_t *asset)
 static void maybe_attach_asset_label(asset_t *asset)
 {
     if (!asset->obj) return;
-    if (asset->cfg.type == ASSET_TEXT) return;
+    if (asset->cfg.type == ASSET_TEXT || asset->cfg.type == ASSET_IMAGE) return;
     if (asset->cfg.label[0] == '\0' && asset->cfg.text_index < 0) return;
     lv_obj_t *parent = asset->container_obj ? asset->container_obj : lv_scr_act();
     asset->label_obj = lv_label_create(parent);
@@ -1540,6 +1930,8 @@ static void update_assets_from_udp(void)
             }
         }
     }
+
+    render_glyphs();
 }
 
 static void handle_sigint(int sig)
@@ -1565,6 +1957,7 @@ static void reload_config_runtime(void)
     idle_ms_applied = idle_cap_ms;
 
     create_assets();
+    setup_glyphs();
     update_assets_from_udp();
 
     if (stats_label) {
@@ -1582,6 +1975,7 @@ static void reload_config_runtime(void)
 static void cleanup_resources(void)
 {
     destroy_assets();
+    release_glyph_resources();
 
     if (stats_timer) {
         lv_timer_del(stats_timer);
@@ -1692,6 +2086,7 @@ int main(void)
     lv_obj_set_style_bg_opa(lv_scr_act(), LV_OPA_TRANSP, LV_PART_MAIN);
 
     create_assets();
+    setup_glyphs();
 
     // Lightweight stats in top-left
     stats_label = lv_label_create(lv_scr_act());
