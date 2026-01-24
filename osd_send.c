@@ -559,10 +559,60 @@ static int apply_glyphs_list_send(Payload *p, const char *spec, int start_row, i
 
     int ids[MAX_GLYPH_REQUESTS];
     int count = 0;
-    if (!parse_glyph_id_list(spec, ids, MAX_GLYPH_REQUESTS, &count)) {
-        fprintf(stderr, "Bad --glyphs list: %s\n", spec);
-        return 0;
+
+    char buf[900];
+    strncpy(buf, spec, sizeof(buf) - 1);
+    buf[sizeof(buf) - 1] = '\0';
+
+    char *save = NULL;
+    for (char *tok = strtok_r(buf, ",", &save); tok; tok = strtok_r(NULL, ",", &save)) {
+        tok = trim(tok);
+        if (!*tok) continue;
+
+        char *c1 = strchr(tok, ':');
+        if (c1) {
+            char *c2 = strchr(c1 + 1, ':');
+            if (!c2) {
+                fprintf(stderr, "Bad --glyphs entry (need id:row:col): %s\n", tok);
+                return 0;
+            }
+            *c1 = '\0';
+            *c2 = '\0';
+            int id = 0;
+            int row = 0;
+            int col = 0;
+            if (!parse_int(trim(tok), &id) ||
+                !parse_int(trim(c1 + 1), &row) ||
+                !parse_int(trim(c2 + 1), &col)) {
+                fprintf(stderr, "Bad --glyphs entry (id:row:col): %s:%s:%s\n", tok, c1 + 1, c2 + 1);
+                return 0;
+            }
+            if (!add_glyph_request(p, id, row, col)) {
+                fprintf(stderr, "Too many glyphs (max %d)\n", MAX_GLYPH_REQUESTS);
+                return 0;
+            }
+            if (verbose) {
+                fprintf(stderr, "[send] glyph id=%d row=%d col=%d\n", id, row, col);
+            }
+            continue;
+        }
+
+        int sub_ids[MAX_GLYPH_REQUESTS];
+        int sub_count = 0;
+        if (!parse_glyph_id_list(tok, sub_ids, MAX_GLYPH_REQUESTS, &sub_count)) {
+            fprintf(stderr, "Bad --glyphs list: %s\n", tok);
+            return 0;
+        }
+        for (int i = 0; i < sub_count; i++) {
+            if (count >= MAX_GLYPH_REQUESTS) {
+                fprintf(stderr, "Too many glyphs (max %d)\n", MAX_GLYPH_REQUESTS);
+                return 0;
+            }
+            ids[count++] = sub_ids[i];
+        }
     }
+
+    if (count == 0) return 1;
 
     for (int i = 0; i < count; i++) {
         int offset = start_col + i;
@@ -751,6 +801,7 @@ static void usage_main(const char *prog)
         "  --values \"i=v,...\"        set values (v: number | @key | null | empty => \"\")\n"
         "  --texts  \"i=s,...\"        set texts  (s: text   | @key | null | empty => \"\")\n"
         "  --glyphs \"id,id,...\"      send glyph IDs (supports ranges: 32-47)\n"
+        "                            or explicit placement: id:row:col\n"
         "  --glyph-row <n>            glyph grid start row (default: 0)\n"
         "  --glyph-col <n>            glyph grid start col (default: 0)\n"
         "  --glyph-cols <n>           glyphs per row when auto-placing (default: 16)\n"
@@ -768,6 +819,7 @@ static void usage_main(const char *prog)
         "Examples:\n"
         "  %s send --values \"0=-52\" --texts \"0=Trollvinter\"\n"
         "  %s send --glyphs \"32-47\" --glyph-row 0 --glyph-col 0 --glyph-cols 16\n"
+        "  %s send --glyphs \"32:1:1,33:1:2\"\n"
         "  %s send --ini /tmp/aalink_ext.msg --dest 10.6.0.1 --port 7777 \\\n"
         "    --values \"0=@used_rssi,1=@mcs,2=@width\" \\\n"
         "    --texts  \"0=@used_source,1=@gs_string\"\n"
@@ -775,7 +827,7 @@ static void usage_main(const char *prog)
         "    --values \"0=@used_rssi,1=@mcs\" --texts \"0=@used_source\"\n",
         prog, prog,
         DEFAULT_INI_PATH, DEFAULT_DEST_IP, DEFAULT_PORT, DEFAULT_INTERVAL,
-        prog, prog, prog, prog);
+        prog, prog, prog, prog, prog);
 }
 
 /* ------------------------- watch spec ------------------------- */

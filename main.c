@@ -1721,6 +1721,7 @@ static int load_image_asset_data(asset_t *asset)
     asset->image_dsc.header.w = (uint32_t)width;
     asset->image_dsc.header.h = (uint32_t)height;
 #if LVGL_VERSION_MAJOR >= 9
+    asset->image_dsc.header.magic = LV_IMAGE_HEADER_MAGIC;
     asset->image_dsc.header.stride = (uint32_t)(width * sizeof(uint32_t));
 #endif
     asset->image_dsc.data_size = (uint32_t)(total * sizeof(uint32_t));
