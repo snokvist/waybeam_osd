@@ -1400,9 +1400,15 @@ void my_flush_cb(lv_display_t * disp, const lv_area_t * area, uint8_t * px_map)
 // -------------------------
 // Initialize RGN
 // -------------------------
-void mi_region_init(void)
+int mi_region_init(void)
 {
-    MI_RGN_Init(&g_stPaletteTable);
+    MI_S32 ret = MI_RGN_OK;
+    fprintf(stderr, "MI_RGN_Init...\n");
+    ret = MI_RGN_Init(&g_stPaletteTable);
+    if (ret != MI_RGN_OK) {
+        fprintf(stderr, "MI_RGN_Init failed: %d\n", ret);
+        return -1;
+    }
     hRgnHandle = 0;
 
     g_canvas_info_valid = 0;
@@ -1414,7 +1420,13 @@ void mi_region_init(void)
     stRgnAttr.stOsdInitParam.stSize.u32Width = osd_width;
     stRgnAttr.stOsdInitParam.stSize.u32Height = osd_height;
 
-    MI_RGN_Create(hRgnHandle, &stRgnAttr);
+    fprintf(stderr, "MI_RGN_Create: %dx%d fmt=%d\n",
+            osd_width, osd_height, stRgnAttr.stOsdInitParam.ePixelFmt);
+    ret = MI_RGN_Create(hRgnHandle, &stRgnAttr);
+    if (ret != MI_RGN_OK) {
+        fprintf(stderr, "MI_RGN_Create failed: %d\n", ret);
+        return -1;
+    }
 
     stVpeChnPort.eModId = E_MI_RGN_MODID_VPE;
     stVpeChnPort.s32DevId = 0;
@@ -1428,11 +1440,22 @@ void mi_region_init(void)
     stRgnChnAttr.unPara.stOsdChnPort.u32Layer = 0;
     stRgnChnAttr.unPara.stOsdChnPort.stOsdAlphaAttr.eAlphaMode = E_MI_RGN_PIXEL_ALPHA;
 
-    MI_RGN_AttachToChn(hRgnHandle, &stVpeChnPort, &stRgnChnAttr);
-
-    if (MI_RGN_GetCanvasInfo(hRgnHandle, &g_cached_canvas_info) == MI_RGN_OK) {
-        g_canvas_info_valid = 1;
+    fprintf(stderr, "MI_RGN_AttachToChn...\n");
+    ret = MI_RGN_AttachToChn(hRgnHandle, &stVpeChnPort, &stRgnChnAttr);
+    if (ret != MI_RGN_OK) {
+        fprintf(stderr, "MI_RGN_AttachToChn failed: %d\n", ret);
+        return -1;
     }
+
+    fprintf(stderr, "MI_RGN_GetCanvasInfo...\n");
+    ret = MI_RGN_GetCanvasInfo(hRgnHandle, &g_cached_canvas_info);
+    if (ret == MI_RGN_OK) {
+        g_canvas_info_valid = 1;
+    } else {
+        fprintf(stderr, "MI_RGN_GetCanvasInfo failed: %d\n", ret);
+        return -1;
+    }
+    return 0;
 }
 
 // -------------------------
@@ -1844,7 +1867,10 @@ int main(void)
     udp_sock = setup_udp_socket();
 
     printf("Initializing OSD region...\n");
-    mi_region_init();
+    if (mi_region_init() != 0) {
+        fprintf(stderr, "OSD region init failed\n");
+        return 1;
+    }
 
     printf("Initializing LVGL...\n");
     init_lvgl();
