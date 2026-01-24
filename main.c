@@ -89,6 +89,7 @@ typedef struct {
     asset_orientation_t orientation;
     char image_path[256];
     char image_path_resolved[260];
+    int image_size_override;
 } asset_cfg_t;
 
 typedef struct {
@@ -452,6 +453,7 @@ static void init_asset_defaults(asset_t *a, int id)
     a->cfg.label[0] = '\0';
     a->cfg.image_path[0] = '\0';
     a->cfg.image_path_resolved[0] = '\0';
+    a->cfg.image_size_override = 0;
     a->last_pct = -1;
     a->last_label_text[0] = '\0';
 }
@@ -840,8 +842,16 @@ static void parse_assets_array(const char *json)
         if (json_get_int_range(obj_start, obj_end, "id", &v) == 0) a.cfg.id = clamp_int(v, 0, 63);
         if (json_get_int_range(obj_start, obj_end, "x", &v) == 0) a.cfg.x = v;
         if (json_get_int_range(obj_start, obj_end, "y", &v) == 0) a.cfg.y = v;
-        if (json_get_int_range(obj_start, obj_end, "width", &v) == 0) a.cfg.width = v;
-        if (json_get_int_range(obj_start, obj_end, "height", &v) == 0) a.cfg.height = v;
+        int width_set = 0;
+        int height_set = 0;
+        if (json_get_int_range(obj_start, obj_end, "width", &v) == 0) {
+            a.cfg.width = v;
+            width_set = 1;
+        }
+        if (json_get_int_range(obj_start, obj_end, "height", &v) == 0) {
+            a.cfg.height = v;
+            height_set = 1;
+        }
         if (json_get_float_range(obj_start, obj_end, "min", &fv) == 0) a.cfg.min = fv;
         if (json_get_float_range(obj_start, obj_end, "max", &fv) == 0) a.cfg.max = fv;
         if (json_get_int_range(obj_start, obj_end, "bar_color", &v) == 0) a.cfg.color = (uint32_t)v;
@@ -858,6 +868,22 @@ static void parse_assets_array(const char *json)
         char orient_buf[16];
         if (json_get_string_range(obj_start, obj_end, "orientation", orient_buf, sizeof(orient_buf)) == 0) {
             a.cfg.orientation = parse_orientation_string(orient_buf, ORIENTATION_RIGHT);
+        }
+
+        if (a.cfg.type == ASSET_IMAGE) {
+            a.cfg.image_size_override = width_set || height_set;
+            if (!a.cfg.image_size_override) {
+                a.cfg.width = 0;
+                a.cfg.height = 0;
+            }
+            fprintf(stderr,
+                    "Image asset %d parsed size override=%d width_set=%d height_set=%d size=%dx%d\n",
+                    a.cfg.id,
+                    a.cfg.image_size_override,
+                    width_set,
+                    height_set,
+                    a.cfg.width,
+                    a.cfg.height);
         }
 
         if (a.cfg.type == ASSET_IMAGE && a.cfg.image_path[0] == '\0') {
@@ -1067,6 +1093,10 @@ static void parse_udp_asset_updates(const char *buf)
             if (new_type != asset->cfg.type) {
                 asset->cfg.type = new_type;
                 recreate = 1;
+                if (new_type == ASSET_IMAGE && !asset->cfg.image_size_override) {
+                    asset->cfg.width = 0;
+                    asset->cfg.height = 0;
+                }
             }
         }
 
@@ -1184,6 +1214,7 @@ static void parse_udp_asset_updates(const char *buf)
                 asset->cfg.width = v;
                 relayout = 1;
                 recreate = asset->cfg.type == ASSET_TEXT ? 1 : recreate;
+                if (asset->cfg.type == ASSET_IMAGE) asset->cfg.image_size_override = 1;
             }
         }
         if (json_get_int_range(obj_start, obj_end, "height", &v) == 0) {
@@ -1191,6 +1222,7 @@ static void parse_udp_asset_updates(const char *buf)
                 asset->cfg.height = v;
                 relayout = 1;
                 recreate = asset->cfg.type == ASSET_TEXT ? 1 : recreate;
+                if (asset->cfg.type == ASSET_IMAGE) asset->cfg.image_size_override = 1;
             }
         }
         if (json_get_float_range(obj_start, obj_end, "min", &fv) == 0) {
@@ -1671,7 +1703,12 @@ static lv_obj_t *create_image_asset(asset_t *asset)
     lv_obj_t *img = lv_image_create(lv_scr_act());
     lv_image_set_src(img, asset->cfg.image_path_resolved);
     lv_obj_set_pos(img, to_canvas_x(asset->cfg.x), to_canvas_y(asset->cfg.y));
-    if (asset->cfg.width > 0 || asset->cfg.height > 0) {
+    fprintf(stderr, "Image asset %d pre-size override=%d size=%dx%d\n",
+            asset->cfg.id,
+            asset->cfg.image_size_override,
+            asset->cfg.width,
+            asset->cfg.height);
+    if (asset->cfg.image_size_override && (asset->cfg.width > 0 || asset->cfg.height > 0)) {
         int width = asset->cfg.width > 0 ? asset->cfg.width : LV_SIZE_CONTENT;
         int height = asset->cfg.height > 0 ? asset->cfg.height : LV_SIZE_CONTENT;
         lv_obj_set_size(img, width, height);
