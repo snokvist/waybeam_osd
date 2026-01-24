@@ -1716,10 +1716,10 @@ static lv_obj_t *create_image_asset(asset_t *asset)
         uint8_t g = rgba[i * 4 + 1];
         uint8_t b = rgba[i * 4 + 2];
         uint8_t a = rgba[i * 4 + 3];
-        rgba[i * 4 + 0] = a;
-        rgba[i * 4 + 1] = r;
-        rgba[i * 4 + 2] = g;
-        rgba[i * 4 + 3] = b;
+        rgba[i * 4 + 0] = b;
+        rgba[i * 4 + 1] = g;
+        rgba[i * 4 + 2] = r;
+        rgba[i * 4 + 3] = a;
     }
 
     asset->image_rgba = rgba;
