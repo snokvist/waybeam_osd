@@ -23,7 +23,7 @@
 #include "mi_vpe.h"
 
 #define DEFAULT_SCREEN_WIDTH 1280   // fallback resolution if config is absent
-#define DEFAULT_SCREEN_HEIGHT 720
+#define DEFAULT_SCREEN_HEIGHT 420
 #define BUF_ROWS 60  // partial buffer height
 #define CONFIG_PATH "/etc/waybeam_osd.json"
 #define UDP_PORT 7777
