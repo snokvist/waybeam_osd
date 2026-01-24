@@ -97,6 +97,7 @@ typedef struct {
     lv_obj_t *container_obj;
     lv_obj_t *obj;
     lv_obj_t *label_obj;
+    lv_obj_t *debug_obj;
     int last_pct;
     char last_label_text[1024];
 } asset_t;
@@ -139,6 +140,7 @@ static MI_RGN_ChnPortParam_t stRgnChnAttr;
 static MI_RGN_CanvasInfo_t g_cached_canvas_info;
 static int g_canvas_info_valid = 0;
 static int g_canvas_dirty = 0;
+static int g_image_debug_rect = -1;
 
 // UI
 static lv_obj_t *stats_label = NULL;
@@ -181,6 +183,15 @@ static float clamp_float(float v, float lo, float hi) {
     if (v < lo) return lo;
     if (v > hi) return hi;
     return v;
+}
+
+static int image_debug_rect_enabled(void)
+{
+    if (g_image_debug_rect < 0) {
+        const char *env = getenv("WAYBEAM_IMAGE_DEBUG_RECT");
+        g_image_debug_rect = (env && env[0] != '\0') ? 1 : 0;
+    }
+    return g_image_debug_rect;
 }
 
 static int to_canvas_x(int x)
@@ -1610,10 +1621,12 @@ static void destroy_asset_visual(asset_t *asset)
     } else {
         if (asset->label_obj) lv_obj_del(asset->label_obj);
         if (asset->obj) lv_obj_del(asset->obj);
+        if (asset->debug_obj) lv_obj_del(asset->debug_obj);
     }
     asset->container_obj = NULL;
     asset->label_obj = NULL;
     asset->obj = NULL;
+    asset->debug_obj = NULL;
     asset->last_pct = -1;
     asset->last_label_text[0] = '\0';
 }
@@ -1718,6 +1731,19 @@ static lv_obj_t *create_image_asset(asset_t *asset)
     lv_obj_update_layout(img);
     int img_w = lv_obj_get_width(img);
     int img_h = lv_obj_get_height(img);
+    if (image_debug_rect_enabled()) {
+        int rect_w = img_w > 0 ? img_w : 16;
+        int rect_h = img_h > 0 ? img_h : 16;
+        asset->debug_obj = lv_obj_create(lv_scr_act());
+        lv_obj_remove_style_all(asset->debug_obj);
+        lv_obj_set_size(asset->debug_obj, rect_w, rect_h);
+        lv_obj_set_pos(asset->debug_obj, to_canvas_x(asset->cfg.x), to_canvas_y(asset->cfg.y));
+        lv_obj_set_style_bg_color(asset->debug_obj, lv_color_hex(0xFF00FF), 0);
+        lv_obj_set_style_bg_opa(asset->debug_obj, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(asset->debug_obj, 0, 0);
+        lv_obj_move_foreground(asset->debug_obj);
+        fprintf(stderr, "Image asset %d debug rect enabled size=%dx%d\n", asset->cfg.id, rect_w, rect_h);
+    }
     fprintf(stderr,
             "Image asset %d src=%s pos=%d,%d size=%dx%d\n",
             asset->cfg.id,
