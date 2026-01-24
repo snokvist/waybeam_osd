@@ -5,13 +5,6 @@
   "osd_y": 0,
   "show_stats": false,
   "udp_stats": false,
-  "glyphs_enabled": false,
-  "glyph_atlas_path": "/etc/waybeam_osd/msp_glyphs.png",
-  "glyph_grid_cols": 16,
-  "glyph_grid_rows": 16,
-  "glyph_page_count": 0,
-  "glyph_origin_x": 0,
-  "glyph_origin_y": 0,
   "idle_ms": 100,
   "assets": [
     {
