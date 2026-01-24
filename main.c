@@ -1655,7 +1655,12 @@ static void destroy_asset_visual(asset_t *asset)
         lv_obj_del(asset->container_obj);
     } else {
         if (asset->label_obj) lv_obj_del(asset->label_obj);
-        if (asset->obj) lv_obj_del(asset->obj);
+        if (asset->obj) {
+            if (asset->cfg.type == ASSET_IMAGE) {
+                lv_image_set_src(asset->obj, NULL);
+            }
+            lv_obj_del(asset->obj);
+        }
     }
     asset->container_obj = NULL;
     asset->label_obj = NULL;
@@ -1711,19 +1716,29 @@ static lv_obj_t *create_image_asset(asset_t *asset)
     }
 
     size_t pixels = (size_t)width * (size_t)height;
-    for (size_t i = 0; i < pixels; i++) {
-        uint8_t r = rgba[i * 4 + 0];
-        uint8_t g = rgba[i * 4 + 1];
-        uint8_t b = rgba[i * 4 + 2];
-        uint8_t a = rgba[i * 4 + 3];
-        rgba[i * 4 + 0] = b;
-        rgba[i * 4 + 1] = g;
-        rgba[i * 4 + 2] = r;
-        rgba[i * 4 + 3] = a;
+    int needs_swizzle = 1;
+#ifdef LV_COLOR_FORMAT_RGBA8888
+    needs_swizzle = 0;
+#endif
+    if (needs_swizzle) {
+        for (size_t i = 0; i < pixels; i++) {
+            uint8_t r = rgba[i * 4 + 0];
+            uint8_t g = rgba[i * 4 + 1];
+            uint8_t b = rgba[i * 4 + 2];
+            uint8_t a = rgba[i * 4 + 3];
+            rgba[i * 4 + 0] = b;
+            rgba[i * 4 + 1] = g;
+            rgba[i * 4 + 2] = r;
+            rgba[i * 4 + 3] = a;
+        }
     }
 
     asset->image_rgba = rgba;
+#ifdef LV_COLOR_FORMAT_RGBA8888
+    asset->image_desc.header.cf = LV_COLOR_FORMAT_RGBA8888;
+#else
     asset->image_desc.header.cf = LV_COLOR_FORMAT_ARGB8888;
+#endif
     asset->image_desc.header.w = (uint32_t)width;
     asset->image_desc.header.h = (uint32_t)height;
     asset->image_desc.data_size = (uint32_t)(pixels * 4);
