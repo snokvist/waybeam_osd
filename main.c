@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/time.h>
 #include <poll.h>
 #include <signal.h>
@@ -27,29 +28,19 @@
 #define CONFIG_PATH "/etc/waybeam_osd.json"
 #define UDP_PORT 7777
 #define UDP_MAX_PACKET 1280
-#define UDP_VALUE_COUNT 8
-#define SYSTEM_VALUE_COUNT 8
-#define TOTAL_VALUE_COUNT (UDP_VALUE_COUNT + SYSTEM_VALUE_COUNT)
-#define UDP_TEXT_COUNT 8
-#define SYSTEM_TEXT_COUNT 8
-#define TOTAL_TEXT_COUNT (UDP_TEXT_COUNT + SYSTEM_TEXT_COUNT)
-#define TEXT_SLOT_MAX_CHARS 96
-#define TEXT_SLOT_LEN (TEXT_SLOT_MAX_CHARS + 1)
-
-enum {
-    SYS_VALUE_TEMP = 0,
-    SYS_VALUE_CPU_LOAD,
-    SYS_VALUE_ENCODER_FPS,
-    SYS_VALUE_ENCODER_BITRATE,
-    SYS_VALUE_RESERVED4,
-    SYS_VALUE_RESERVED5,
-    SYS_VALUE_RESERVED6,
-    SYS_VALUE_RESERVED7,
-};
-
+#define MAX_ASSETS 8
+#define UDP_TEXT_LEN 96
 // LVGL buffers - allocated at runtime for ARGB8888 (32-bit per pixel)
-static lv_color_t *buf1 = NULL;
-static lv_color_t *buf2 = NULL;
+static lv_color32_t *buf1 = NULL;
+static lv_color32_t *buf2 = NULL;
+
+#if LV_USE_FS_STDIO
+void lv_fs_stdio_init(void);
+#endif
+
+#if LV_USE_LODEPNG
+void lv_lodepng_init(void);
+#endif
 
 typedef struct {
     int width;
@@ -58,19 +49,18 @@ typedef struct {
     int osd_y;
     int show_stats;
     int idle_ms;
-    int system_refresh_ms;
     int udp_stats;
 } app_config_t;
 
 typedef enum {
     ASSET_BAR = 0,
     ASSET_TEXT,
+    ASSET_IMAGE,
 } asset_type_t;
 
 typedef enum {
     ORIENTATION_RIGHT = 0,
     ORIENTATION_LEFT,
-    ORIENTATION_CENTER,
 } asset_orientation_t;
 
 typedef struct {
@@ -92,13 +82,13 @@ typedef struct {
     int text_index;
     int text_indices[8];
     int text_indices_count;
-    int value_indices[8];
-    int value_indices_count;
     int text_inline;
-    char inline_separator[16];
     int rounded_outline;
     int segments;
     asset_orientation_t orientation;
+    char image_path[256];
+    char image_path_resolved[260];
+    int image_size_override;
 } asset_cfg_t;
 
 typedef struct {
@@ -134,12 +124,10 @@ static int osd_width = DEFAULT_SCREEN_WIDTH;
 static int osd_height = DEFAULT_SCREEN_HEIGHT;
 static int osd_offset_x = 0;
 static int osd_offset_y = 0;
-static asset_t assets[8];
+static asset_t assets[MAX_ASSETS];
 static int asset_count = 0;
 static int rgn_pos_x = 0;
 static int rgn_pos_y = 0;
-
-#define MAX_ASSETS (int)(sizeof(assets) / sizeof(assets[0]))
 
 // Sigmastar RGN
 static MI_RGN_PaletteTable_t g_stPaletteTable = {};
@@ -162,16 +150,10 @@ static int idle_ms_applied = 100;
 static volatile sig_atomic_t stop_requested = 0;
 static volatile sig_atomic_t reload_requested = 0;
 static lv_timer_t *stats_timer = NULL;
-static const int max_ms = 32; // throttle channel pushes to ~30 fps
 static int udp_sock = -1;
-static double udp_values[UDP_VALUE_COUNT] = {0};
-static double system_values[SYSTEM_VALUE_COUNT] = {0};
-static char udp_texts[UDP_TEXT_COUNT][TEXT_SLOT_LEN] = {{0}};
-static char system_texts[SYSTEM_TEXT_COUNT][TEXT_SLOT_LEN] = {{0}};
+static double udp_values[MAX_ASSETS] = {0};
+static char udp_texts[MAX_ASSETS][UDP_TEXT_LEN] = {{0}};
 static int idle_cap_ms = 100;
-static uint64_t last_system_refresh_ms = 0;
-static uint64_t last_channel_push_ms = 0;
-static bool pending_channel_flush = false;
 // -------------------------
 // Utility helpers
 // -------------------------
@@ -185,43 +167,6 @@ static float clamp_float(float v, float lo, float hi) {
     if (v < lo) return lo;
     if (v > hi) return hi;
     return v;
-}
-
-static void init_system_channels(void)
-{
-    memset(system_values, 0, sizeof(system_values));
-    memset(system_texts, 0, sizeof(system_texts));
-    static const char *defaults[SYSTEM_TEXT_COUNT] = {
-        "temp",
-        "cpu",
-        "enc fps",
-        "bitrate",
-        "sys4",
-        "sys5",
-        "sys6",
-        "sys7",
-    };
-    for (int i = 0; i < SYSTEM_TEXT_COUNT; i++) {
-        snprintf(system_texts[i], TEXT_SLOT_LEN, "%s", defaults[i]);
-    }
-}
-
-static double get_value_channel(int idx)
-{
-    if (idx < 0) return 0.0;
-    if (idx < UDP_VALUE_COUNT) return udp_values[idx];
-    idx -= UDP_VALUE_COUNT;
-    if (idx < SYSTEM_VALUE_COUNT) return system_values[idx];
-    return 0.0;
-}
-
-static const char *get_text_channel(int idx)
-{
-    if (idx < 0) return "";
-    if (idx < UDP_TEXT_COUNT) return udp_texts[idx];
-    idx -= UDP_TEXT_COUNT;
-    if (idx < SYSTEM_TEXT_COUNT) return system_texts[idx];
-    return "";
 }
 
 static int to_canvas_x(int x)
@@ -238,7 +183,6 @@ static asset_orientation_t parse_orientation_string(const char *str, asset_orien
 {
     if (!str) return def;
     if (strcmp(str, "left") == 0) return ORIENTATION_LEFT;
-    if (strcmp(str, "center") == 0) return ORIENTATION_CENTER;
     if (strcmp(str, "right") == 0) return ORIENTATION_RIGHT;
     return def;
 }
@@ -424,7 +368,7 @@ static int json_get_bool_range(const char *start, const char *end, const char *k
     return -1;
 }
 
-static void json_get_int_array_range(const char *start, const char *end, const char *key, int *out, int max_count, int *out_count, int null_marker)
+static void json_get_int_array_range(const char *start, const char *end, const char *key, int *out, int max_count, int *out_count)
 {
     if (!out || max_count <= 0) return;
     const char *p = find_key_range(start, end, key);
@@ -436,16 +380,11 @@ static void json_get_int_array_range(const char *start, const char *end, const c
     while (p < end && count < max_count) {
         while (p < end && isspace((unsigned char)*p)) p++;
         if (p >= end || *p == ']') break;
-        if (strncmp(p, "null", 4) == 0) {
-            out[count++] = null_marker;
-            p += 4;
-        } else {
-            char *endptr = NULL;
-            int v = (int)strtol(p, &endptr, 0);
-            if (!endptr || endptr == p || endptr > end) break;
-            out[count++] = v;
-            p = endptr;
-        }
+        char *endptr = NULL;
+        int v = (int)strtol(p, &endptr, 0);
+        if (!endptr || endptr == p || endptr > end) break;
+        out[count++] = v;
+        p = endptr;
         while (p < end && *p != ',' && *p != ']') p++;
         if (p < end && *p == ',') p++;
     }
@@ -460,7 +399,6 @@ static lv_opa_t pct_to_opa(int pct)
 
 static void apply_background_style(lv_obj_t *obj, int bg_style, int bg_opacity_pct, lv_part_t part);
 static void layout_bar_asset(asset_t *asset);
-static void layout_text_asset(asset_t *asset);
 static void bar_draw_event_cb(lv_event_t *e);
 static void destroy_asset_visual(asset_t *asset);
 static void create_asset_visual(asset_t *asset);
@@ -481,7 +419,7 @@ static void init_asset_defaults(asset_t *a, int id)
     a->cfg.type = ASSET_BAR;
     a->cfg.id = id;
     a->cfg.enabled = 1;
-    a->cfg.value_index = clamp_int(id, 0, TOTAL_VALUE_COUNT - 1);
+    a->cfg.value_index = clamp_int(id, 0, MAX_ASSETS - 1);
     a->cfg.x = 40;
     a->cfg.y = 60 + id * 60;
     a->cfg.width = 320;
@@ -493,18 +431,15 @@ static void init_asset_defaults(asset_t *a, int id)
     a->cfg.bg_style = -1;
     a->cfg.bg_opacity_pct = -1;
     a->cfg.text_indices_count = 0;
-    a->cfg.value_indices_count = 0;
     a->cfg.text_inline = 0;
     a->cfg.text_index = -1;
-    for (int i = 0; i < 8; i++) {
-        a->cfg.value_indices[i] = -1;
-        a->cfg.text_indices[i] = -1;
-    }
-    a->cfg.inline_separator[0] = '\0';
     a->cfg.orientation = ORIENTATION_RIGHT;
     a->cfg.rounded_outline = 0;
     a->cfg.segments = 0;
     a->cfg.label[0] = '\0';
+    a->cfg.image_path[0] = '\0';
+    a->cfg.image_path_resolved[0] = '\0';
+    a->cfg.image_size_override = 0;
     a->last_pct = -1;
     a->last_label_text[0] = '\0';
 }
@@ -552,23 +487,12 @@ static void apply_asset_styles(asset_t *asset)
                 apply_background_style(asset->obj, cfg->bg_style, cfg->bg_opacity_pct, 0);
                 lv_obj_set_style_text_color(asset->obj, lv_color_hex(cfg->text_color), 0);
                 lv_obj_set_style_text_opa(asset->obj, LV_OPA_COVER, 0);
-                int radius = 0;
-                int h = lv_obj_get_height(asset->obj);
-                if (h == 0 && cfg->height > 0) h = cfg->height;
-                if (cfg->rounded_outline) {
-                    radius = h > 0 ? h / 4 : 6;
-                    if (radius < 3) radius = 3;
-                    if (h > 0 && radius > h / 2) radius = h / 2;
-                    lv_obj_set_style_radius(asset->obj, radius, 0);
-                } else {
-                    lv_obj_set_style_radius(asset->obj, 0, 0);
-                }
-                int pad = cfg->rounded_outline ? 6 : 2;
-                lv_obj_set_style_pad_top(asset->obj, pad, 0);
-                lv_obj_set_style_pad_bottom(asset->obj, pad, 0);
-                lv_obj_set_style_pad_left(asset->obj, pad + 2, 0);
-                lv_obj_set_style_pad_right(asset->obj, pad + 2, 0);
-                lv_obj_set_style_clip_corner(asset->obj, cfg->rounded_outline ? 1 : 0, 0);
+            }
+            break;
+        case ASSET_IMAGE:
+            if (asset->obj) {
+                apply_background_style(asset->obj, cfg->bg_style, cfg->bg_opacity_pct, 0);
+                lv_obj_set_style_img_opa(asset->obj, LV_OPA_COVER, 0);
             }
             break;
         default:
@@ -761,42 +685,6 @@ static void layout_bar_asset(asset_t *asset)
     }
 }
 
-static void layout_text_asset(asset_t *asset)
-{
-    if (!asset || !asset->obj) return;
-    const asset_cfg_t *cfg = &asset->cfg;
-    int width = cfg->width > 0 ? cfg->width : LV_SIZE_CONTENT;
-    int height = cfg->height > 0 ? cfg->height : LV_SIZE_CONTENT;
-    lv_obj_set_size(asset->obj, width, height);
-
-    // Resolve content-driven size before anchoring so we can offset correctly
-    if (width == LV_SIZE_CONTENT || height == LV_SIZE_CONTENT) {
-        lv_obj_update_layout(asset->obj);
-        width = lv_obj_get_width(asset->obj);
-        height = lv_obj_get_height(asset->obj);
-    }
-
-    lv_text_align_t align = LV_TEXT_ALIGN_LEFT;
-    int pos_x = to_canvas_x(cfg->x);
-    int pos_y = to_canvas_y(cfg->y);
-    switch (cfg->orientation) {
-        case ORIENTATION_CENTER:
-            align = LV_TEXT_ALIGN_CENTER;
-            pos_x -= width / 2;
-            break;
-        case ORIENTATION_LEFT:
-            align = LV_TEXT_ALIGN_RIGHT;
-            pos_x -= width;
-            break;
-        case ORIENTATION_RIGHT:
-        default:
-            align = LV_TEXT_ALIGN_LEFT;
-            break;
-    }
-    lv_obj_set_style_text_align(asset->obj, align, LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_pos(asset->obj, pos_x, pos_y);
-}
-
 static int json_get_string_range(const char *start, const char *end, const char *key, char *buf, size_t buf_sz)
 {
     const char *p = find_key_range(start, end, key);
@@ -816,6 +704,11 @@ static int json_get_string_range(const char *start, const char *end, const char 
     return 0;
 }
 
+static int json_get_string(const char *json, const char *key, char *buf, size_t buf_sz)
+{
+    return json_get_string_range(json, json + strlen(json), key, buf, buf_sz);
+}
+
 static void set_defaults(void)
 {
     g_cfg.width = DEFAULT_SCREEN_WIDTH;
@@ -824,15 +717,7 @@ static void set_defaults(void)
     g_cfg.osd_y = 0;
     g_cfg.show_stats = 1;
     g_cfg.idle_ms = 100;
-    g_cfg.system_refresh_ms = 1000;
-    g_cfg.udp_stats = 1;
-
-    memset(udp_values, 0, sizeof(udp_values));
-    memset(udp_texts, 0, sizeof(udp_texts));
-    init_system_channels();
-    last_system_refresh_ms = 0;
-    last_channel_push_ms = 0;
-    pending_channel_flush = false;
+    g_cfg.udp_stats = 0;
 
     memset(assets, 0, sizeof(assets));
     asset_count = 1;
@@ -869,6 +754,8 @@ static void parse_assets_array(const char *json)
         if (json_get_string_range(obj_start, obj_end, "type", type_buf, sizeof(type_buf)) == 0) {
             if (strcmp(type_buf, "text") == 0) {
                 a.cfg.type = ASSET_TEXT;
+            } else if (strcmp(type_buf, "image") == 0) {
+                a.cfg.type = ASSET_IMAGE;
             } else {
                 a.cfg.type = ASSET_BAR;
             }
@@ -876,17 +763,21 @@ static void parse_assets_array(const char *json)
 
         int v = 0;
         float fv = 0.0f;
-        int value_index_set = 0;
         if (json_get_bool_range(obj_start, obj_end, "enabled", &v) == 0) a.cfg.enabled = v;
-        if (json_get_int_range(obj_start, obj_end, "value_index", &v) == 0) {
-            a.cfg.value_index = clamp_int(v, 0, TOTAL_VALUE_COUNT - 1);
-            value_index_set = 1;
-        }
+        if (json_get_int_range(obj_start, obj_end, "value_index", &v) == 0) a.cfg.value_index = clamp_int(v, 0, 7);
         if (json_get_int_range(obj_start, obj_end, "id", &v) == 0) a.cfg.id = clamp_int(v, 0, 63);
         if (json_get_int_range(obj_start, obj_end, "x", &v) == 0) a.cfg.x = v;
         if (json_get_int_range(obj_start, obj_end, "y", &v) == 0) a.cfg.y = v;
-        if (json_get_int_range(obj_start, obj_end, "width", &v) == 0) a.cfg.width = v;
-        if (json_get_int_range(obj_start, obj_end, "height", &v) == 0) a.cfg.height = v;
+        int width_set = 0;
+        int height_set = 0;
+        if (json_get_int_range(obj_start, obj_end, "width", &v) == 0) {
+            a.cfg.width = v;
+            width_set = 1;
+        }
+        if (json_get_int_range(obj_start, obj_end, "height", &v) == 0) {
+            a.cfg.height = v;
+            height_set = 1;
+        }
         if (json_get_float_range(obj_start, obj_end, "min", &fv) == 0) a.cfg.min = fv;
         if (json_get_float_range(obj_start, obj_end, "max", &fv) == 0) a.cfg.max = fv;
         if (json_get_int_range(obj_start, obj_end, "bar_color", &v) == 0) a.cfg.color = (uint32_t)v;
@@ -894,34 +785,31 @@ static void parse_assets_array(const char *json)
         if (json_get_int_range(obj_start, obj_end, "background", &v) == 0) a.cfg.bg_style = clamp_int(v, -1, (int)(sizeof(g_bg_styles) / sizeof(g_bg_styles[0])) - 1);
         if (json_get_int_range(obj_start, obj_end, "background_opacity", &v) == 0) a.cfg.bg_opacity_pct = clamp_int(v, 0, 100);
         if (json_get_int_range(obj_start, obj_end, "segments", &v) == 0) a.cfg.segments = clamp_int(v, 0, 64);
-        if (json_get_int_range(obj_start, obj_end, "text_index", &v) == 0) a.cfg.text_index = clamp_int(v, -1, TOTAL_TEXT_COUNT - 1);
-        json_get_int_array_range(obj_start, obj_end, "text_indices", a.cfg.text_indices, 8, &a.cfg.text_indices_count, -1);
-        for (int i = 0; i < a.cfg.text_indices_count; i++) {
-            if (a.cfg.text_indices[i] >= 0) {
-                a.cfg.text_indices[i] = clamp_int(a.cfg.text_indices[i], 0, TOTAL_TEXT_COUNT - 1);
-            }
-        }
-        json_get_int_array_range(obj_start, obj_end, "value_indices", a.cfg.value_indices, 8, &a.cfg.value_indices_count, -1);
-        for (int i = 0; i < a.cfg.value_indices_count; i++) {
-            if (a.cfg.value_indices[i] >= 0) {
-                a.cfg.value_indices[i] = clamp_int(a.cfg.value_indices[i], 0, TOTAL_VALUE_COUNT - 1);
-            }
-        }
+        if (json_get_int_range(obj_start, obj_end, "text_index", &v) == 0) a.cfg.text_index = clamp_int(v, -1, 7);
+        json_get_int_array_range(obj_start, obj_end, "text_indices", a.cfg.text_indices, 8, &a.cfg.text_indices_count);
         if (json_get_bool_range(obj_start, obj_end, "text_inline", &v) == 0) a.cfg.text_inline = v;
-        json_get_string_range(obj_start, obj_end, "inline_separator", a.cfg.inline_separator, sizeof(a.cfg.inline_separator));
         if (json_get_bool_range(obj_start, obj_end, "rounded_outline", &v) == 0) a.cfg.rounded_outline = v;
         json_get_string_range(obj_start, obj_end, "label", a.cfg.label, sizeof(a.cfg.label));
+        json_get_string_range(obj_start, obj_end, "image_path", a.cfg.image_path, sizeof(a.cfg.image_path));
         char orient_buf[16];
         if (json_get_string_range(obj_start, obj_end, "orientation", orient_buf, sizeof(orient_buf)) == 0) {
             a.cfg.orientation = parse_orientation_string(orient_buf, ORIENTATION_RIGHT);
         }
 
+        if (a.cfg.type == ASSET_IMAGE) {
+            a.cfg.image_size_override = width_set || height_set;
+            if (!a.cfg.image_size_override) {
+                a.cfg.width = 0;
+                a.cfg.height = 0;
+            }
+        }
+
+        if (a.cfg.type == ASSET_IMAGE && a.cfg.image_path[0] == '\0') {
+            fprintf(stderr, "Image asset %d missing image_path in config\n", a.cfg.id);
+        }
+
         a.last_pct = -1;
         a.last_label_text[0] = '\0';
-
-        if (a.cfg.type == ASSET_TEXT && !value_index_set) {
-            a.cfg.value_index = -1;
-        }
 
         assets[asset_count++] = a;
         if (asset_count >= MAX_ASSETS) break;
@@ -956,9 +844,6 @@ static void load_config(void)
     } else if (json_get_int(json, "refresh_ms", &v) == 0) {
         // Backward compatibility with older configs
         g_cfg.idle_ms = clamp_int(v, 10, 1000);
-    }
-    if (json_get_int(json, "system_refresh_ms", &v) == 0) {
-        g_cfg.system_refresh_ms = clamp_int(v, 100, 60000);
     }
 
     // Backwards-compatible single bar fields (used only if no assets array)
@@ -1005,31 +890,18 @@ static void parse_udp_values(const char *buf)
     p = strchr(p, '[');
     if (!p) return;
     p++;
-    for (int i = 0; i < UDP_VALUE_COUNT; i++) {
+    for (int i = 0; i < MAX_ASSETS; i++) {
         while (*p && isspace((unsigned char)*p)) p++;
         if (!*p) break;
 
         if (strncmp(p, "null", 4) == 0) {
             p += 4;
         } else {
-            if (*p == '\"') {
-                /* Treat empty string as a clear-to-zero */
-                p++;
-                if (*p == '\"') {
-                    udp_values[i] = 0.0;
-                    p++; /* skip closing quote */
-                } else {
-                    // Skip until closing quote for malformed entries
-                    while (*p && *p != '\"') p++;
-                    if (*p == '\"') p++;
-                }
-            } else {
             char *endptr = NULL;
             double val = strtod(p, &endptr);
             if (p == endptr) break;
             udp_values[i] = val;
             p = endptr;
-            }
         }
 
         const char *comma = strchr(p, ',');
@@ -1045,7 +917,7 @@ static void parse_udp_texts(const char *buf)
     p = strchr(p, '[');
     if (!p) return;
     p++;
-    for (int i = 0; i < UDP_TEXT_COUNT; i++) {
+    for (int i = 0; i < MAX_ASSETS; i++) {
         while (*p && isspace((unsigned char)*p)) p++;
         if (!*p) break;
 
@@ -1056,7 +928,7 @@ static void parse_udp_texts(const char *buf)
             const char *start = p;
             while (*p && *p != '\"') p++;
             size_t len = (size_t)(p - start);
-            if (len > TEXT_SLOT_LEN - 1) len = TEXT_SLOT_LEN - 1;
+            if (len > UDP_TEXT_LEN - 1) len = UDP_TEXT_LEN - 1;
             memcpy(udp_texts[i], start, len);
             udp_texts[i][len] = '\0';
             if (*p != '\"') break;
@@ -1099,13 +971,11 @@ static void parse_udp_asset_updates(const char *buf)
         }
 
         asset_t *asset = find_asset_by_id(id);
-        int new_asset = 0;
         if (!asset) {
             if (asset_count >= MAX_ASSETS) continue;
             asset = &assets[asset_count++];
             init_asset_defaults(asset, id);
             asset->cfg.enabled = 0;
-            new_asset = 1;
         }
 
         int v = 0;
@@ -1115,7 +985,6 @@ static void parse_udp_asset_updates(const char *buf)
         int rerange = 0;
         int recreate = 0;
         int text_change = 0;
-        int type_changed = 0;
 
         int enabled_flag = asset->cfg.enabled;
         if (json_get_bool_range(obj_start, obj_end, "enabled", &v) == 0) {
@@ -1127,62 +996,43 @@ static void parse_udp_asset_updates(const char *buf)
             asset_type_t new_type = asset->cfg.type;
             if (strcmp(type_buf, "text") == 0) {
                 new_type = ASSET_TEXT;
+            } else if (strcmp(type_buf, "image") == 0) {
+                new_type = ASSET_IMAGE;
             } else {
                 new_type = ASSET_BAR;
             }
             if (new_type != asset->cfg.type) {
                 asset->cfg.type = new_type;
                 recreate = 1;
-                type_changed = 1;
+                if (new_type == ASSET_IMAGE && !asset->cfg.image_size_override) {
+                    asset->cfg.width = 0;
+                    asset->cfg.height = 0;
+                }
             }
         }
 
-        int value_index_seen = 0;
         if (json_get_int_range(obj_start, obj_end, "value_index", &v) == 0) {
-            int idx = clamp_int(v, 0, TOTAL_VALUE_COUNT - 1);
+            int idx = clamp_int(v, 0, MAX_ASSETS - 1);
             if (idx != asset->cfg.value_index) {
                 asset->cfg.value_index = idx;
             }
-            value_index_seen = 1;
         }
 
         if (json_get_int_range(obj_start, obj_end, "text_index", &v) == 0) {
-            int idx = clamp_int(v, -1, TOTAL_TEXT_COUNT - 1);
+            int idx = clamp_int(v, -1, MAX_ASSETS - 1);
             if (idx != asset->cfg.text_index) {
                 asset->cfg.text_index = idx;
                 text_change = 1;
             }
         }
 
-        int indices_tmp[8] = {0};
+        int indices_tmp[MAX_ASSETS] = {0};
         int idx_count = 0;
         if (find_key_range(obj_start, obj_end, "text_indices")) {
-            json_get_int_array_range(obj_start, obj_end, "text_indices", indices_tmp, 8, &idx_count, -1);
-            for (int i = 0; i < idx_count; i++) {
-                if (indices_tmp[i] >= 0) {
-                    indices_tmp[i] = clamp_int(indices_tmp[i], 0, TOTAL_TEXT_COUNT - 1);
-                }
-            }
+            json_get_int_array_range(obj_start, obj_end, "text_indices", indices_tmp, MAX_ASSETS, &idx_count);
             if (idx_count != asset->cfg.text_indices_count || memcmp(indices_tmp, asset->cfg.text_indices, sizeof(int) * (size_t)idx_count) != 0) {
                 memcpy(asset->cfg.text_indices, indices_tmp, sizeof(int) * (size_t)idx_count);
                 asset->cfg.text_indices_count = idx_count;
-                text_change = 1;
-            }
-        }
-
-        int value_indices_tmp[8] = {0};
-        int value_idx_count = 0;
-        if (find_key_range(obj_start, obj_end, "value_indices")) {
-            json_get_int_array_range(obj_start, obj_end, "value_indices", value_indices_tmp, 8, &value_idx_count, -1);
-            for (int i = 0; i < value_idx_count; i++) {
-                if (value_indices_tmp[i] >= 0) {
-                    value_indices_tmp[i] = clamp_int(value_indices_tmp[i], 0, TOTAL_VALUE_COUNT - 1);
-                }
-            }
-            if (value_idx_count != asset->cfg.value_indices_count ||
-                memcmp(value_indices_tmp, asset->cfg.value_indices, sizeof(int) * (size_t)value_idx_count) != 0) {
-                memcpy(asset->cfg.value_indices, value_indices_tmp, sizeof(int) * (size_t)value_idx_count);
-                asset->cfg.value_indices_count = value_idx_count;
                 text_change = 1;
             }
         }
@@ -1193,19 +1043,6 @@ static void parse_udp_asset_updates(const char *buf)
                 asset->cfg.text_inline = inline_flag;
                 text_change = 1;
             }
-        }
-
-        char inline_sep_buf[sizeof(asset->cfg.inline_separator)];
-        if (json_get_string_range(obj_start, obj_end, "inline_separator", inline_sep_buf, sizeof(inline_sep_buf)) == 0) {
-            if (strcmp(inline_sep_buf, asset->cfg.inline_separator) != 0) {
-                strncpy(asset->cfg.inline_separator, inline_sep_buf, sizeof(asset->cfg.inline_separator) - 1);
-                asset->cfg.inline_separator[sizeof(asset->cfg.inline_separator) - 1] = '\0';
-                text_change = 1;
-            }
-        }
-
-        if ((type_changed || new_asset) && asset->cfg.type == ASSET_TEXT && !value_index_seen && asset->cfg.value_indices_count == 0) {
-            asset->cfg.value_index = -1;
         }
 
         if (json_get_bool_range(obj_start, obj_end, "rounded_outline", &v) == 0) {
@@ -1219,6 +1056,10 @@ static void parse_udp_asset_updates(const char *buf)
         if (json_get_string_range(obj_start, obj_end, "label", asset->cfg.label, sizeof(asset->cfg.label)) == 0) {
             text_change = 1;
         }
+        if (json_get_string_range(obj_start, obj_end, "image_path", asset->cfg.image_path, sizeof(asset->cfg.image_path)) == 0) {
+            recreate = asset->cfg.type == ASSET_IMAGE ? 1 : recreate;
+            asset->cfg.image_path_resolved[0] = '\0';
+        }
 
         char orient_buf[16];
         if (json_get_string_range(obj_start, obj_end, "orientation", orient_buf, sizeof(orient_buf)) == 0) {
@@ -1231,7 +1072,7 @@ static void parse_udp_asset_updates(const char *buf)
 
         if (json_get_int_range(obj_start, obj_end, "bar_color", &v) == 0) {
             uint32_t color = (uint32_t)v;
-            if (asset->cfg.type != ASSET_TEXT && asset->cfg.color != color) {
+            if (asset->cfg.type == ASSET_BAR && asset->cfg.color != color) {
                 asset->cfg.color = color;
                 restyle = 1;
             }
@@ -1284,6 +1125,7 @@ static void parse_udp_asset_updates(const char *buf)
                 asset->cfg.width = v;
                 relayout = 1;
                 recreate = asset->cfg.type == ASSET_TEXT ? 1 : recreate;
+                if (asset->cfg.type == ASSET_IMAGE) asset->cfg.image_size_override = 1;
             }
         }
         if (json_get_int_range(obj_start, obj_end, "height", &v) == 0) {
@@ -1291,6 +1133,7 @@ static void parse_udp_asset_updates(const char *buf)
                 asset->cfg.height = v;
                 relayout = 1;
                 recreate = asset->cfg.type == ASSET_TEXT ? 1 : recreate;
+                if (asset->cfg.type == ASSET_IMAGE) asset->cfg.image_size_override = 1;
             }
         }
         if (json_get_float_range(obj_start, obj_end, "min", &fv) == 0) {
@@ -1323,7 +1166,17 @@ static void parse_udp_asset_updates(const char *buf)
         } else {
             if (relayout) {
                 if (asset->cfg.type == ASSET_TEXT) {
-                    layout_text_asset(asset);
+                    int width = asset->cfg.width > 0 ? asset->cfg.width : LV_SIZE_CONTENT;
+                    int height = asset->cfg.height > 0 ? asset->cfg.height : LV_SIZE_CONTENT;
+                    lv_obj_set_size(asset->obj, width, height);
+                    lv_obj_set_pos(asset->obj, asset->cfg.x, asset->cfg.y);
+                } else if (asset->cfg.type == ASSET_IMAGE) {
+                    if (asset->cfg.width > 0 || asset->cfg.height > 0) {
+                        int width = asset->cfg.width > 0 ? asset->cfg.width : LV_SIZE_CONTENT;
+                        int height = asset->cfg.height > 0 ? asset->cfg.height : LV_SIZE_CONTENT;
+                        lv_obj_set_size(asset->obj, width, height);
+                    }
+                    lv_obj_set_pos(asset->obj, asset->cfg.x, asset->cfg.y);
                 } else {
                     layout_bar_asset(asset);
                 }
@@ -1342,7 +1195,7 @@ static void parse_udp_asset_updates(const char *buf)
         if (text_change) {
             int wants_label = (asset->cfg.label[0] != '\0') || (asset->cfg.text_index >= 0);
             int label_created = 0;
-            if (asset->cfg.type != ASSET_TEXT) {
+            if (asset->cfg.type == ASSET_BAR) {
                 if (wants_label && !asset->label_obj) {
                     maybe_attach_asset_label(asset);
                     label_created = asset->label_obj != NULL;
@@ -1362,92 +1215,14 @@ static void parse_udp_asset_updates(const char *buf)
 
 static const char *get_asset_text(const asset_t *asset)
 {
-    if (asset->cfg.text_index >= 0 && asset->cfg.text_index < TOTAL_TEXT_COUNT) {
-        const char *t = get_text_channel(asset->cfg.text_index);
+    if (asset->cfg.text_index >= 0 && asset->cfg.text_index < MAX_ASSETS) {
+        const char *t = udp_texts[asset->cfg.text_index];
         if (t[0] != '\0') return t;
+        if (asset->cfg.label[0] != '\0') return asset->cfg.label;
+        return "";
     }
     if (asset->cfg.label[0] != '\0') return asset->cfg.label;
     return "";
-}
-
-static void format_value_text(double v, char *buf, size_t buf_sz)
-{
-    if (!buf || buf_sz == 0) return;
-    double rounded = (v >= 0.0) ? (v + 0.5) : (v - 0.5);
-    double diff = v - rounded;
-    if (diff < 0.0) diff = -diff;
-    if (diff < 0.005) {
-        snprintf(buf, buf_sz, "%.0f", v);
-        return;
-    }
-    double abs_v = v < 0.0 ? -v : v;
-    if (abs_v < 10.0) {
-        snprintf(buf, buf_sz, "%.2f", v);
-    } else if (abs_v < 100.0) {
-        snprintf(buf, buf_sz, "%.1f", v);
-    } else {
-        snprintf(buf, buf_sz, "%.0f", v);
-    }
-}
-
-static void append_entry_separator(const asset_cfg_t *cfg, char *buf, size_t buf_sz, size_t *written)
-{
-    if (!cfg || !buf || !written) return;
-    if (*written >= buf_sz - 1) return;
-    if (cfg->text_inline) {
-        const char *sep = cfg->inline_separator;
-        size_t sep_len = strlen(sep);
-        if (sep_len == 0) {
-            buf[(*written)++] = ' ';
-            return;
-        }
-        buf[(*written)++] = ' ';
-        size_t to_copy = sep_len < buf_sz - 1 - *written ? sep_len : buf_sz - 1 - *written;
-        memcpy(buf + *written, sep, to_copy);
-        *written += to_copy;
-        if (*written < buf_sz - 1) {
-            buf[(*written)++] = ' ';
-        }
-    } else {
-        buf[(*written)++] = '\n';
-    }
-}
-
-static void append_text_value_entry(const asset_t *asset, const char *text, int value_idx, char *buf, size_t buf_sz, size_t *written)
-{
-    if (!asset || !buf || !written) return;
-    const asset_cfg_t *cfg = &asset->cfg;
-    int clamped_value_idx = (value_idx >= 0 && value_idx < TOTAL_VALUE_COUNT) ? value_idx : -1;
-    const char *t = text ? text : "";
-    bool has_text = t[0] != '\0';
-    bool has_value = clamped_value_idx >= 0;
-    if (!has_text && !has_value) return;
-
-    if (*written > 0) {
-        append_entry_separator(cfg, buf, buf_sz, written);
-    }
-
-    if (has_text) {
-        size_t len = strnlen(t, TEXT_SLOT_LEN - 1);
-        size_t to_copy = len < buf_sz - 1 - *written ? len : buf_sz - 1 - *written;
-        memcpy(buf + *written, t, to_copy);
-        *written += to_copy;
-        if (*written < buf_sz - 1) {
-            buf[(*written)++] = ':';
-            if (has_value && *written < buf_sz - 1) {
-                buf[(*written)++] = ' ';
-            }
-        }
-    }
-
-    if (has_value && *written < buf_sz - 1) {
-        char val_buf[64];
-        format_value_text(get_value_channel(clamped_value_idx), val_buf, sizeof(val_buf));
-        size_t len = strnlen(val_buf, sizeof(val_buf) - 1);
-        size_t to_copy = len < buf_sz - 1 - *written ? len : buf_sz - 1 - *written;
-        memcpy(buf + *written, val_buf, to_copy);
-        *written += to_copy;
-    }
 }
 
 static void compose_asset_text(const asset_t *asset, char *buf, size_t buf_sz)
@@ -1460,30 +1235,31 @@ static void compose_asset_text(const asset_t *asset, char *buf, size_t buf_sz)
         size_t written = 0;
         if (asset->cfg.text_indices_count > 0) {
             for (int i = 0; i < asset->cfg.text_indices_count; i++) {
-                int idx = asset->cfg.text_indices[i];
-                const char *t = "";
-                if (idx >= 0 && idx < TOTAL_TEXT_COUNT) {
-                    t = get_text_channel(idx);
+                int idx = clamp_int(asset->cfg.text_indices[i], 0, MAX_ASSETS - 1);
+                const char *t = udp_texts[idx];
+                if (t[0] == '\0') continue;
+                if (written > 0 && written < buf_sz - 1) {
+                    buf[written++] = asset->cfg.text_inline ? ' ' : '\n';
                 }
-                int value_idx = (i < asset->cfg.value_indices_count) ? asset->cfg.value_indices[i] : -1;
-                append_text_value_entry(asset, t, value_idx, buf, buf_sz, &written);
+                size_t len = strnlen(t, sizeof(udp_texts[0]));
+                size_t to_copy = len < buf_sz - 1 - written ? len : buf_sz - 1 - written;
+                memcpy(buf + written, t, to_copy);
+                written += to_copy;
                 if (written >= buf_sz - 1) break;
             }
         }
 
-        if (written == 0 && asset->cfg.text_index >= 0 && asset->cfg.text_index < TOTAL_TEXT_COUNT) {
-            const char *t = get_text_channel(asset->cfg.text_index);
-            int value_idx = (asset->cfg.value_indices_count > 0) ? asset->cfg.value_indices[0] : asset->cfg.value_index;
-            append_text_value_entry(asset, t, value_idx, buf, buf_sz, &written);
+        if (written == 0 && asset->cfg.text_index >= 0 && asset->cfg.text_index < MAX_ASSETS) {
+            const char *t = udp_texts[asset->cfg.text_index];
+            size_t len = strnlen(t, sizeof(udp_texts[0]));
+            size_t to_copy = len < buf_sz - 1 ? len : buf_sz - 1;
+            memcpy(buf, t, to_copy);
+            written = to_copy;
         }
 
         if (written == 0 && asset->cfg.label[0] != '\0') {
-            int value_idx = (asset->cfg.value_indices_count > 0) ? asset->cfg.value_indices[0] : asset->cfg.value_index;
-            append_text_value_entry(asset, asset->cfg.label, value_idx, buf, buf_sz, &written);
-        }
-
-        if (written == 0) {
-            buf[0] = '\0';
+            strncpy(buf, asset->cfg.label, buf_sz - 1);
+            buf[buf_sz - 1] = '\0';
         } else {
             buf[written] = '\0';
         }
@@ -1500,29 +1276,21 @@ static bool poll_udp(void)
     if (udp_sock < 0) return false;
     char buf[UDP_MAX_PACKET];
     ssize_t r = 0;
-    bool updated = false;
-
+    bool processed_any = false;
+    // Drain the socket by processing all waiting payloads
     while ((r = recvfrom(udp_sock, buf, sizeof(buf) - 1, 0, NULL, NULL)) > 0) {
         buf[r] = '\0';
         parse_udp_values(buf);
         parse_udp_texts(buf);
         parse_udp_asset_updates(buf);
-        updated = true;
+        processed_any = true;
     }
-
-    return updated;
+    return processed_any;
 }
 
 // -------------------------
 // LVGL tick function
 // -------------------------
-uint32_t my_get_milliseconds(void)
-{
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (uint32_t)(((uint64_t)ts.tv_sec * 1000ULL) + (uint64_t)(ts.tv_nsec / 1000000ULL));
-}
-
 static uint64_t monotonic_ms64(void)
 {
     struct timespec ts;
@@ -1530,175 +1298,9 @@ static uint64_t monotonic_ms64(void)
     return ((uint64_t)ts.tv_sec * 1000ULL) + (uint64_t)(ts.tv_nsec / 1000000ULL);
 }
 
-static bool set_system_value(int idx, double v)
+uint32_t my_get_milliseconds(void)
 {
-    if (idx < 0 || idx >= SYSTEM_VALUE_COUNT) return false;
-    double prev = system_values[idx];
-    double diff = prev - v;
-    if (diff < 0) diff = -diff;
-    if (diff < 0.001) return false;
-    system_values[idx] = v;
-    return true;
-}
-
-static double parse_temperature_line(const char *line)
-{
-    if (!line) return -1.0;
-    const char *p = line;
-    while (*p && !isdigit((unsigned char)*p) && *p != '-') p++;
-    if (*p == '\0') return -1.0;
-    double v = -1.0;
-    if (sscanf(p, "%lf", &v) == 1) return v;
-    return -1.0;
-}
-
-static double read_soc_temperature_sysfs(void)
-{
-    static const char *paths[] = {
-        "/sys/devices/system/cpu/cpufreq/temp_out",
-    };
-    char line[64];
-    for (int i = 0; i < (int)(sizeof(paths) / sizeof(paths[0])); i++) {
-        FILE *f = fopen(paths[i], "r");
-        if (!f) continue;
-        double temp = -1.0;
-        if (fgets(line, sizeof(line), f)) temp = parse_temperature_line(line);
-        fclose(f);
-        if (temp >= 0.0) return temp;
-    }
-    return -1.0;
-}
-
-static double read_soc_temperature(void)
-{
-    double temp = read_soc_temperature_sysfs();
-    if (temp >= 0.0) return temp;
-
-    FILE *fp = popen("ipctool --temp 2>/dev/null", "r");
-    if (!fp) return -1.0;
-    char line[64];
-    temp = -1.0;
-    if (fgets(line, sizeof(line), fp)) {
-        temp = parse_temperature_line(line);
-    }
-    pclose(fp);
-    return temp;
-}
-
-static double read_cpu_load_pct(void)
-{
-    FILE *f = fopen("/proc/stat", "r");
-    if (!f) return -1.0;
-    char line[256];
-    if (!fgets(line, sizeof(line), f)) {
-        fclose(f);
-        return -1.0;
-    }
-    fclose(f);
-
-    unsigned long long user = 0, nice = 0, system_time = 0, idle = 0, iowait = 0, irq = 0, softirq = 0, steal = 0;
-    if (sscanf(line, "cpu %llu %llu %llu %llu %llu %llu %llu %llu", &user, &nice, &system_time, &idle, &iowait, &irq, &softirq, &steal) < 4) {
-        return -1.0;
-    }
-
-    unsigned long long idle_all = idle + iowait;
-    unsigned long long non_idle = user + nice + system_time + irq + softirq + steal;
-    unsigned long long total = idle_all + non_idle;
-    static unsigned long long prev_total = 0;
-    static unsigned long long prev_idle = 0;
-    if (prev_total == 0 && prev_idle == 0) {
-        prev_total = total;
-        prev_idle = idle_all;
-        return -1.0;
-    }
-
-    unsigned long long totald = total - prev_total;
-    unsigned long long idled = idle_all - prev_idle;
-    prev_total = total;
-    prev_idle = idle_all;
-    if (totald == 0) return -1.0;
-
-    double pct = (double)(totald - idled) * 100.0 / (double)totald;
-    if (pct < 0.0) pct = 0.0;
-    if (pct > 100.0) pct = 100.0;
-    return pct;
-}
-
-static bool read_encoder_stats_proc(double *fps_out, double *bitrate_out)
-{
-    if (!fps_out || !bitrate_out) return false;
-    FILE *f = fopen("/proc/mi_modules/mi_venc/mi_venc0", "r");
-    if (!f) return false;
-
-    char line[512];
-    int in_section = 0;
-    bool found = false;
-    while (fgets(line, sizeof(line), f)) {
-        if (!in_section) {
-            if (strstr(line, "VENC 0 CHN info")) {
-                in_section = 1;
-            }
-            continue;
-        }
-
-        if (strncmp(line, "ChnId", 5) == 0 || line[0] == '-') continue;
-
-        int chn = -1;
-        int state = 0, enpred = 0, base = 0, enhance = 0, max_stream = 0, frame_idx = 0, gradient = 0;
-        double fps1s = 0.0, kbps = 0.0, fps10s = 0.0, kbps10s = 0.0;
-        int parsed = sscanf(line,
-                            " %d %d %d %d %d %d %d %d %lf %lf %lf %lf",
-                            &chn,
-                            &state,
-                            &enpred,
-                            &base,
-                            &enhance,
-                            &max_stream,
-                            &frame_idx,
-                            &gradient,
-                            &fps1s,
-                            &kbps,
-                            &fps10s,
-                            &kbps10s);
-        if (parsed == 12 && chn == 0) {
-            *fps_out = fps1s;
-            *bitrate_out = kbps;
-            found = true;
-            break;
-        }
-
-        if (parsed < 0 && in_section && line[0] == '\n') {
-            break;
-        }
-    }
-
-    fclose(f);
-    return found;
-}
-
-static bool refresh_system_values(void)
-{
-    uint64_t now = monotonic_ms64();
-    int refresh_ms = clamp_int(g_cfg.system_refresh_ms, 100, 60000);
-    if (last_system_refresh_ms != 0 && now - last_system_refresh_ms < (uint64_t)refresh_ms) return false;
-    last_system_refresh_ms = now;
-
-    bool changed = false;
-
-    double temp = read_soc_temperature();
-    if (temp >= 0.0) changed |= set_system_value(SYS_VALUE_TEMP, temp);
-
-    double cpu = read_cpu_load_pct();
-    if (cpu >= 0.0) changed |= set_system_value(SYS_VALUE_CPU_LOAD, cpu);
-
-    double fps = 0.0;
-    double bitrate = 0.0;
-    if (read_encoder_stats_proc(&fps, &bitrate)) {
-        changed |= set_system_value(SYS_VALUE_ENCODER_FPS, fps);
-        changed |= set_system_value(SYS_VALUE_ENCODER_BITRATE, bitrate);
-    }
-
-    return changed;
+    return (uint32_t)monotonic_ms64();
 }
 
 static const MI_RGN_CanvasInfo_t *get_cached_canvas(void)
@@ -1764,9 +1366,15 @@ void my_flush_cb(lv_display_t * disp, const lv_area_t * area, uint8_t * px_map)
 // -------------------------
 // Initialize RGN
 // -------------------------
-void mi_region_init(void)
+int mi_region_init(void)
 {
-    MI_RGN_Init(&g_stPaletteTable);
+    MI_S32 ret = MI_RGN_OK;
+    fprintf(stderr, "MI_RGN_Init...\n");
+    ret = MI_RGN_Init(&g_stPaletteTable);
+    if (ret != MI_RGN_OK) {
+        fprintf(stderr, "MI_RGN_Init failed: %d\n", ret);
+        return -1;
+    }
     hRgnHandle = 0;
 
     g_canvas_info_valid = 0;
@@ -1778,7 +1386,13 @@ void mi_region_init(void)
     stRgnAttr.stOsdInitParam.stSize.u32Width = osd_width;
     stRgnAttr.stOsdInitParam.stSize.u32Height = osd_height;
 
-    MI_RGN_Create(hRgnHandle, &stRgnAttr);
+    fprintf(stderr, "MI_RGN_Create: %dx%d fmt=%d\n",
+            osd_width, osd_height, stRgnAttr.stOsdInitParam.ePixelFmt);
+    ret = MI_RGN_Create(hRgnHandle, &stRgnAttr);
+    if (ret != MI_RGN_OK) {
+        fprintf(stderr, "MI_RGN_Create failed: %d\n", ret);
+        return -1;
+    }
 
     stVpeChnPort.eModId = E_MI_RGN_MODID_VPE;
     stVpeChnPort.s32DevId = 0;
@@ -1792,11 +1406,22 @@ void mi_region_init(void)
     stRgnChnAttr.unPara.stOsdChnPort.u32Layer = 0;
     stRgnChnAttr.unPara.stOsdChnPort.stOsdAlphaAttr.eAlphaMode = E_MI_RGN_PIXEL_ALPHA;
 
-    MI_RGN_AttachToChn(hRgnHandle, &stVpeChnPort, &stRgnChnAttr);
-
-    if (MI_RGN_GetCanvasInfo(hRgnHandle, &g_cached_canvas_info) == MI_RGN_OK) {
-        g_canvas_info_valid = 1;
+    fprintf(stderr, "MI_RGN_AttachToChn...\n");
+    ret = MI_RGN_AttachToChn(hRgnHandle, &stVpeChnPort, &stRgnChnAttr);
+    if (ret != MI_RGN_OK) {
+        fprintf(stderr, "MI_RGN_AttachToChn failed: %d\n", ret);
+        return -1;
     }
+
+    fprintf(stderr, "MI_RGN_GetCanvasInfo...\n");
+    ret = MI_RGN_GetCanvasInfo(hRgnHandle, &g_cached_canvas_info);
+    if (ret == MI_RGN_OK) {
+        g_canvas_info_valid = 1;
+    } else {
+        fprintf(stderr, "MI_RGN_GetCanvasInfo failed: %d\n", ret);
+        return -1;
+    }
+    return 0;
 }
 
 // -------------------------
@@ -1809,9 +1434,16 @@ void init_lvgl(void)
     // Set LVGL tick callback
     lv_tick_set_cb(my_get_milliseconds);
 
-    size_t buf_size = (size_t)osd_width * BUF_ROWS * sizeof(lv_color_t);
-    buf1 = (lv_color_t *)malloc(buf_size);
-    buf2 = (lv_color_t *)malloc(buf_size);
+#if LV_USE_FS_STDIO
+    lv_fs_stdio_init();
+#endif
+#if LV_USE_LODEPNG
+    lv_lodepng_init();
+#endif
+
+    size_t buf_size = (size_t)osd_width * BUF_ROWS * sizeof(lv_color32_t);
+    buf1 = (lv_color32_t *)malloc(buf_size);
+    buf2 = (lv_color32_t *)malloc(buf_size);
     if (!buf1 || !buf2) {
         fprintf(stderr, "Failed to allocate LVGL buffers\n");
         exit(1);
@@ -1872,6 +1504,10 @@ static void destroy_asset_visual(asset_t *asset)
 static lv_obj_t *create_text_asset(asset_t *asset)
 {
     lv_obj_t *label = lv_label_create(lv_scr_act());
+    int width = asset->cfg.width > 0 ? asset->cfg.width : LV_SIZE_CONTENT;
+    int height = asset->cfg.height > 0 ? asset->cfg.height : LV_SIZE_CONTENT;
+    lv_obj_set_size(label, width, height);
+    lv_obj_align(label, LV_ALIGN_TOP_LEFT, to_canvas_x(asset->cfg.x), to_canvas_y(asset->cfg.y));
     lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
     apply_background_style(label, asset->cfg.bg_style, asset->cfg.bg_opacity_pct, 0);
     lv_obj_set_style_text_color(label, lv_color_hex(asset->cfg.text_color), 0);
@@ -1882,9 +1518,45 @@ static lv_obj_t *create_text_asset(asset_t *asset)
     lv_label_set_text(label, text_buf);
     strncpy(asset->last_label_text, text_buf, sizeof(asset->last_label_text) - 1);
     asset->last_label_text[sizeof(asset->last_label_text) - 1] = '\0';
-    asset->obj = label;
-    layout_text_asset(asset);
     return label;
+}
+
+static lv_obj_t *create_image_asset(asset_t *asset)
+{
+    if (!asset) return NULL;
+    if (asset->cfg.image_path[0] == '\0') {
+        fprintf(stderr, "Image asset %d has no image_path\n", asset->cfg.id);
+        return NULL;
+    }
+    if (asset->cfg.image_path_resolved[0] == '\0') {
+        const char *src = asset->cfg.image_path;
+        if (src[0] != '\0' && src[1] == ':' &&
+            (toupper((unsigned char)src[0]) == LV_FS_DEFAULT_DRIVER_LETTER ||
+             toupper((unsigned char)src[0]) == LV_FS_STDIO_LETTER)) {
+            src += 2;
+        }
+        strncpy(asset->cfg.image_path_resolved, src,
+                sizeof(asset->cfg.image_path_resolved) - 1);
+        asset->cfg.image_path_resolved[sizeof(asset->cfg.image_path_resolved) - 1] = '\0';
+    }
+    lv_fs_file_t file;
+    if (lv_fs_open(&file, asset->cfg.image_path_resolved, LV_FS_MODE_RD) != LV_FS_RES_OK) {
+        fprintf(stderr, "Image asset %d failed to open %s\n", asset->cfg.id, asset->cfg.image_path_resolved);
+        return NULL;
+    }
+    lv_fs_close(&file);
+
+    lv_obj_t *img = lv_image_create(lv_scr_act());
+    lv_image_set_src(img, asset->cfg.image_path_resolved);
+    lv_obj_set_pos(img, to_canvas_x(asset->cfg.x), to_canvas_y(asset->cfg.y));
+    if (asset->cfg.image_size_override && (asset->cfg.width > 0 || asset->cfg.height > 0)) {
+        int width = asset->cfg.width > 0 ? asset->cfg.width : LV_SIZE_CONTENT;
+        int height = asset->cfg.height > 0 ? asset->cfg.height : LV_SIZE_CONTENT;
+        lv_obj_set_size(img, width, height);
+    }
+    lv_obj_move_foreground(img);
+    lv_obj_update_layout(img);
+    return img;
 }
 
 static void create_asset_visual(asset_t *asset)
@@ -1899,13 +1571,16 @@ static void create_asset_visual(asset_t *asset)
         case ASSET_TEXT:
             asset->obj = create_text_asset(asset);
             break;
+        case ASSET_IMAGE:
+            asset->obj = create_image_asset(asset);
+            break;
         default:
             asset->obj = create_bar(asset);
             maybe_attach_asset_label(asset);
             break;
     }
 
-    if (asset->container_obj && asset->cfg.type != ASSET_TEXT) {
+    if (asset->container_obj && asset->cfg.type == ASSET_BAR) {
         layout_bar_asset(asset);
     }
 
@@ -1915,7 +1590,7 @@ static void create_asset_visual(asset_t *asset)
 static void maybe_attach_asset_label(asset_t *asset)
 {
     if (!asset->obj) return;
-    if (asset->cfg.type == ASSET_TEXT) return;
+    if (asset->cfg.type == ASSET_TEXT || asset->cfg.type == ASSET_IMAGE) return;
     if (asset->cfg.label[0] == '\0' && asset->cfg.text_index < 0) return;
     lv_obj_t *parent = asset->container_obj ? asset->container_obj : lv_scr_act();
     asset->label_obj = lv_label_create(parent);
@@ -1952,7 +1627,7 @@ static void destroy_assets(void)
     memset(assets, 0, sizeof(assets));
 }
 
-static void update_assets_from_channels(void)
+static void update_assets_from_udp(void)
 {
     for (int i = 0; i < asset_count; i++) {
         if (!assets[i].cfg.enabled) continue;
@@ -1962,7 +1637,7 @@ static void update_assets_from_channels(void)
         if (max <= min + 0.0001f) {
             max = min + 1.0f;
         }
-        float v = (float)get_value_channel(clamp_int(cfg->value_index, 0, TOTAL_VALUE_COUNT - 1));
+        float v = (float)udp_values[clamp_int(cfg->value_index, 0, MAX_ASSETS - 1)];
         v = clamp_float(v, min, max);
         float pct_f = (v - min) / (max - min);
         int pct = clamp_int((int)(pct_f * 100.0f), 0, 100);
@@ -1982,7 +1657,6 @@ static void update_assets_from_channels(void)
                         lv_label_set_text(assets[i].obj, text_buf);
                         strncpy(assets[i].last_label_text, text_buf, sizeof(assets[i].last_label_text) - 1);
                         assets[i].last_label_text[sizeof(assets[i].last_label_text) - 1] = '\0';
-                        layout_text_asset(&assets[i]);
                     }
                 }
                 continue;
@@ -2005,6 +1679,7 @@ static void update_assets_from_channels(void)
             }
         }
     }
+
 }
 
 static void handle_sigint(int sig)
@@ -2030,10 +1705,7 @@ static void reload_config_runtime(void)
     idle_ms_applied = idle_cap_ms;
 
     create_assets();
-    refresh_system_values();
-    update_assets_from_channels();
-    pending_channel_flush = false;
-    last_channel_push_ms = monotonic_ms64();
+    update_assets_from_udp();
 
     if (stats_label) {
         if (g_cfg.show_stats) {
@@ -2093,7 +1765,7 @@ static void stats_timer_cb(lv_timer_t *timer)
             primary_h = lv_obj_get_height(assets[i].obj);
         }
     }
-    char buf[1024];
+    char buf[512];
     int disp_w = lv_disp_get_hor_res(NULL);
     int disp_h = lv_disp_get_ver_res(NULL);
     int off = 0;
@@ -2107,38 +1779,17 @@ static void stats_timer_cb(lv_timer_t *timer)
                        fps_value, last_frame_ms, last_loop_ms, idle_ms_applied);
 
     if (g_cfg.udp_stats && off < (int)sizeof(buf) - 32) {
-        int rows = UDP_VALUE_COUNT > SYSTEM_VALUE_COUNT ? UDP_VALUE_COUNT : SYSTEM_VALUE_COUNT;
-        off += lv_snprintf(buf + off, sizeof(buf) - off, "\nValues (v=UDP s=SYS):");
-        for (int i = 0; i < rows && off < (int)sizeof(buf) - 24; i++) {
-            char udp_val[24];
-            char sys_val[24];
-            if (i < UDP_VALUE_COUNT) {
-                int whole = (int)udp_values[i];
-                int frac = (int)((udp_values[i] - whole) * 100.0);
-                if (frac < 0) frac = -frac;
-                lv_snprintf(udp_val, sizeof(udp_val), "%d.%02d", whole, frac);
-            } else {
-                lv_snprintf(udp_val, sizeof(udp_val), "-");
-            }
-
-            if (i < SYSTEM_VALUE_COUNT) {
-                int whole = (int)system_values[i];
-                int frac = (int)((system_values[i] - whole) * 100.0);
-                if (frac < 0) frac = -frac;
-                lv_snprintf(sys_val, sizeof(sys_val), "%d.%02d", whole, frac);
-            } else {
-                lv_snprintf(sys_val, sizeof(sys_val), "-");
-            }
-
-            off += lv_snprintf(buf + off, sizeof(buf) - off, "\n %d v=%s | s=%s", i, udp_val, sys_val);
+        off += lv_snprintf(buf + off, sizeof(buf) - off, "\nUDP values:");
+        for (int i = 0; i < MAX_ASSETS && off < (int)sizeof(buf) - 16; i++) {
+            int whole = (int)udp_values[i];
+            int frac = (int)((udp_values[i] - whole) * 100.0);
+            if (frac < 0) frac = -frac;
+            off += lv_snprintf(buf + off, sizeof(buf) - off, "\n v%d=%d.%02d", i, whole, frac);
         }
-
-        rows = UDP_TEXT_COUNT > SYSTEM_TEXT_COUNT ? UDP_TEXT_COUNT : SYSTEM_TEXT_COUNT;
-        off += lv_snprintf(buf + off, sizeof(buf) - off, "\nTexts (t=UDP s=SYS):");
-        for (int i = 0; i < rows && off < (int)sizeof(buf) - 20; i++) {
-            const char *udp_t = (i < UDP_TEXT_COUNT && udp_texts[i][0]) ? udp_texts[i] : "-";
-            const char *sys_t = (i < SYSTEM_TEXT_COUNT && system_texts[i][0]) ? system_texts[i] : "-";
-            off += lv_snprintf(buf + off, sizeof(buf) - off, "\n %d t=%s | s=%s", i, udp_t, sys_t);
+        off += lv_snprintf(buf + off, sizeof(buf) - off, "\nUDP texts:");
+        for (int i = 0; i < MAX_ASSETS && off < (int)sizeof(buf) - 20; i++) {
+            const char *t = udp_texts[i][0] ? udp_texts[i] : "-";
+            off += lv_snprintf(buf + off, sizeof(buf) - off, "\n t%d=%s", i, t);
         }
     }
 
@@ -2161,6 +1812,7 @@ int main(void)
 {
     load_config();
     compute_osd_geometry();
+
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
     sa.sa_handler = handle_sigint;
@@ -2171,7 +1823,10 @@ int main(void)
     udp_sock = setup_udp_socket();
 
     printf("Initializing OSD region...\n");
-    mi_region_init();
+    if (mi_region_init() != 0) {
+        fprintf(stderr, "OSD region init failed\n");
+        return 1;
+    }
 
     printf("Initializing LVGL...\n");
     init_lvgl();
@@ -2194,10 +1849,7 @@ int main(void)
     // Timers (throttled to ~10 Hz)
     stats_timer = lv_timer_create(stats_timer_cb, 250, NULL);
 
-    refresh_system_values();
-    update_assets_from_channels();
-    pending_channel_flush = false;
-    last_channel_push_ms = monotonic_ms64();
+    update_assets_from_udp();
 
     idle_cap_ms = clamp_int(g_cfg.idle_ms, 10, 1000);
     idle_ms_applied = idle_cap_ms;
@@ -2211,18 +1863,7 @@ int main(void)
 
         uint64_t loop_start = monotonic_ms64();
 
-        if (refresh_system_values()) pending_channel_flush = true;
-
-        uint64_t now_for_wait = monotonic_ms64();
         int wait_ms = idle_cap_ms;
-        if (pending_channel_flush && last_channel_push_ms != 0) {
-            uint64_t earliest_push = last_channel_push_ms + (uint64_t)max_ms;
-            if (earliest_push > now_for_wait) {
-                uint64_t remaining = earliest_push - now_for_wait;
-                int until_push = clamp_int((int)remaining, 0, wait_ms);
-                wait_ms = until_push;
-            }
-        }
 
         struct pollfd pfd = {0};
         nfds_t nfds = 0;
@@ -2238,16 +1879,7 @@ int main(void)
         idle_ms_applied = clamp_int((int)poll_spent, 0, idle_cap_ms);
         if (ret > 0 && (pfd.revents & POLLIN)) {
             if (poll_udp()) {
-                pending_channel_flush = true;
-            }
-        }
-
-        uint64_t now = monotonic_ms64();
-        if (pending_channel_flush) {
-            if (last_channel_push_ms == 0 || now - last_channel_push_ms >= (uint64_t)max_ms) {
-                update_assets_from_channels();
-                pending_channel_flush = false;
-                last_channel_push_ms = now;
+                update_assets_from_udp();
             }
         }
 
