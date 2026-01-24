@@ -18,6 +18,8 @@
 
 #include "lvgl/lvgl.h"
 #include "lvgl/src/draw/lv_draw_private.h"
+#include "lvgl/src/libs/fsdrv/lv_fs_stdio.h"
+#include "lvgl/src/libs/lodepng/lv_lodepng.h"
 #include "msp_glyph_atlas.h"
 #include "mi_sys.h"
 #include "mi_rgn.h"
@@ -1580,6 +1582,13 @@ void init_lvgl(void)
 
     // Set LVGL tick callback
     lv_tick_set_cb(my_get_milliseconds);
+
+#if LV_USE_FS_STDIO
+    lv_fs_stdio_init();
+#endif
+#if LV_USE_LODEPNG
+    lv_lodepng_init();
+#endif
 
     size_t buf_size = (size_t)osd_width * BUF_ROWS * sizeof(lv_color_t);
     buf1 = (lv_color_t *)malloc(buf_size);
