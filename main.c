@@ -1643,6 +1643,15 @@ static lv_obj_t *create_bar(asset_t *asset)
 static void release_image_data(asset_t *asset)
 {
     if (!asset) return;
+    if (asset->image_desc.data) {
+#if defined(LV_USE_IMG_CACHE) && LV_USE_IMG_CACHE
+#if defined(LV_VERSION_MAJOR) && LV_VERSION_MAJOR >= 9
+        lv_image_cache_drop(&asset->image_desc);
+#else
+        lv_img_cache_invalidate_src(&asset->image_desc);
+#endif
+#endif
+    }
     free(asset->image_rgba);
     asset->image_rgba = NULL;
     memset(&asset->image_desc, 0, sizeof(asset->image_desc));
@@ -1716,25 +1725,36 @@ static lv_obj_t *create_image_asset(asset_t *asset)
     }
 
     size_t pixels = (size_t)width * (size_t)height;
-    int needs_swizzle = 1;
-#ifdef LV_COLOR_FORMAT_RGBA8888
-    needs_swizzle = 0;
-#endif
-    if (needs_swizzle) {
-        for (size_t i = 0; i < pixels; i++) {
-            uint8_t r = rgba[i * 4 + 0];
-            uint8_t g = rgba[i * 4 + 1];
-            uint8_t b = rgba[i * 4 + 2];
-            uint8_t a = rgba[i * 4 + 3];
-            rgba[i * 4 + 0] = b;
-            rgba[i * 4 + 1] = g;
-            rgba[i * 4 + 2] = r;
-            rgba[i * 4 + 3] = a;
-        }
+#if defined(LV_COLOR_FORMAT_BGRA8888)
+    for (size_t i = 0; i < pixels; i++) {
+        uint8_t r = rgba[i * 4 + 0];
+        uint8_t g = rgba[i * 4 + 1];
+        uint8_t b = rgba[i * 4 + 2];
+        uint8_t a = rgba[i * 4 + 3];
+        rgba[i * 4 + 0] = b;
+        rgba[i * 4 + 1] = g;
+        rgba[i * 4 + 2] = r;
+        rgba[i * 4 + 3] = a;
     }
+#elif defined(LV_COLOR_FORMAT_RGBA8888)
+    (void)pixels;
+#else
+    for (size_t i = 0; i < pixels; i++) {
+        uint8_t r = rgba[i * 4 + 0];
+        uint8_t g = rgba[i * 4 + 1];
+        uint8_t b = rgba[i * 4 + 2];
+        uint8_t a = rgba[i * 4 + 3];
+        rgba[i * 4 + 0] = a;
+        rgba[i * 4 + 1] = r;
+        rgba[i * 4 + 2] = g;
+        rgba[i * 4 + 3] = b;
+    }
+#endif
 
     asset->image_rgba = rgba;
-#ifdef LV_COLOR_FORMAT_RGBA8888
+#if defined(LV_COLOR_FORMAT_BGRA8888)
+    asset->image_desc.header.cf = LV_COLOR_FORMAT_BGRA8888;
+#elif defined(LV_COLOR_FORMAT_RGBA8888)
     asset->image_desc.header.cf = LV_COLOR_FORMAT_RGBA8888;
 #else
     asset->image_desc.header.cf = LV_COLOR_FORMAT_ARGB8888;
