@@ -1606,6 +1606,33 @@ static lv_obj_t *create_text_asset(asset_t *asset)
     return label;
 }
 
+static int read_png_header(const char *path, int *out_w, int *out_h, int *out_bit_depth, int *out_color_type)
+{
+    lv_fs_file_t file;
+    if (lv_fs_open(&file, path, LV_FS_MODE_RD) != LV_FS_RES_OK) {
+        return -1;
+    }
+
+    uint8_t header[29] = {0};
+    uint32_t read_bytes = 0;
+    lv_fs_read(&file, header, sizeof(header), &read_bytes);
+    lv_fs_close(&file);
+
+    if (read_bytes < sizeof(header)) return -1;
+    if (memcmp(header, "\x89PNG\r\n\x1a\n", 8) != 0) return -1;
+
+    int w = (header[16] << 24) | (header[17] << 16) | (header[18] << 8) | header[19];
+    int h = (header[20] << 24) | (header[21] << 16) | (header[22] << 8) | header[23];
+    int bit_depth = header[24];
+    int color_type = header[25];
+
+    if (out_w) *out_w = w;
+    if (out_h) *out_h = h;
+    if (out_bit_depth) *out_bit_depth = bit_depth;
+    if (out_color_type) *out_color_type = color_type;
+    return 0;
+}
+
 static lv_obj_t *create_image_asset(asset_t *asset)
 {
     if (!asset) return NULL;
@@ -1630,6 +1657,17 @@ static lv_obj_t *create_image_asset(asset_t *asset)
     }
     lv_fs_close(&file);
 
+    int png_w = 0;
+    int png_h = 0;
+    int png_depth = 0;
+    int png_color = 0;
+    if (read_png_header(asset->cfg.image_path_resolved, &png_w, &png_h, &png_depth, &png_color) == 0) {
+        fprintf(stderr, "Image asset %d PNG header %dx%d depth=%d color=%d\n",
+                asset->cfg.id, png_w, png_h, png_depth, png_color);
+    } else {
+        fprintf(stderr, "Image asset %d could not read PNG header\n", asset->cfg.id);
+    }
+
     lv_obj_t *img = lv_image_create(lv_scr_act());
     lv_image_set_src(img, asset->cfg.image_path_resolved);
     lv_obj_set_pos(img, to_canvas_x(asset->cfg.x), to_canvas_y(asset->cfg.y));
@@ -1650,6 +1688,11 @@ static lv_obj_t *create_image_asset(asset_t *asset)
             to_canvas_y(asset->cfg.y),
             img_w,
             img_h);
+    if (png_w > 0 && png_h > 0 && (img_w != png_w || img_h != png_h)) {
+        fprintf(stderr,
+                "Image asset %d size mismatch: png=%dx%d decoded=%dx%d\n",
+                asset->cfg.id, png_w, png_h, img_w, img_h);
+    }
     if (img_w <= 0 || img_h <= 0) {
         fprintf(stderr, "Image asset %d has zero size after decode\n", asset->cfg.id);
     }
