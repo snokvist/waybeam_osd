@@ -1638,6 +1638,20 @@ static lv_obj_t *create_image_asset(asset_t *asset)
         int height = asset->cfg.height > 0 ? asset->cfg.height : LV_SIZE_CONTENT;
         lv_obj_set_size(img, width, height);
     }
+    lv_obj_update_layout(img);
+    int img_w = lv_obj_get_width(img);
+    int img_h = lv_obj_get_height(img);
+    fprintf(stderr,
+            "Image asset %d src=%s pos=%d,%d size=%dx%d\n",
+            asset->cfg.id,
+            asset->cfg.image_path_resolved,
+            to_canvas_x(asset->cfg.x),
+            to_canvas_y(asset->cfg.y),
+            img_w,
+            img_h);
+    if (img_w <= 0 || img_h <= 0) {
+        fprintf(stderr, "Image asset %d has zero size after decode\n", asset->cfg.id);
+    }
     return img;
 }
 
