@@ -88,6 +88,7 @@ typedef struct {
     int segments;
     asset_orientation_t orientation;
     char image_path[256];
+    char image_path_resolved[260];
 } asset_cfg_t;
 
 typedef struct {
@@ -450,6 +451,7 @@ static void init_asset_defaults(asset_t *a, int id)
     a->cfg.segments = 0;
     a->cfg.label[0] = '\0';
     a->cfg.image_path[0] = '\0';
+    a->cfg.image_path_resolved[0] = '\0';
     a->last_pct = -1;
     a->last_label_text[0] = '\0';
 }
@@ -1111,6 +1113,7 @@ static void parse_udp_asset_updates(const char *buf)
         }
         if (json_get_string_range(obj_start, obj_end, "image_path", asset->cfg.image_path, sizeof(asset->cfg.image_path)) == 0) {
             recreate = asset->cfg.type == ASSET_IMAGE ? 1 : recreate;
+            asset->cfg.image_path_resolved[0] = '\0';
         }
 
         char orient_buf[16];
@@ -1603,8 +1606,18 @@ static lv_obj_t *create_image_asset(asset_t *asset)
 {
     if (!asset) return NULL;
     if (asset->cfg.image_path[0] == '\0') return NULL;
+    if (asset->cfg.image_path[0] == '/' &&
+        asset->cfg.image_path[1] != '\0' &&
+        asset->cfg.image_path_resolved[0] == '\0') {
+        snprintf(asset->cfg.image_path_resolved, sizeof(asset->cfg.image_path_resolved),
+                 "A:%s", asset->cfg.image_path);
+    } else if (asset->cfg.image_path_resolved[0] == '\0') {
+        strncpy(asset->cfg.image_path_resolved, asset->cfg.image_path,
+                sizeof(asset->cfg.image_path_resolved) - 1);
+        asset->cfg.image_path_resolved[sizeof(asset->cfg.image_path_resolved) - 1] = '\0';
+    }
     lv_obj_t *img = lv_image_create(lv_scr_act());
-    lv_image_set_src(img, asset->cfg.image_path);
+    lv_image_set_src(img, asset->cfg.image_path_resolved);
     lv_obj_set_pos(img, to_canvas_x(asset->cfg.x), to_canvas_y(asset->cfg.y));
     if (asset->cfg.width > 0 || asset->cfg.height > 0) {
         int width = asset->cfg.width > 0 ? asset->cfg.width : LV_SIZE_CONTENT;
