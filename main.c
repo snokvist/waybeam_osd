@@ -1631,13 +1631,17 @@ static lv_obj_t *create_image_asset(asset_t *asset)
     lv_fs_close(&file);
 
     lv_obj_t *img = lv_image_create(lv_scr_act());
-    lv_image_set_src(img, asset->cfg.image_path_resolved);
+    lv_result_t img_res = lv_image_set_src(img, asset->cfg.image_path_resolved);
+    if (img_res != LV_RESULT_OK) {
+        fprintf(stderr, "Image asset %d failed to decode %s\n", asset->cfg.id, asset->cfg.image_path_resolved);
+    }
     lv_obj_set_pos(img, to_canvas_x(asset->cfg.x), to_canvas_y(asset->cfg.y));
     if (asset->cfg.width > 0 || asset->cfg.height > 0) {
         int width = asset->cfg.width > 0 ? asset->cfg.width : LV_SIZE_CONTENT;
         int height = asset->cfg.height > 0 ? asset->cfg.height : LV_SIZE_CONTENT;
         lv_obj_set_size(img, width, height);
     }
+    lv_obj_move_foreground(img);
     lv_obj_update_layout(img);
     int img_w = lv_obj_get_width(img);
     int img_h = lv_obj_get_height(img);
