@@ -1694,7 +1694,7 @@ static int load_image_asset_data(asset_t *asset)
     uint8_t *rgba = NULL;
     unsigned error = lodepng_decode32_file(&rgba, &width, &height, asset->cfg.image_path_resolved);
     if (error != 0 || !rgba || width == 0 || height == 0) {
-        lodepng_free(rgba);
+        free(rgba);
         fprintf(stderr, "Image asset %d failed to decode %s\n", asset->cfg.id, asset->cfg.image_path_resolved);
         return -1;
     }
@@ -1702,7 +1702,7 @@ static int load_image_asset_data(asset_t *asset)
     size_t total = (size_t)width * (size_t)height;
     uint32_t *dst = (uint32_t *)malloc(total * sizeof(uint32_t));
     if (!dst) {
-        lodepng_free(rgba);
+        free(rgba);
         fprintf(stderr, "Image asset %d out of memory\n", asset->cfg.id);
         return -1;
     }
@@ -1714,7 +1714,7 @@ static int load_image_asset_data(asset_t *asset)
         uint8_t a = rgba[i * 4 + 3];
         dst[i] = ((uint32_t)a << 24) | ((uint32_t)r << 16) | ((uint32_t)g << 8) | b;
     }
-    lodepng_free(rgba);
+    free(rgba);
 
     asset->image_data = (uint8_t *)dst;
     asset->image_dsc.header.cf = LV_COLOR_FORMAT_ARGB8888;

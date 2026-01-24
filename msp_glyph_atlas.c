@@ -79,7 +79,7 @@ int glyph_atlas_load_png(glyph_atlas_t *atlas, const char *path, const glyph_lay
     uint8_t *rgba = NULL;
     unsigned error = lodepng_decode32_file(&rgba, &width, &height, path);
     if (error != 0 || !rgba || width == 0 || height == 0) {
-        lodepng_free(rgba);
+        free(rgba);
         return -1;
     }
 
