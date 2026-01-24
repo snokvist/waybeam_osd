@@ -18,7 +18,6 @@
 
 #include "lvgl/lvgl.h"
 #include "lvgl/src/draw/lv_draw_private.h"
-#include "msp_glyph_atlas.h"
 #include "mi_sys.h"
 #include "mi_rgn.h"
 #include "mi_vpe.h"
@@ -31,34 +30,16 @@
 #define UDP_MAX_PACKET 1280
 #define MAX_ASSETS 8
 #define UDP_TEXT_LEN 96
-#define MAX_GLYPH_REQUESTS 256
-
 // LVGL buffers - allocated at runtime for ARGB8888 (32-bit per pixel)
 static lv_color32_t *buf1 = NULL;
 static lv_color32_t *buf2 = NULL;
 
 #if LV_USE_FS_STDIO
-#if defined(__has_include)
-#if __has_include("lvgl/src/libs/fsdrv/lv_fs_stdio.h")
-#include "lvgl/src/libs/fsdrv/lv_fs_stdio.h"
-#else
 void lv_fs_stdio_init(void);
-#endif
-#else
-void lv_fs_stdio_init(void);
-#endif
 #endif
 
 #if LV_USE_LODEPNG
-#if defined(__has_include)
-#if __has_include("lvgl/src/libs/lodepng/lv_lodepng.h")
-#include "lvgl/src/libs/lodepng/lv_lodepng.h"
-#else
 void lv_lodepng_init(void);
-#endif
-#else
-void lv_lodepng_init(void);
-#endif
 #endif
 
 typedef struct {
@@ -69,13 +50,6 @@ typedef struct {
     int show_stats;
     int idle_ms;
     int udp_stats;
-    int glyphs_enabled;
-    int glyph_origin_x;
-    int glyph_origin_y;
-    int glyph_grid_cols;
-    int glyph_grid_rows;
-    int glyph_page_count;
-    char glyph_atlas_path[256];
 } app_config_t;
 
 typedef enum {
@@ -180,19 +154,6 @@ static int udp_sock = -1;
 static double udp_values[MAX_ASSETS] = {0};
 static char udp_texts[MAX_ASSETS][UDP_TEXT_LEN] = {{0}};
 static int idle_cap_ms = 100;
-static glyph_atlas_t g_glyph_atlas;
-static lv_obj_t *glyph_canvas = NULL;
-static uint8_t *glyph_canvas_buf = NULL;
-static int g_glyphs_dirty = 0;
-
-typedef struct {
-    int id;
-    int row;
-    int col;
-} glyph_request_t;
-
-static glyph_request_t g_glyph_requests[MAX_GLYPH_REQUESTS];
-static int g_glyph_request_count = 0;
 // -------------------------
 // Utility helpers
 // -------------------------
@@ -757,70 +718,10 @@ static void set_defaults(void)
     g_cfg.show_stats = 1;
     g_cfg.idle_ms = 100;
     g_cfg.udp_stats = 0;
-    g_cfg.glyphs_enabled = 0;
-    g_cfg.glyph_origin_x = 0;
-    g_cfg.glyph_origin_y = 0;
-    g_cfg.glyph_grid_cols = 16;
-    g_cfg.glyph_grid_rows = 16;
-    g_cfg.glyph_page_count = 0;
-    g_cfg.glyph_atlas_path[0] = '\0';
 
     memset(assets, 0, sizeof(assets));
     asset_count = 1;
     init_asset_defaults(&assets[0], 0);
-}
-
-static void release_glyph_resources(void)
-{
-    if (glyph_canvas) {
-        lv_obj_del(glyph_canvas);
-        glyph_canvas = NULL;
-    }
-    free(glyph_canvas_buf);
-    glyph_canvas_buf = NULL;
-    glyph_atlas_release(&g_glyph_atlas);
-}
-
-static void clear_glyph_canvas(void)
-{
-    if (!glyph_canvas_buf) return;
-    size_t len = (size_t)osd_width * (size_t)osd_height * 4;
-    memset(glyph_canvas_buf, 0, len);
-}
-
-static void setup_glyphs(void)
-{
-    release_glyph_resources();
-    g_glyph_request_count = 0;
-    g_glyphs_dirty = 0;
-
-    if (!g_cfg.glyphs_enabled || g_cfg.glyph_atlas_path[0] == '\0') return;
-
-    glyph_layout_t layout_override = {
-        .grid_cols = g_cfg.glyph_grid_cols,
-        .grid_rows = g_cfg.glyph_grid_rows,
-        .page_count = g_cfg.glyph_page_count,
-        .glyph_w = 0,
-        .glyph_h = 0,
-    };
-
-    if (glyph_atlas_load_png(&g_glyph_atlas, g_cfg.glyph_atlas_path, &layout_override) != 0) {
-        return;
-    }
-
-    size_t buf_size = (size_t)osd_width * (size_t)osd_height * 4;
-    glyph_canvas_buf = (uint8_t *)malloc(buf_size);
-    if (!glyph_canvas_buf) {
-        glyph_atlas_release(&g_glyph_atlas);
-        return;
-    }
-    clear_glyph_canvas();
-
-    glyph_canvas = lv_canvas_create(lv_scr_act());
-    lv_canvas_set_buffer(glyph_canvas, glyph_canvas_buf, osd_width, osd_height, LV_COLOR_FORMAT_ARGB8888);
-    lv_obj_align(glyph_canvas, LV_ALIGN_TOP_LEFT, 0, 0);
-    lv_obj_move_foreground(glyph_canvas);
-    g_glyphs_dirty = 1;
 }
 
 static void parse_assets_array(const char *json)
@@ -901,14 +802,6 @@ static void parse_assets_array(const char *json)
                 a.cfg.width = 0;
                 a.cfg.height = 0;
             }
-            fprintf(stderr,
-                    "Image asset %d parsed size override=%d width_set=%d height_set=%d size=%dx%d\n",
-                    a.cfg.id,
-                    a.cfg.image_size_override,
-                    width_set,
-                    height_set,
-                    a.cfg.width,
-                    a.cfg.height);
         }
 
         if (a.cfg.type == ASSET_IMAGE && a.cfg.image_path[0] == '\0') {
@@ -946,13 +839,6 @@ static void load_config(void)
     if (json_get_int(json, "osd_y", &v) == 0) g_cfg.osd_y = v;
     if (json_get_bool(json, "show_stats", &v) == 0) g_cfg.show_stats = v;
     if (json_get_bool(json, "udp_stats", &v) == 0) g_cfg.udp_stats = v;
-    if (json_get_bool(json, "glyphs_enabled", &v) == 0) g_cfg.glyphs_enabled = v;
-    if (json_get_int(json, "glyph_origin_x", &v) == 0) g_cfg.glyph_origin_x = v;
-    if (json_get_int(json, "glyph_origin_y", &v) == 0) g_cfg.glyph_origin_y = v;
-    if (json_get_int(json, "glyph_grid_cols", &v) == 0) g_cfg.glyph_grid_cols = clamp_int(v, 1, 64);
-    if (json_get_int(json, "glyph_grid_rows", &v) == 0) g_cfg.glyph_grid_rows = clamp_int(v, 1, 64);
-    if (json_get_int(json, "glyph_page_count", &v) == 0) g_cfg.glyph_page_count = clamp_int(v, 0, 64);
-    json_get_string(json, "glyph_atlas_path", g_cfg.glyph_atlas_path, sizeof(g_cfg.glyph_atlas_path));
     if (json_get_int(json, "idle_ms", &v) == 0) {
         g_cfg.idle_ms = clamp_int(v, 10, 1000);
     } else if (json_get_int(json, "refresh_ms", &v) == 0) {
@@ -1327,45 +1213,6 @@ static void parse_udp_asset_updates(const char *buf)
     }
 }
 
-static void parse_udp_glyphs(const char *buf)
-{
-    const char *p = strstr(buf, "\"glyphs\"");
-    if (!p) return;
-    const char *arr = strchr(p, '[');
-    if (!arr) return;
-    p = arr + 1;
-
-    g_glyph_request_count = 0;
-    while (*p && g_glyph_request_count < MAX_GLYPH_REQUESTS) {
-        while (*p && *p != '{' && *p != ']') p++;
-        if (*p == ']') break;
-        const char *obj_start = p;
-        int depth = 1;
-        p++;
-        while (*p && depth > 0) {
-            if (*p == '{') depth++;
-            else if (*p == '}') depth--;
-            p++;
-        }
-        const char *obj_end = p;
-        if (depth != 0) break;
-
-        int id = 0;
-        int row = 0;
-        int col = 0;
-        if (json_get_int_range(obj_start, obj_end, "id", &id) != 0) continue;
-        if (json_get_int_range(obj_start, obj_end, "row", &row) != 0) continue;
-        if (json_get_int_range(obj_start, obj_end, "col", &col) != 0) continue;
-
-        glyph_request_t *req = &g_glyph_requests[g_glyph_request_count++];
-        req->id = id;
-        req->row = row;
-        req->col = col;
-    }
-
-    g_glyphs_dirty = 1;
-}
-
 static const char *get_asset_text(const asset_t *asset)
 {
     if (asset->cfg.text_index >= 0 && asset->cfg.text_index < MAX_ASSETS) {
@@ -1436,28 +1283,9 @@ static bool poll_udp(void)
         parse_udp_values(buf);
         parse_udp_texts(buf);
         parse_udp_asset_updates(buf);
-        parse_udp_glyphs(buf);
         processed_any = true;
     }
     return processed_any;
-}
-
-static void render_glyphs(void)
-{
-    if (!glyph_canvas || !glyph_canvas_buf) return;
-    if (!g_cfg.glyphs_enabled || !g_glyph_atlas.rgba) return;
-    if (!g_glyphs_dirty) return;
-
-    clear_glyph_canvas();
-    for (int i = 0; i < g_glyph_request_count; i++) {
-        glyph_request_t *req = &g_glyph_requests[i];
-        glyph_blit_glyph(&g_glyph_atlas, req->id, req->row, req->col,
-                         (uint32_t *)glyph_canvas_buf,
-                         osd_width, osd_height, osd_width,
-                         g_cfg.glyph_origin_x, g_cfg.glyph_origin_y);
-    }
-    lv_obj_invalidate(glyph_canvas);
-    g_glyphs_dirty = 0;
 }
 
 // -------------------------
@@ -1538,9 +1366,15 @@ void my_flush_cb(lv_display_t * disp, const lv_area_t * area, uint8_t * px_map)
 // -------------------------
 // Initialize RGN
 // -------------------------
-void mi_region_init(void)
+int mi_region_init(void)
 {
-    MI_RGN_Init(&g_stPaletteTable);
+    MI_S32 ret = MI_RGN_OK;
+    fprintf(stderr, "MI_RGN_Init...\n");
+    ret = MI_RGN_Init(&g_stPaletteTable);
+    if (ret != MI_RGN_OK) {
+        fprintf(stderr, "MI_RGN_Init failed: %d\n", ret);
+        return -1;
+    }
     hRgnHandle = 0;
 
     g_canvas_info_valid = 0;
@@ -1552,7 +1386,13 @@ void mi_region_init(void)
     stRgnAttr.stOsdInitParam.stSize.u32Width = osd_width;
     stRgnAttr.stOsdInitParam.stSize.u32Height = osd_height;
 
-    MI_RGN_Create(hRgnHandle, &stRgnAttr);
+    fprintf(stderr, "MI_RGN_Create: %dx%d fmt=%d\n",
+            osd_width, osd_height, stRgnAttr.stOsdInitParam.ePixelFmt);
+    ret = MI_RGN_Create(hRgnHandle, &stRgnAttr);
+    if (ret != MI_RGN_OK) {
+        fprintf(stderr, "MI_RGN_Create failed: %d\n", ret);
+        return -1;
+    }
 
     stVpeChnPort.eModId = E_MI_RGN_MODID_VPE;
     stVpeChnPort.s32DevId = 0;
@@ -1566,11 +1406,22 @@ void mi_region_init(void)
     stRgnChnAttr.unPara.stOsdChnPort.u32Layer = 0;
     stRgnChnAttr.unPara.stOsdChnPort.stOsdAlphaAttr.eAlphaMode = E_MI_RGN_PIXEL_ALPHA;
 
-    MI_RGN_AttachToChn(hRgnHandle, &stVpeChnPort, &stRgnChnAttr);
-
-    if (MI_RGN_GetCanvasInfo(hRgnHandle, &g_cached_canvas_info) == MI_RGN_OK) {
-        g_canvas_info_valid = 1;
+    fprintf(stderr, "MI_RGN_AttachToChn...\n");
+    ret = MI_RGN_AttachToChn(hRgnHandle, &stVpeChnPort, &stRgnChnAttr);
+    if (ret != MI_RGN_OK) {
+        fprintf(stderr, "MI_RGN_AttachToChn failed: %d\n", ret);
+        return -1;
     }
+
+    fprintf(stderr, "MI_RGN_GetCanvasInfo...\n");
+    ret = MI_RGN_GetCanvasInfo(hRgnHandle, &g_cached_canvas_info);
+    if (ret == MI_RGN_OK) {
+        g_canvas_info_valid = 1;
+    } else {
+        fprintf(stderr, "MI_RGN_GetCanvasInfo failed: %d\n", ret);
+        return -1;
+    }
+    return 0;
 }
 
 // -------------------------
@@ -1829,7 +1680,6 @@ static void update_assets_from_udp(void)
         }
     }
 
-    render_glyphs();
 }
 
 static void handle_sigint(int sig)
@@ -1855,7 +1705,6 @@ static void reload_config_runtime(void)
     idle_ms_applied = idle_cap_ms;
 
     create_assets();
-    setup_glyphs();
     update_assets_from_udp();
 
     if (stats_label) {
@@ -1873,7 +1722,6 @@ static void reload_config_runtime(void)
 static void cleanup_resources(void)
 {
     destroy_assets();
-    release_glyph_resources();
 
     if (stats_timer) {
         lv_timer_del(stats_timer);
@@ -1975,7 +1823,10 @@ int main(void)
     udp_sock = setup_udp_socket();
 
     printf("Initializing OSD region...\n");
-    mi_region_init();
+    if (mi_region_init() != 0) {
+        fprintf(stderr, "OSD region init failed\n");
+        return 1;
+    }
 
     printf("Initializing LVGL...\n");
     init_lvgl();
@@ -1984,7 +1835,6 @@ int main(void)
     lv_obj_set_style_bg_opa(lv_scr_act(), LV_OPA_TRANSP, LV_PART_MAIN);
 
     create_assets();
-    setup_glyphs();
 
     // Lightweight stats in top-left
     stats_label = lv_label_create(lv_scr_act());
