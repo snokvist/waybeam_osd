@@ -1725,20 +1725,6 @@ static lv_obj_t *create_image_asset(asset_t *asset)
     }
 
     size_t pixels = (size_t)width * (size_t)height;
-#if defined(LV_COLOR_FORMAT_BGRA8888)
-    for (size_t i = 0; i < pixels; i++) {
-        uint8_t r = rgba[i * 4 + 0];
-        uint8_t g = rgba[i * 4 + 1];
-        uint8_t b = rgba[i * 4 + 2];
-        uint8_t a = rgba[i * 4 + 3];
-        rgba[i * 4 + 0] = b;
-        rgba[i * 4 + 1] = g;
-        rgba[i * 4 + 2] = r;
-        rgba[i * 4 + 3] = a;
-    }
-#elif defined(LV_COLOR_FORMAT_RGBA8888)
-    (void)pixels;
-#else
     for (size_t i = 0; i < pixels; i++) {
         uint8_t r = rgba[i * 4 + 0];
         uint8_t g = rgba[i * 4 + 1];
@@ -1749,16 +1735,9 @@ static lv_obj_t *create_image_asset(asset_t *asset)
         rgba[i * 4 + 2] = g;
         rgba[i * 4 + 3] = b;
     }
-#endif
 
     asset->image_rgba = rgba;
-#if defined(LV_COLOR_FORMAT_BGRA8888)
-    asset->image_desc.header.cf = LV_COLOR_FORMAT_BGRA8888;
-#elif defined(LV_COLOR_FORMAT_RGBA8888)
-    asset->image_desc.header.cf = LV_COLOR_FORMAT_RGBA8888;
-#else
     asset->image_desc.header.cf = LV_COLOR_FORMAT_ARGB8888;
-#endif
     asset->image_desc.header.w = (uint32_t)width;
     asset->image_desc.header.h = (uint32_t)height;
     asset->image_desc.data_size = (uint32_t)(pixels * 4);
