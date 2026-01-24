@@ -1700,21 +1700,27 @@ static int load_image_asset_data(asset_t *asset)
     }
 
     size_t total = (size_t)width * (size_t)height;
-    uint8_t *src = rgba;
-    uint32_t *dst = (uint32_t *)rgba;
-    for (size_t i = 0; i < total; i++) {
-        uint8_t r = src[i * 4 + 0];
-        uint8_t g = src[i * 4 + 1];
-        uint8_t b = src[i * 4 + 2];
-        uint8_t a = src[i * 4 + 3];
-        dst[i] = ((uint32_t)a << 24) | ((uint32_t)r << 16) | ((uint32_t)g << 8) | b;
+    uint32_t *dst = (uint32_t *)malloc(total * sizeof(uint32_t));
+    if (!dst) {
+        free(rgba);
+        fprintf(stderr, "Image asset %d out of memory\n", asset->cfg.id);
+        return -1;
     }
 
-    asset->image_data = rgba;
+    for (size_t i = 0; i < total; i++) {
+        uint8_t r = rgba[i * 4 + 0];
+        uint8_t g = rgba[i * 4 + 1];
+        uint8_t b = rgba[i * 4 + 2];
+        uint8_t a = rgba[i * 4 + 3];
+        dst[i] = ((uint32_t)a << 24) | ((uint32_t)r << 16) | ((uint32_t)g << 8) | b;
+    }
+    free(rgba);
+
+    asset->image_data = (uint8_t *)dst;
     asset->image_dsc.header.cf = LV_COLOR_FORMAT_ARGB8888;
     asset->image_dsc.header.w = (uint32_t)width;
     asset->image_dsc.header.h = (uint32_t)height;
-    asset->image_dsc.data_size = (uint32_t)(total * 4);
+    asset->image_dsc.data_size = (uint32_t)(total * sizeof(uint32_t));
     asset->image_dsc.data = asset->image_data;
     return 0;
 }
