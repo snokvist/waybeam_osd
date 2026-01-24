@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/time.h>
 #include <poll.h>
 #include <signal.h>
@@ -189,7 +190,18 @@ static int image_debug_rect_enabled(void)
 {
     if (g_image_debug_rect < 0) {
         const char *env = getenv("WAYBEAM_IMAGE_DEBUG_RECT");
-        g_image_debug_rect = (env && env[0] != '\0') ? 1 : 0;
+        if (!env || env[0] == '\0') {
+            g_image_debug_rect = 0;
+        } else if (env[0] == '0' && env[1] == '\0') {
+            g_image_debug_rect = 0;
+        } else if (strcasecmp(env, "false") == 0) {
+            g_image_debug_rect = 0;
+        } else {
+            g_image_debug_rect = 1;
+        }
+        fprintf(stderr, "Image debug rect %s (WAYBEAM_IMAGE_DEBUG_RECT=%s)\n",
+                g_image_debug_rect ? "enabled" : "disabled",
+                env ? env : "(unset)");
     }
     return g_image_debug_rect;
 }
