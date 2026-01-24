@@ -121,24 +121,13 @@
       "max": 1.0,
       "bar_color": 65280,
       "text_color": 0
-    },
-    {
-      "type": "bar",
-      "enabled": false,
-      "id": 6,
-      "value_index": 6,
-      "label": "UDP BAR 6",
-      "x": 10,
-      "y": 150,
-      "width": 400,
-      "height": 24,
-      "min": 0.0,
-      "max": 1.0,
-      "orientation": "down",
-      "background": 1,
-      "background_opacity": 50,
-      "bar_color": 65280,
-      "text_color": 0
+    { 
+     "type": "image", 
+     "id": 6, 
+     "enabled": true, 
+     "image_path": "/usr/share/fonts/solid.png", 
+     "x": 200, 
+     "y": 200
     },
     {
       "type": "text",
