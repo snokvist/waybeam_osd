@@ -7,7 +7,7 @@
 - Keep payloads under 1280 bytes (anything larger is dropped).
 - Incoming UDP packets are applied in arrival order; the socket is fully drained whenever it becomes readable so every queued packet is processed. The last packet for a given index/property wins, and on-screen pushes are throttled to ~30 fps (about every 32 ms). `idle_ms` only caps the sleep when no data arrives.
 - Optional `texts` array (up to 8 strings, max 96 chars each) can be sent alongside `values`. These map to `text_index` on bar assets and override a static `label` if present. `null` entries are ignored (keep existing text); an empty string clears the text and falls back to the asset’s `label`. System text slots `8-15` are reserved for future data and come prefilled with descriptors (`temp`, `cpu`, `enc fps`, `bitrate`, `sys4`, `sys5`, `sys6`, `sys7`).
-- Optional `asset_updates` array lets senders retint, reposition, enable/disable, or fully reconfigure assets at runtime. Each object must contain an `id`; if the ID does not exist yet and there is room (max 8 assets), the asset slot is created on the fly. Valid keys include: `enabled` (bool), `type` (`"bar"` or `"text"`), `value_index`, `value_indices` (array, text only), `text_index`, `text_indices` (array), `text_inline`, `inline_separator` (text only), `label`, `orientation`, `x`, `y`, `width`, `height`, `min`, `max`, `bar_color` (bars only), `text_color`, `background`, `background_opacity`, `segments` (bars only), and `rounded_outline` (bars and text backgrounds). Only valid values that differ from the current config are applied; disabled assets are removed from the screen immediately.
+- Optional `asset_updates` array lets senders retint, reposition, enable/disable, or fully reconfigure assets at runtime. Each object must contain an `id`; if the ID does not exist yet and there is room (max 8 assets), the asset slot is created on the fly. Valid keys include: `enabled` (bool), `type` (`"bar"`, `"text"`, or `"image"`), `value_index`, `value_indices` (array, text only), `text_index`, `text_indices` (array), `text_inline`, `inline_separator` (text only), `label`, `orientation`, `x`, `y`, `width`, `height`, `min`, `max`, `bar_color` (bars only), `text_color`, `background`, `background_opacity`, `segments` (bars only), and `rounded_outline` (bars and text backgrounds). Only valid values that differ from the current config are applied; disabled assets are removed from the screen immediately.
 
 Example:
 ```json
@@ -73,7 +73,7 @@ The UDP socket is **drained fully** on every poll cycle, meaning every packet in
   - `system_refresh_ms` (int, optional): cadence for polling system metrics (temperature, CPU load, encoder FPS/bitrate). Clamped 100–60000; default 1000.
   - `assets` (array, max 8): list of objects defining what to render and which UDP value to consume.
   - Asset fields:
-    - `type`: `"bar"` or `"text"`.
+    - `type`: `"bar"`, `"text"`, or `"image"`.
     - `enabled` (bool, optional): when `false`, the asset stays hidden until enabled by config reload or UDP `asset_updates`. Defaults to `true`.
     - `id` (int, optional): unique asset identifier for UDP `asset_updates`. Defaults to the array index when omitted.
     - `value_index` (int): which numeric channel drives this asset (`0–7` for UDP `values[i]`, `8–15` for system values). Text assets treat this as optional and typically rely on `value_indices` instead.
@@ -85,7 +85,8 @@ The UDP socket is **drained fully** on every poll cycle, meaning every packet in
     - `label` (string, optional, bars/text): static text descriptor. Used when no UDP text is present.
     - `orientation` (string): `"right"` (default) keeps the bar horizontal with the label to the right; `"left"` mirrors the layout with the label on the left and flips the fill so the bar grows from right-to-left. For `left`, the bar container anchors its right edge at `x` so left- and right-oriented bars can share the same coordinate and grow in opposite directions. Text assets also accept `"center"` to center both the box origin and text alignment on `x`.
     - `x`, `y` (int): position relative to the OSD top-left. For `orientation: "left"`, `x` represents the right edge of the bar’s rounded container.
-    - `width`, `height` (int): size in pixels. For text, enables wrapping.
+    - `width`, `height` (int): size in pixels. For text, enables wrapping; for image assets, setting either value forces an explicit size override instead of the native image dimensions.
+    - `image_path` (string, image only): required path to a local image asset. LVGL filesystem prefixes (for example, `"A:/path/to/icon.png"`) are accepted and stripped before loading.
     - `min`, `max` (float): input range mapped to 0–100% for bars.
     - `bar_color` (int): RGB hex value as a number; used by bar styles.
     - `rounded_outline` (bool, bars/text): enables the outlined capsule look on bars or rounded backgrounds with padded text for text assets. Defaults to `false`.
