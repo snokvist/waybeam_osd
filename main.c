@@ -2114,6 +2114,11 @@ static void stats_timer_cb(lv_timer_t *timer)
 // -------------------------
 int main(void)
 {
+    if (MI_SYS_Init() != MI_SUCCESS) {
+        fprintf(stderr, "MI_SYS_Init failed\n");
+        return 1;
+    }
+
     load_config();
     compute_osd_geometry();
 
@@ -2129,6 +2134,7 @@ int main(void)
     printf("Initializing OSD region...\n");
     if (mi_region_init() != 0) {
         fprintf(stderr, "OSD region init failed\n");
+        MI_SYS_Exit();
         return 1;
     }
 
@@ -2202,6 +2208,7 @@ int main(void)
     }
 
     cleanup_resources();
+    MI_SYS_Exit();
 
     return 0;
 }
