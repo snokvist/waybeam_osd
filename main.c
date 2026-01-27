@@ -42,6 +42,10 @@ void lv_fs_stdio_init(void);
 void lv_lodepng_init(void);
 #endif
 
+#if LV_USE_TJPGD
+void lv_tjpgd_init(void);
+#endif
+
 typedef struct {
     int width;
     int height;
@@ -1439,6 +1443,9 @@ void init_lvgl(void)
 #endif
 #if LV_USE_LODEPNG
     lv_lodepng_init();
+#endif
+#if LV_USE_TJPGD
+    lv_tjpgd_init();
 #endif
 
     size_t buf_size = (size_t)osd_width * BUF_ROWS * sizeof(lv_color32_t);
