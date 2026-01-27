@@ -1,3 +1,6 @@
+#define LODEPNG_MALLOC lv_malloc
+#define LODEPNG_REALLOC lv_realloc
+#define LODEPNG_FREE lv_free
 /*
 LodePNG version 20230410
 
