@@ -21,18 +21,6 @@ if [ ! -d lvgl ]; then
 	git submodule update --init
 fi
 
-PATCH="$PWD/patches/lvgl-libpng-streaming.patch"
-if [ -f "$PATCH" ]; then
-	if git -C lvgl apply --reverse --check "$PATCH" >/dev/null 2>&1; then
-		echo "LVGL libpng streaming patch already applied"
-	elif git -C lvgl apply --check "$PATCH" >/dev/null 2>&1; then
-		git -C lvgl apply "$PATCH"
-	else
-		echo "Failed to apply LVGL libpng streaming patch" >&2
-		exit 1
-	fi
-fi
-
 DRV=$PWD/firmware/general/package/sigmastar-osdrv-infinity6e/files/lib
 make -j8 -B CC=$GCC DRV=$DRV TOOLCHAIN=$PWD/toolchain/$CC OUTPUT=$OUT \
     LVGL_INCLUDE_DEMOS=0 LVGL_INCLUDE_EXAMPLES=0
