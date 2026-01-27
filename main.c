@@ -18,6 +18,7 @@
 
 #include "lvgl/lvgl.h"
 #include "lvgl/src/draw/lv_draw_private.h"
+#include "lvgl/src/draw/lv_image_decoder_private.h"
 #include "mi_sys.h"
 #include "mi_rgn.h"
 #include "mi_vpe.h"
@@ -40,8 +41,6 @@ void lv_fs_stdio_init(void);
 
 #if LV_USE_LODEPNG
 void lv_lodepng_init(void);
-#else
-void lv_lodepng_opt_init(void);
 #endif
 
 typedef struct {
@@ -58,6 +57,7 @@ typedef enum {
     ASSET_BAR = 0,
     ASSET_TEXT,
     ASSET_IMAGE,
+    ASSET_GLYPH,
 } asset_type_t;
 
 typedef enum {
@@ -90,6 +90,10 @@ typedef struct {
     asset_orientation_t orientation;
     char image_path[256];
     char image_path_resolved[260];
+    int glyph_index;
+    int glyph_width;
+    int glyph_height;
+    int glyph_cols;
     int image_size_override;
 } asset_cfg_t;
 
@@ -100,6 +104,7 @@ typedef struct {
     lv_obj_t *label_obj;
     int last_pct;
     char last_label_text[1024];
+    lv_image_dsc_t glyph_dsc;
 } asset_t;
 
 typedef struct {
@@ -156,6 +161,14 @@ static int udp_sock = -1;
 static double udp_values[MAX_ASSETS] = {0};
 static char udp_texts[MAX_ASSETS][UDP_TEXT_LEN] = {{0}};
 static int idle_cap_ms = 100;
+// Atlas cache
+#define MAX_ATLASES 4
+typedef struct {
+    char path[256];
+    lv_image_decoder_dsc_t dsc;
+    int valid;
+} atlas_t;
+static atlas_t atlas_cache[MAX_ATLASES];
 // -------------------------
 // Utility helpers
 // -------------------------
@@ -496,6 +509,12 @@ static void apply_asset_styles(asset_t *asset)
                 apply_background_style(asset->obj, cfg->bg_style, cfg->bg_opacity_pct, 0);
                 lv_obj_set_style_img_opa(asset->obj, LV_OPA_COVER, 0);
             }
+        case ASSET_GLYPH:
+            if (asset->obj) {
+                apply_background_style(asset->obj, cfg->bg_style, cfg->bg_opacity_pct, 0);
+                lv_obj_set_style_img_opa(asset->obj, LV_OPA_COVER, 0);
+            }
+            break;
             break;
         default:
             break;
@@ -756,7 +775,7 @@ static void parse_assets_array(const char *json)
         if (json_get_string_range(obj_start, obj_end, "type", type_buf, sizeof(type_buf)) == 0) {
             if (strcmp(type_buf, "text") == 0) {
                 a.cfg.type = ASSET_TEXT;
-            } else if (strcmp(type_buf, "image") == 0) {
+            } else if (strcmp(type_buf, "image") == 0) { } else if (strcmp(type_buf, "glyph") == 0) { a.cfg.type = ASSET_GLYPH;
                 a.cfg.type = ASSET_IMAGE;
             } else {
                 a.cfg.type = ASSET_BAR;
@@ -793,6 +812,10 @@ static void parse_assets_array(const char *json)
         if (json_get_bool_range(obj_start, obj_end, "rounded_outline", &v) == 0) a.cfg.rounded_outline = v;
         json_get_string_range(obj_start, obj_end, "label", a.cfg.label, sizeof(a.cfg.label));
         json_get_string_range(obj_start, obj_end, "image_path", a.cfg.image_path, sizeof(a.cfg.image_path));
+        if (json_get_int_range(obj_start, obj_end, "glyph_index", &v) == 0) a.cfg.glyph_index = v;
+        if (json_get_int_range(obj_start, obj_end, "glyph_width", &v) == 0) a.cfg.glyph_width = v;
+        if (json_get_int_range(obj_start, obj_end, "glyph_height", &v) == 0) a.cfg.glyph_height = v;
+        if (json_get_int_range(obj_start, obj_end, "glyph_cols", &v) == 0) a.cfg.glyph_cols = v;
         char orient_buf[16];
         if (json_get_string_range(obj_start, obj_end, "orientation", orient_buf, sizeof(orient_buf)) == 0) {
             a.cfg.orientation = parse_orientation_string(orient_buf, ORIENTATION_RIGHT);
@@ -998,7 +1021,7 @@ static void parse_udp_asset_updates(const char *buf)
             asset_type_t new_type = asset->cfg.type;
             if (strcmp(type_buf, "text") == 0) {
                 new_type = ASSET_TEXT;
-            } else if (strcmp(type_buf, "image") == 0) {
+            } else if (strcmp(type_buf, "image") == 0) { } else if (strcmp(type_buf, "glyph") == 0) { new_type = ASSET_GLYPH;
                 new_type = ASSET_IMAGE;
             } else {
                 new_type = ASSET_BAR;
@@ -1059,6 +1082,10 @@ static void parse_udp_asset_updates(const char *buf)
             text_change = 1;
         }
         if (json_get_string_range(obj_start, obj_end, "image_path", asset->cfg.image_path, sizeof(asset->cfg.image_path)) == 0) {
+        if (json_get_int_range(obj_start, obj_end, "glyph_index", &v) == 0) asset->cfg.glyph_index = v;
+        if (json_get_int_range(obj_start, obj_end, "glyph_width", &v) == 0) asset->cfg.glyph_width = v;
+        if (json_get_int_range(obj_start, obj_end, "glyph_height", &v) == 0) asset->cfg.glyph_height = v;
+        if (json_get_int_range(obj_start, obj_end, "glyph_cols", &v) == 0) asset->cfg.glyph_cols = v;
             recreate = asset->cfg.type == ASSET_IMAGE ? 1 : recreate;
             asset->cfg.image_path_resolved[0] = '\0';
         }
@@ -1441,8 +1468,6 @@ void init_lvgl(void)
 #endif
 #if LV_USE_LODEPNG
     lv_lodepng_init();
-#else
-    lv_lodepng_opt_init();
 #endif
 
     size_t buf_size = (size_t)osd_width * BUF_ROWS * sizeof(lv_color32_t);
@@ -1563,6 +1588,94 @@ static lv_obj_t *create_image_asset(asset_t *asset)
     return img;
 }
 
+// Atlas functions inserted here
+static lv_image_decoder_dsc_t *get_cached_atlas(const char *path)
+{
+    for (int i = 0; i < MAX_ATLASES; i++) {
+        if (atlas_cache[i].valid && strcmp(atlas_cache[i].path, path) == 0) {
+            return &atlas_cache[i].dsc;
+        }
+    }
+    int slot = -1;
+    for (int i = 0; i < MAX_ATLASES; i++) {
+        if (!atlas_cache[i].valid) {
+            slot = i;
+            break;
+        }
+    }
+    if (slot < 0) return NULL;
+
+    lv_image_decoder_args_t args = {0};
+    atlas_cache[slot].dsc.src_type = LV_IMAGE_SRC_FILE;
+    atlas_cache[slot].dsc.src = path;
+
+    lv_result_t res = lv_image_decoder_open(&atlas_cache[slot].dsc, path, &args);
+    if (res != LV_RESULT_OK) {
+        fprintf(stderr, "Failed to open atlas: %s\n", path);
+        return NULL;
+    }
+    strncpy(atlas_cache[slot].path, path, sizeof(atlas_cache[slot].path) - 1);
+    atlas_cache[slot].valid = 1;
+    return &atlas_cache[slot].dsc;
+}
+
+static lv_obj_t *create_glyph_asset(asset_t *asset)
+{
+    if (!asset || asset->cfg.image_path[0] == '\0') return NULL;
+    if (asset->cfg.image_path_resolved[0] == '\0') {
+        const char *src = asset->cfg.image_path;
+        if (src[0] != '\0' && src[1] == ':' &&
+            (toupper((unsigned char)src[0]) == LV_FS_DEFAULT_DRIVER_LETTER ||
+             toupper((unsigned char)src[0]) == LV_FS_STDIO_LETTER)) {
+            src += 2;
+        }
+        strncpy(asset->cfg.image_path_resolved, src, sizeof(asset->cfg.image_path_resolved) - 1);
+        asset->cfg.image_path_resolved[sizeof(asset->cfg.image_path_resolved) - 1] = '\0';
+    }
+
+    lv_image_decoder_dsc_t *atlas = get_cached_atlas(asset->cfg.image_path_resolved);
+    if (!atlas || !atlas->decoded) return NULL;
+
+    const lv_draw_buf_t *decoded = atlas->decoded;
+    uint32_t atlas_w = decoded->header.w;
+    uint32_t atlas_h = decoded->header.h;
+    uint32_t stride = decoded->header.stride;
+
+    int cols = asset->cfg.glyph_cols > 0 ? asset->cfg.glyph_cols : 16;
+    int gw = asset->cfg.glyph_width;
+    int gh = asset->cfg.glyph_height;
+    if (gw <= 0) gw = atlas_w / cols;
+    if (gh <= 0) gh = gw;
+
+    int idx = asset->cfg.glyph_index;
+    if (idx < 0) idx = 0;
+    int tile_x = (idx % cols) * gw;
+    int tile_y = (idx / cols) * gh;
+    if (tile_x >= (int)atlas_w) tile_x = 0;
+    if (tile_y >= (int)atlas_h) tile_y = 0;
+
+    lv_image_dsc_t *dsc = &asset->glyph_dsc;
+    memset(dsc, 0, sizeof(lv_image_dsc_t));
+    dsc->header.cf = decoded->header.cf;
+    dsc->header.w = gw;
+    dsc->header.h = gh;
+    dsc->header.stride = stride;
+
+    uint32_t px_size = lv_color_format_get_bpp(decoded->header.cf) / 8;
+    dsc->data = decoded->data + (tile_y * stride) + (tile_x * px_size);
+    dsc->data_size = stride * gh;
+
+    lv_obj_t *img = lv_image_create(lv_scr_act());
+    lv_image_set_src(img, dsc);
+    lv_obj_set_pos(img, to_canvas_x(asset->cfg.x), to_canvas_y(asset->cfg.y));
+    if (asset->cfg.width > 0 || asset->cfg.height > 0) {
+        int target_w = asset->cfg.width > 0 ? asset->cfg.width : gw;
+        int target_h = asset->cfg.height > 0 ? asset->cfg.height : gh;
+        lv_obj_set_size(img, target_w, target_h);
+    }
+    lv_obj_move_foreground(img);
+    return img;
+}
 static void create_asset_visual(asset_t *asset)
 {
     if (!asset || !asset->cfg.enabled) return;
@@ -1577,6 +1690,9 @@ static void create_asset_visual(asset_t *asset)
             break;
         case ASSET_IMAGE:
             asset->obj = create_image_asset(asset);
+            break;
+        case ASSET_GLYPH:
+            asset->obj = create_glyph_asset(asset);
             break;
         default:
             asset->obj = create_bar(asset);
@@ -1647,6 +1763,26 @@ static void update_assets_from_udp(void)
         int pct = clamp_int((int)(pct_f * 100.0f), 0, 100);
 
         switch (cfg->type) {
+            case ASSET_GLYPH:
+                {
+                    int raw_val = (int)v;
+                    if (assets[i].obj && assets[i].cfg.glyph_index != raw_val) {
+                        assets[i].cfg.glyph_index = raw_val;
+                        lv_image_decoder_dsc_t *atlas = get_cached_atlas(assets[i].cfg.image_path_resolved);
+                        if (atlas && atlas->decoded) {
+                            int cols = assets[i].cfg.glyph_cols > 0 ? assets[i].cfg.glyph_cols : 16;
+                            int gw = assets[i].glyph_dsc.header.w;
+                            int gh = assets[i].glyph_dsc.header.h;
+                            int stride = assets[i].glyph_dsc.header.stride;
+                            int tile_x = (raw_val % cols) * gw;
+                            int tile_y = (raw_val / cols) * gh;
+                            uint32_t px_size = lv_color_format_get_bpp(atlas->decoded->header.cf) / 8;
+                            assets[i].glyph_dsc.data = atlas->decoded->data + (tile_y * stride) + (tile_x * px_size);
+                            lv_obj_invalidate(assets[i].obj);
+                        }
+                    }
+                }
+                break;
             case ASSET_BAR:
                 if (assets[i].obj && assets[i].last_pct != pct) {
                     lv_bar_set_value(assets[i].obj, pct, LV_ANIM_OFF);
