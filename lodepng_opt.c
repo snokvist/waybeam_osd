@@ -2350,10 +2350,12 @@ static void uivector_cleanup(void * p)
 /*returns 1 if success, 0 if failure ==> nothing done*/
 static unsigned uivector_resize(uivector * p, size_t size)
 {
+    if(size * sizeof(unsigned) > p->allocsize) printf("DEBUG: uivector_resize reallocating! size=%zu allocsize=%zu ptr=%p\n", size, p->allocsize, p->data);
     size_t allocsize = size * sizeof(unsigned);
     if(allocsize > p->allocsize) {
         size_t newsize = allocsize + (p->allocsize >> 1u);
         void * data = lodepng_realloc(p->data, newsize);
+        if(!data) printf("DEBUG: uivector realloc failed for size %zu\n", newsize);
         if(data) {
             p->allocsize = newsize;
             p->data = (unsigned *)data;
@@ -2396,6 +2398,7 @@ static unsigned ucvector_reserve(ucvector * p, size_t size)
     if(size > p->allocsize) {
         size_t newsize = size + (p->allocsize >> 1u);
         void * data = lodepng_realloc(p->data, newsize);
+        if(!data) printf("DEBUG: uivector realloc failed for size %zu\n", newsize);
         if(data) {
             p->allocsize = newsize;
             p->data = (unsigned char *)data;
