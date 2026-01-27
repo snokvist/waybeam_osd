@@ -1399,6 +1399,10 @@ int mi_region_init(void)
 {
     MI_S32 ret = MI_RGN_OK;
     fprintf(stderr, "MI_RGN_Init...\n");
+    fflush(stderr);
+    fprintf(stderr, "DEBUG: g_stPaletteTable addr=%p size=%zu\n", &g_stPaletteTable, sizeof(g_stPaletteTable));
+    fprintf(stderr, "DEBUG: assets size=%zu\n", sizeof(assets));
+    fflush(stderr);
     ret = MI_RGN_Init(&g_stPaletteTable);
     if (ret != MI_RGN_OK) {
         fprintf(stderr, "MI_RGN_Init failed: %d\n", ret);
