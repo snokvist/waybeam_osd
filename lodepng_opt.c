@@ -2414,7 +2414,6 @@ static unsigned ucvector_resize(ucvector * p, size_t size)
 static ucvector ucvector_init(unsigned char * buffer, size_t size)
 {
     ucvector v;
-                printf("DEBUG: Optimized decode: expected=%zu, allocated=%zu\n", expected_size, outsize);
     v.data = buffer;
     v.allocsize = v.size = size;
     return v;
