@@ -15,6 +15,16 @@
 #include <time.h>
 #include <limits.h>
 #include <stdbool.h>
+#if defined(__has_include)
+#if __has_include(<png.h>)
+#include <png.h>
+#define HAVE_LIBPNG 1
+#else
+#define HAVE_LIBPNG 0
+#endif
+#else
+#define HAVE_LIBPNG 0
+#endif
 #include "lvgl/src/libs/lodepng/lodepng.h"
 
 #include "lvgl/lvgl.h"
@@ -523,9 +533,43 @@ static glyph_atlas_t *glyph_atlas_alloc(const char *path)
     return NULL;
 }
 
+#if HAVE_LIBPNG
+static int glyph_atlas_load_info(glyph_atlas_t *atlas)
+{
+    if (!atlas || atlas->path[0] == '\0') return -1;
+
+    png_image image;
+    lv_memzero(&image, sizeof(image));
+    image.version = PNG_IMAGE_VERSION;
+
+    if (!png_image_begin_read_from_file(&image, atlas->path)) {
+        fprintf(stderr, "Failed to read glyph atlas header: %s\n", atlas->path);
+        return -1;
+    }
+
+    atlas->width = image.width;
+    atlas->height = image.height;
+    png_image_free(&image);
+
+    if (atlas->width == 0 || atlas->height == 0) return -1;
+    if (atlas->width % 16 != 0) return -1;
+
+    atlas->glyph_w = atlas->width / 16;
+    atlas->pages = 1;
+    atlas->glyph_h = atlas->height / 16;
+
+    return 0;
+}
+#endif
+
 static int glyph_atlas_update_layout(glyph_atlas_t *atlas, int glyph_id)
 {
     if (!atlas) return -1;
+#if HAVE_LIBPNG
+    if (atlas->width == 0 || atlas->height == 0) {
+        if (glyph_atlas_load_info(atlas) != 0) return -1;
+    }
+#else
     if (atlas->image_data == NULL) {
         unsigned w = 0;
         unsigned h = 0;
@@ -540,6 +584,7 @@ static int glyph_atlas_update_layout(glyph_atlas_t *atlas, int glyph_id)
         atlas->width = w;
         atlas->height = h;
     }
+#endif
 
     int pages = (glyph_id / 256) + 1;
     if (pages < 1) pages = 1;
@@ -572,8 +617,53 @@ static int glyph_atlas_decode_glyph(glyph_atlas_t *atlas, int glyph_id, glyph_ca
         return -1;
     }
 
+    uint8_t *glyph_data = NULL;
+
+#if HAVE_LIBPNG
+    FILE *fp = fopen(atlas->path, "rb");
+    if (!fp) return -1;
+
+    png_structp png_ptr = png_create_read_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
+    if (!png_ptr) {
+        fclose(fp);
+        return -1;
+    }
+
+    png_infop info_ptr = png_create_info_struct(png_ptr);
+    if (!info_ptr) {
+        png_destroy_read_struct(&png_ptr, NULL, NULL);
+        fclose(fp);
+        return -1;
+    }
+
+    if (setjmp(png_jmpbuf(png_ptr))) {
+        png_destroy_read_struct(&png_ptr, &info_ptr, NULL);
+        fclose(fp);
+        return -1;
+    }
+
+    png_init_io(png_ptr, fp);
+    png_read_info(png_ptr, info_ptr);
+
+    png_set_expand(png_ptr);
+    png_set_strip_16(png_ptr);
+    png_set_gray_to_rgb(png_ptr);
+    if (!(png_get_color_type(png_ptr, info_ptr) & PNG_COLOR_MASK_ALPHA)) {
+        png_set_filler(png_ptr, 0xFF, PNG_FILLER_AFTER);
+    }
+    png_set_bgr(png_ptr);
+    png_read_update_info(png_ptr, info_ptr);
+
+    uint32_t row_bytes = png_get_rowbytes(png_ptr, info_ptr);
+    uint8_t *row = lv_malloc(row_bytes);
+    if (!row) {
+        png_destroy_read_struct(&png_ptr, &info_ptr, NULL);
+        fclose(fp);
+        return -1;
+    }
+#else
     uint32_t glyph_size = glyph_w * glyph_h * 4;
-    uint8_t *glyph_data = lv_malloc(glyph_size);
+    glyph_data = lv_malloc(glyph_size);
     if (!glyph_data) {
         return -1;
     }
@@ -584,6 +674,34 @@ static int glyph_atlas_decode_glyph(glyph_atlas_t *atlas, int glyph_id, glyph_ca
         uint8_t *dst = glyph_data + y * glyph_w * 4;
         memcpy(dst, atlas->image_data + src_offset, glyph_w * 4);
     }
+#endif
+
+#if HAVE_LIBPNG
+    uint32_t glyph_size = glyph_w * glyph_h * 4;
+    glyph_data = lv_malloc(glyph_size);
+    if (!glyph_data) {
+        lv_free(row);
+        png_destroy_read_struct(&png_ptr, &info_ptr, NULL);
+        fclose(fp);
+        return -1;
+    }
+
+    uint32_t row_start = region_y;
+    uint32_t row_end = region_y + glyph_h;
+    for (uint32_t y = 0; y < atlas->height; y++) {
+        png_read_row(png_ptr, row, NULL);
+        if (y >= row_start && y < row_end) {
+            uint32_t dst_row = y - row_start;
+            uint8_t *dst = glyph_data + dst_row * glyph_w * 4;
+            memcpy(dst, row + region_x * 4, glyph_w * 4);
+        }
+    }
+
+    lv_free(row);
+    png_read_end(png_ptr, info_ptr);
+    png_destroy_read_struct(&png_ptr, &info_ptr, NULL);
+    fclose(fp);
+#endif
 
     entry->glyph_id = glyph_id;
     entry->data = glyph_data;
