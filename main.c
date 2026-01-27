@@ -15,6 +15,7 @@
 #include <time.h>
 #include <limits.h>
 #include <stdbool.h>
+#include <png.h>
 
 #include "lvgl/lvgl.h"
 #include "lvgl/src/draw/lv_draw_private.h"
@@ -38,8 +39,8 @@ static lv_color32_t *buf2 = NULL;
 void lv_fs_stdio_init(void);
 #endif
 
-#if LV_USE_LODEPNG
-void lv_lodepng_init(void);
+#if LV_USE_LIBPNG
+void lv_libpng_init(void);
 #endif
 
 typedef struct {
@@ -88,7 +89,7 @@ typedef struct {
     asset_orientation_t orientation;
     char image_path[256];
     char image_path_resolved[260];
-    int image_size_override;
+    int image_atlas;
 } asset_cfg_t;
 
 typedef struct {
@@ -97,6 +98,7 @@ typedef struct {
     lv_obj_t *obj;
     lv_obj_t *label_obj;
     int last_pct;
+    int last_glyph_id;
     char last_label_text[1024];
 } asset_t;
 
@@ -138,6 +140,26 @@ static MI_RGN_ChnPortParam_t stRgnChnAttr;
 static MI_RGN_CanvasInfo_t g_cached_canvas_info;
 static int g_canvas_info_valid = 0;
 static int g_canvas_dirty = 0;
+
+typedef struct {
+    int glyph_id;
+    uint32_t last_used;
+    lv_image_dsc_t dsc;
+    uint8_t *data;
+} glyph_cache_entry_t;
+
+typedef struct {
+    char path[260];
+    uint32_t width;
+    uint32_t height;
+    uint32_t glyph_w;
+    uint32_t glyph_h;
+    int pages;
+    uint32_t use_counter;
+    glyph_cache_entry_t entries[128];
+} glyph_atlas_t;
+
+static glyph_atlas_t glyph_atlases[4];
 
 // UI
 static lv_obj_t *stats_label = NULL;
@@ -404,12 +426,269 @@ static void destroy_asset_visual(asset_t *asset);
 static void create_asset_visual(asset_t *asset);
 static void maybe_attach_asset_label(asset_t *asset);
 
+static void resolve_image_path(asset_cfg_t *cfg)
+{
+    if (!cfg) return;
+    cfg->image_atlas = 0;
+    if (cfg->image_path[0] == '\0') {
+        cfg->image_path_resolved[0] = '\0';
+        return;
+    }
+
+    const char *src = cfg->image_path;
+    if (src[0] != '\0' && src[1] == ':' &&
+        (toupper((unsigned char)src[0]) == LV_FS_DEFAULT_DRIVER_LETTER ||
+         toupper((unsigned char)src[0]) == LV_FS_STDIO_LETTER)) {
+        src += 2;
+    }
+
+    char path_buf[sizeof(cfg->image_path_resolved)];
+    strncpy(path_buf, src, sizeof(path_buf) - 1);
+    path_buf[sizeof(path_buf) - 1] = '\0';
+
+    char *hash = strchr(path_buf, '#');
+    if (hash) {
+        if (strcmp(hash + 1, "atlas") == 0 || strcmp(hash + 1, "glyphs") == 0) {
+            cfg->image_atlas = 1;
+        }
+        *hash = '\0';
+    }
+
+    strncpy(cfg->image_path_resolved, path_buf, sizeof(cfg->image_path_resolved) - 1);
+    cfg->image_path_resolved[sizeof(cfg->image_path_resolved) - 1] = '\0';
+}
+
 static asset_t *find_asset_by_id(int id)
 {
     for (int i = 0; i < asset_count; i++) {
         if (assets[i].cfg.id == id) return &assets[i];
     }
     return NULL;
+}
+
+static void glyph_cache_clear_entry(glyph_cache_entry_t *entry)
+{
+    if (!entry) return;
+    if (entry->data) {
+        lv_free(entry->data);
+        entry->data = NULL;
+    }
+    memset(entry, 0, sizeof(*entry));
+    entry->glyph_id = -1;
+}
+
+static void glyph_cache_reset(glyph_atlas_t *atlas)
+{
+    if (!atlas) return;
+    for (size_t i = 0; i < sizeof(atlas->entries) / sizeof(atlas->entries[0]); i++) {
+        glyph_cache_clear_entry(&atlas->entries[i]);
+    }
+    atlas->use_counter = 1;
+}
+
+static void glyph_cache_clear_all(void)
+{
+    for (size_t i = 0; i < sizeof(glyph_atlases) / sizeof(glyph_atlases[0]); i++) {
+        if (glyph_atlases[i].path[0] == '\0') continue;
+        glyph_cache_reset(&glyph_atlases[i]);
+        glyph_atlases[i].path[0] = '\0';
+    }
+}
+
+static glyph_atlas_t *glyph_atlas_find(const char *path)
+{
+    if (!path || path[0] == '\0') return NULL;
+    for (size_t i = 0; i < sizeof(glyph_atlases) / sizeof(glyph_atlases[0]); i++) {
+        if (strcmp(glyph_atlases[i].path, path) == 0) return &glyph_atlases[i];
+    }
+    return NULL;
+}
+
+static glyph_atlas_t *glyph_atlas_alloc(const char *path)
+{
+    for (size_t i = 0; i < sizeof(glyph_atlases) / sizeof(glyph_atlases[0]); i++) {
+        if (glyph_atlases[i].path[0] == '\0') {
+            memset(&glyph_atlases[i], 0, sizeof(glyph_atlases[i]));
+            strncpy(glyph_atlases[i].path, path, sizeof(glyph_atlases[i].path) - 1);
+            glyph_atlases[i].path[sizeof(glyph_atlases[i].path) - 1] = '\0';
+            glyph_cache_reset(&glyph_atlases[i]);
+            return &glyph_atlases[i];
+        }
+    }
+    return NULL;
+}
+
+static int glyph_atlas_load_info(glyph_atlas_t *atlas)
+{
+    if (!atlas || atlas->path[0] == '\0') return -1;
+
+    png_image image;
+    lv_memzero(&image, sizeof(image));
+    image.version = PNG_IMAGE_VERSION;
+
+    if (!png_image_begin_read_from_file(&image, atlas->path)) {
+        fprintf(stderr, "Failed to read glyph atlas header: %s\n", atlas->path);
+        return -1;
+    }
+
+    atlas->width = image.width;
+    atlas->height = image.height;
+    png_image_free(&image);
+
+    if (atlas->width == 0 || atlas->height == 0) return -1;
+    if (atlas->width % 16 != 0) return -1;
+
+    atlas->glyph_w = atlas->width / 16;
+    atlas->pages = 1;
+    atlas->glyph_h = atlas->height / 16;
+
+    return 0;
+}
+
+static int glyph_atlas_update_layout(glyph_atlas_t *atlas, int glyph_id)
+{
+    if (!atlas) return -1;
+    if (atlas->width == 0 || atlas->height == 0) {
+        if (glyph_atlas_load_info(atlas) != 0) return -1;
+    }
+
+    int pages = (glyph_id / 256) + 1;
+    if (pages < 1) pages = 1;
+    if (atlas->height % (16U * (uint32_t)pages) != 0) {
+        pages = 1;
+    }
+    atlas->pages = pages;
+    atlas->glyph_w = atlas->width / 16;
+    atlas->glyph_h = atlas->height / (16 * (uint32_t)pages);
+    if (atlas->glyph_w == 0 || atlas->glyph_h == 0) return -1;
+    return 0;
+}
+
+static int glyph_atlas_decode_glyph(glyph_atlas_t *atlas, int glyph_id, glyph_cache_entry_t *entry)
+{
+    if (!atlas || !entry) return -1;
+    if (glyph_atlas_update_layout(atlas, glyph_id) != 0) return -1;
+
+    uint32_t glyph_w = atlas->glyph_w;
+    uint32_t glyph_h = atlas->glyph_h;
+    uint32_t page_h = glyph_h * 16;
+    int page = glyph_id / 256;
+    int index = glyph_id % 256;
+    uint32_t tile_x = (uint32_t)(index % 16);
+    uint32_t tile_y = (uint32_t)(index / 16);
+    uint32_t region_x = tile_x * glyph_w;
+    uint32_t region_y = (uint32_t)page * page_h + tile_y * glyph_h;
+
+    if (region_x + glyph_w > atlas->width || region_y + glyph_h > atlas->height) {
+        return -1;
+    }
+
+    FILE *fp = fopen(atlas->path, "rb");
+    if (!fp) return -1;
+
+    png_structp png_ptr = png_create_read_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
+    if (!png_ptr) {
+        fclose(fp);
+        return -1;
+    }
+
+    png_infop info_ptr = png_create_info_struct(png_ptr);
+    if (!info_ptr) {
+        png_destroy_read_struct(&png_ptr, NULL, NULL);
+        fclose(fp);
+        return -1;
+    }
+
+    if (setjmp(png_jmpbuf(png_ptr))) {
+        png_destroy_read_struct(&png_ptr, &info_ptr, NULL);
+        fclose(fp);
+        return -1;
+    }
+
+    png_init_io(png_ptr, fp);
+    png_read_info(png_ptr, info_ptr);
+
+    png_set_expand(png_ptr);
+    png_set_strip_16(png_ptr);
+    png_set_gray_to_rgb(png_ptr);
+    if (!(png_get_color_type(png_ptr, info_ptr) & PNG_COLOR_MASK_ALPHA)) {
+        png_set_filler(png_ptr, 0xFF, PNG_FILLER_AFTER);
+    }
+    png_set_bgr(png_ptr);
+    png_read_update_info(png_ptr, info_ptr);
+
+    uint32_t row_bytes = png_get_rowbytes(png_ptr, info_ptr);
+    uint8_t *row = lv_malloc(row_bytes);
+    if (!row) {
+        png_destroy_read_struct(&png_ptr, &info_ptr, NULL);
+        fclose(fp);
+        return -1;
+    }
+
+    uint32_t glyph_size = glyph_w * glyph_h * 4;
+    uint8_t *glyph_data = lv_malloc(glyph_size);
+    if (!glyph_data) {
+        lv_free(row);
+        png_destroy_read_struct(&png_ptr, &info_ptr, NULL);
+        fclose(fp);
+        return -1;
+    }
+
+    uint32_t row_start = region_y;
+    uint32_t row_end = region_y + glyph_h;
+    for (uint32_t y = 0; y < atlas->height; y++) {
+        png_read_row(png_ptr, row, NULL);
+        if (y >= row_start && y < row_end) {
+            uint32_t dst_row = y - row_start;
+            uint8_t *dst = glyph_data + dst_row * glyph_w * 4;
+            memcpy(dst, row + region_x * 4, glyph_w * 4);
+        }
+    }
+
+    lv_free(row);
+    png_read_end(png_ptr, info_ptr);
+    png_destroy_read_struct(&png_ptr, &info_ptr, NULL);
+    fclose(fp);
+
+    entry->glyph_id = glyph_id;
+    entry->data = glyph_data;
+    entry->dsc.header.w = (int32_t)glyph_w;
+    entry->dsc.header.h = (int32_t)glyph_h;
+    entry->dsc.header.cf = LV_COLOR_FORMAT_ARGB8888;
+    entry->dsc.data = glyph_data;
+    entry->dsc.data_size = glyph_size;
+
+    return 0;
+}
+
+static glyph_cache_entry_t *glyph_atlas_get_glyph(glyph_atlas_t *atlas, int glyph_id)
+{
+    if (!atlas) return NULL;
+    for (size_t i = 0; i < sizeof(atlas->entries) / sizeof(atlas->entries[0]); i++) {
+        if (atlas->entries[i].glyph_id == glyph_id && atlas->entries[i].data) {
+            atlas->entries[i].last_used = atlas->use_counter++;
+            return &atlas->entries[i];
+        }
+    }
+
+    glyph_cache_entry_t *target = &atlas->entries[0];
+    for (size_t i = 0; i < sizeof(atlas->entries) / sizeof(atlas->entries[0]); i++) {
+        if (!atlas->entries[i].data) {
+            target = &atlas->entries[i];
+            break;
+        }
+        if (atlas->entries[i].last_used < target->last_used) {
+            target = &atlas->entries[i];
+        }
+    }
+
+    if (target->data) glyph_cache_clear_entry(target);
+    if (glyph_atlas_decode_glyph(atlas, glyph_id, target) != 0) {
+        glyph_cache_clear_entry(target);
+        return NULL;
+    }
+    target->last_used = atlas->use_counter++;
+    return target;
 }
 
 static void init_asset_defaults(asset_t *a, int id)
@@ -439,8 +718,9 @@ static void init_asset_defaults(asset_t *a, int id)
     a->cfg.label[0] = '\0';
     a->cfg.image_path[0] = '\0';
     a->cfg.image_path_resolved[0] = '\0';
-    a->cfg.image_size_override = 0;
+    a->cfg.image_atlas = 0;
     a->last_pct = -1;
+    a->last_glyph_id = -1;
     a->last_label_text[0] = '\0';
 }
 
@@ -797,11 +1077,9 @@ static void parse_assets_array(const char *json)
         }
 
         if (a.cfg.type == ASSET_IMAGE) {
-            a.cfg.image_size_override = width_set || height_set;
-            if (!a.cfg.image_size_override) {
-                a.cfg.width = 0;
-                a.cfg.height = 0;
-            }
+            a.cfg.width = 0;
+            a.cfg.height = 0;
+            resolve_image_path(&a.cfg);
         }
 
         if (a.cfg.type == ASSET_IMAGE && a.cfg.image_path[0] == '\0') {
@@ -1004,10 +1282,10 @@ static void parse_udp_asset_updates(const char *buf)
             if (new_type != asset->cfg.type) {
                 asset->cfg.type = new_type;
                 recreate = 1;
-                if (new_type == ASSET_IMAGE && !asset->cfg.image_size_override) {
-                    asset->cfg.width = 0;
-                    asset->cfg.height = 0;
-                }
+            if (new_type == ASSET_IMAGE) {
+                asset->cfg.width = 0;
+                asset->cfg.height = 0;
+            }
             }
         }
 
@@ -1059,6 +1337,7 @@ static void parse_udp_asset_updates(const char *buf)
         if (json_get_string_range(obj_start, obj_end, "image_path", asset->cfg.image_path, sizeof(asset->cfg.image_path)) == 0) {
             recreate = asset->cfg.type == ASSET_IMAGE ? 1 : recreate;
             asset->cfg.image_path_resolved[0] = '\0';
+            asset->cfg.image_atlas = 0;
         }
 
         char orient_buf[16];
@@ -1125,7 +1404,7 @@ static void parse_udp_asset_updates(const char *buf)
                 asset->cfg.width = v;
                 relayout = 1;
                 recreate = asset->cfg.type == ASSET_TEXT ? 1 : recreate;
-                if (asset->cfg.type == ASSET_IMAGE) asset->cfg.image_size_override = 1;
+                if (asset->cfg.type == ASSET_IMAGE) asset->cfg.width = 0;
             }
         }
         if (json_get_int_range(obj_start, obj_end, "height", &v) == 0) {
@@ -1133,7 +1412,7 @@ static void parse_udp_asset_updates(const char *buf)
                 asset->cfg.height = v;
                 relayout = 1;
                 recreate = asset->cfg.type == ASSET_TEXT ? 1 : recreate;
-                if (asset->cfg.type == ASSET_IMAGE) asset->cfg.image_size_override = 1;
+                if (asset->cfg.type == ASSET_IMAGE) asset->cfg.height = 0;
             }
         }
         if (json_get_float_range(obj_start, obj_end, "min", &fv) == 0) {
@@ -1171,11 +1450,6 @@ static void parse_udp_asset_updates(const char *buf)
                     lv_obj_set_size(asset->obj, width, height);
                     lv_obj_set_pos(asset->obj, asset->cfg.x, asset->cfg.y);
                 } else if (asset->cfg.type == ASSET_IMAGE) {
-                    if (asset->cfg.width > 0 || asset->cfg.height > 0) {
-                        int width = asset->cfg.width > 0 ? asset->cfg.width : LV_SIZE_CONTENT;
-                        int height = asset->cfg.height > 0 ? asset->cfg.height : LV_SIZE_CONTENT;
-                        lv_obj_set_size(asset->obj, width, height);
-                    }
                     lv_obj_set_pos(asset->obj, asset->cfg.x, asset->cfg.y);
                 } else {
                     layout_bar_asset(asset);
@@ -1437,8 +1711,8 @@ void init_lvgl(void)
 #if LV_USE_FS_STDIO
     lv_fs_stdio_init();
 #endif
-#if LV_USE_LODEPNG
-    lv_lodepng_init();
+#if LV_USE_LIBPNG
+    lv_libpng_init();
 #endif
 
     size_t buf_size = (size_t)osd_width * BUF_ROWS * sizeof(lv_color32_t);
@@ -1498,6 +1772,7 @@ static void destroy_asset_visual(asset_t *asset)
     asset->label_obj = NULL;
     asset->obj = NULL;
     asset->last_pct = -1;
+    asset->last_glyph_id = -1;
     asset->last_label_text[0] = '\0';
 }
 
@@ -1529,15 +1804,7 @@ static lv_obj_t *create_image_asset(asset_t *asset)
         return NULL;
     }
     if (asset->cfg.image_path_resolved[0] == '\0') {
-        const char *src = asset->cfg.image_path;
-        if (src[0] != '\0' && src[1] == ':' &&
-            (toupper((unsigned char)src[0]) == LV_FS_DEFAULT_DRIVER_LETTER ||
-             toupper((unsigned char)src[0]) == LV_FS_STDIO_LETTER)) {
-            src += 2;
-        }
-        strncpy(asset->cfg.image_path_resolved, src,
-                sizeof(asset->cfg.image_path_resolved) - 1);
-        asset->cfg.image_path_resolved[sizeof(asset->cfg.image_path_resolved) - 1] = '\0';
+        resolve_image_path(&asset->cfg);
     }
     lv_fs_file_t file;
     if (lv_fs_open(&file, asset->cfg.image_path_resolved, LV_FS_MODE_RD) != LV_FS_RES_OK) {
@@ -1547,13 +1814,10 @@ static lv_obj_t *create_image_asset(asset_t *asset)
     lv_fs_close(&file);
 
     lv_obj_t *img = lv_image_create(lv_scr_act());
-    lv_image_set_src(img, asset->cfg.image_path_resolved);
-    lv_obj_set_pos(img, to_canvas_x(asset->cfg.x), to_canvas_y(asset->cfg.y));
-    if (asset->cfg.image_size_override && (asset->cfg.width > 0 || asset->cfg.height > 0)) {
-        int width = asset->cfg.width > 0 ? asset->cfg.width : LV_SIZE_CONTENT;
-        int height = asset->cfg.height > 0 ? asset->cfg.height : LV_SIZE_CONTENT;
-        lv_obj_set_size(img, width, height);
+    if (!asset->cfg.image_atlas) {
+        lv_image_set_src(img, asset->cfg.image_path_resolved);
     }
+    lv_obj_set_pos(img, to_canvas_x(asset->cfg.x), to_canvas_y(asset->cfg.y));
     lv_obj_move_foreground(img);
     lv_obj_update_layout(img);
     return img;
@@ -1649,6 +1913,43 @@ static void update_assets_from_udp(void)
                     assets[i].last_pct = pct;
                 }
                 break;
+            case ASSET_IMAGE: {
+                if (!assets[i].obj) break;
+                if (!cfg->image_atlas) break;
+
+                int glyph_id = (int)(udp_values[clamp_int(cfg->value_index, 0, MAX_ASSETS - 1)] + 0.5);
+                if (glyph_id < 0) glyph_id = 0;
+
+                glyph_atlas_t *atlas = glyph_atlas_find(cfg->image_path_resolved);
+                if (!atlas) {
+                    atlas = glyph_atlas_alloc(cfg->image_path_resolved);
+                }
+                if (!atlas) break;
+
+                if (glyph_atlas_update_layout(atlas, glyph_id) != 0) break;
+
+                int x = to_canvas_x(cfg->x);
+                int y = to_canvas_y(cfg->y);
+                int glyph_w = (int)atlas->glyph_w;
+                int glyph_h = (int)atlas->glyph_h;
+                int out_of_bounds = (x >= osd_width) || (y >= osd_height) ||
+                                    (x + glyph_w <= 0) || (y + glyph_h <= 0);
+                if (out_of_bounds) {
+                    lv_obj_add_flag(assets[i].obj, LV_OBJ_FLAG_HIDDEN);
+                    break;
+                }
+
+                lv_obj_clear_flag(assets[i].obj, LV_OBJ_FLAG_HIDDEN);
+                if (assets[i].last_glyph_id != glyph_id) {
+                    glyph_cache_entry_t *glyph = glyph_atlas_get_glyph(atlas, glyph_id);
+                    if (glyph) {
+                        lv_image_set_src(assets[i].obj, &glyph->dsc);
+                        lv_obj_set_size(assets[i].obj, glyph_w, glyph_h);
+                        assets[i].last_glyph_id = glyph_id;
+                    }
+                }
+                break;
+            }
             case ASSET_TEXT: {
                 if (assets[i].obj) {
                     char text_buf[1024];
@@ -1722,6 +2023,7 @@ static void reload_config_runtime(void)
 static void cleanup_resources(void)
 {
     destroy_assets();
+    glyph_cache_clear_all();
 
     if (stats_timer) {
         lv_timer_del(stats_timer);

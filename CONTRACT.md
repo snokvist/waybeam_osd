@@ -23,6 +23,20 @@ Example:
 }
 ```
 
+Glyph atlas example (Betaflight-style):
+```json
+{
+  "values":[144,145,146,0,0,0,0,0],
+  "asset_updates":[
+    {"id":6,"type":"image","image_path":"/usr/share/fonts/solid.png#atlas","value_index":0,"x":200,"y":200}
+  ]
+}
+```
+Explanation:
+- `image_path` with `#atlas` enables glyph atlas mode (Betaflight layout: 16x16 tiles per page, pages stacked vertically).
+- `value_index` selects which entry in `values[]` supplies the glyph ID (here `values[0]`).
+- Updating `values[0]` over UDP swaps the glyph without changing the asset definition.
+
 Each on-screen asset binds to one numeric channel via `value_index`. Indices `0-7` read the UDP `values[i]`; indices `8-15` read the system value bank (temperature, CPU load, encoder FPS, encoder bitrate, and four reserved slots). For bar assets, `text_index` maps the descriptor to the combined text bank: `0-7` pull from UDP `texts[i]`, while `8-15` use the prefilled system descriptors. Otherwise the bar uses the optional static `label`. The stats overlay always lists the system numeric/text banks and, when `udp_stats` is enabled, also lists the UDP numeric/text banks on the same lines to keep the widget compact.
 
 ### Partial Update Examples
@@ -85,8 +99,8 @@ The UDP socket is **drained fully** on every poll cycle, meaning every packet in
     - `label` (string, optional, bars/text): static text descriptor. Used when no UDP text is present.
     - `orientation` (string): `"right"` (default) keeps the bar horizontal with the label to the right; `"left"` mirrors the layout with the label on the left and flips the fill so the bar grows from right-to-left. For `left`, the bar container anchors its right edge at `x` so left- and right-oriented bars can share the same coordinate and grow in opposite directions. Text assets also accept `"center"` to center both the box origin and text alignment on `x`.
     - `x`, `y` (int): position relative to the OSD top-left. For `orientation: "left"`, `x` represents the right edge of the bar’s rounded container.
-    - `width`, `height` (int): size in pixels. For text, enables wrapping; for image assets, setting either value forces an explicit size override instead of the native image dimensions.
-    - `image_path` (string, image only): required path to a local image asset. LVGL filesystem prefixes (for example, `"A:/path/to/icon.png"`) are accepted and stripped before loading.
+    - `width`, `height` (int): size in pixels. For text, enables wrapping. Images (including glyph atlases) always render at native PNG size and ignore resizing.
+    - `image_path` (string, image only): required path to a local image asset. LVGL filesystem prefixes (for example, `"A:/path/to/icon.png"`) are accepted and stripped before loading. Append `#atlas` (or `#glyphs`) to enable Betaflight-style glyph atlas rendering; glyph IDs are read from the `value_index` channel.
     - `min`, `max` (float): input range mapped to 0–100% for bars.
     - `bar_color` (int): RGB hex value as a number; used by bar styles.
     - `rounded_outline` (bool, bars/text): enables the outlined capsule look on bars or rounded backgrounds with padded text for text assets. Defaults to `false`.
