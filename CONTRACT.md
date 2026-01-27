@@ -36,7 +36,7 @@ Explanation:
 - `image_path` with `#atlas` enables glyph atlas mode (Betaflight layout: 16x16 tiles per page, pages stacked vertically).
 - `value_index` selects which entry in `values[]` supplies the glyph ID (here `values[0]`).
 - Updating `values[0]` over UDP swaps the glyph without changing the asset definition.
-- When libpng headers are available at build time, glyph decoding streams rows from disk to keep memory lower; otherwise the atlas is decoded with lodepng and cached in RAM.
+- Glyph decoding streams rows from disk to keep memory lower.
 
 Each on-screen asset binds to one numeric channel via `value_index`. Indices `0-7` read the UDP `values[i]`; indices `8-15` read the system value bank (temperature, CPU load, encoder FPS, encoder bitrate, and four reserved slots). For bar assets, `text_index` maps the descriptor to the combined text bank: `0-7` pull from UDP `texts[i]`, while `8-15` use the prefilled system descriptors. Otherwise the bar uses the optional static `label`. The stats overlay always lists the system numeric/text banks and, when `udp_stats` is enabled, also lists the UDP numeric/text banks on the same lines to keep the widget compact.
 

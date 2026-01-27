@@ -15,17 +15,7 @@
 #include <time.h>
 #include <limits.h>
 #include <stdbool.h>
-#if defined(__has_include)
-#if __has_include(<png.h>)
 #include <png.h>
-#define HAVE_LIBPNG 1
-#else
-#define HAVE_LIBPNG 0
-#endif
-#else
-#define HAVE_LIBPNG 0
-#endif
-#include "lvgl/src/libs/lodepng/lodepng.h"
 
 #include "lvgl/lvgl.h"
 #include "lvgl/src/draw/lv_draw_private.h"
@@ -49,8 +39,8 @@ static lv_color32_t *buf2 = NULL;
 void lv_fs_stdio_init(void);
 #endif
 
-#if LV_USE_LODEPNG
-void lv_lodepng_init(void);
+#if LV_USE_LIBPNG
+void lv_libpng_init(void);
 #endif
 
 typedef struct {
@@ -166,7 +156,6 @@ typedef struct {
     uint32_t glyph_h;
     int pages;
     uint32_t use_counter;
-    uint8_t *image_data;
     glyph_cache_entry_t entries[128];
 } glyph_atlas_t;
 
@@ -494,10 +483,6 @@ static void glyph_cache_reset(glyph_atlas_t *atlas)
     for (size_t i = 0; i < sizeof(atlas->entries) / sizeof(atlas->entries[0]); i++) {
         glyph_cache_clear_entry(&atlas->entries[i]);
     }
-    if (atlas->image_data) {
-        lv_free(atlas->image_data);
-        atlas->image_data = NULL;
-    }
     atlas->use_counter = 1;
 }
 
@@ -533,7 +518,6 @@ static glyph_atlas_t *glyph_atlas_alloc(const char *path)
     return NULL;
 }
 
-#if HAVE_LIBPNG
 static int glyph_atlas_load_info(glyph_atlas_t *atlas)
 {
     if (!atlas || atlas->path[0] == '\0') return -1;
@@ -560,31 +544,13 @@ static int glyph_atlas_load_info(glyph_atlas_t *atlas)
 
     return 0;
 }
-#endif
 
 static int glyph_atlas_update_layout(glyph_atlas_t *atlas, int glyph_id)
 {
     if (!atlas) return -1;
-#if HAVE_LIBPNG
     if (atlas->width == 0 || atlas->height == 0) {
         if (glyph_atlas_load_info(atlas) != 0) return -1;
     }
-#else
-    if (atlas->image_data == NULL) {
-        unsigned w = 0;
-        unsigned h = 0;
-        unsigned char *data = NULL;
-        unsigned err = lodepng_decode32_file(&data, &w, &h, atlas->path);
-        if (err != 0 || !data) {
-            if (data) lv_free(data);
-            fprintf(stderr, "Failed to decode glyph atlas: %s (%u)\n", atlas->path, err);
-            return -1;
-        }
-        atlas->image_data = data;
-        atlas->width = w;
-        atlas->height = h;
-    }
-#endif
 
     int pages = (glyph_id / 256) + 1;
     if (pages < 1) pages = 1;
@@ -619,7 +585,6 @@ static int glyph_atlas_decode_glyph(glyph_atlas_t *atlas, int glyph_id, glyph_ca
 
     uint8_t *glyph_data = NULL;
 
-#if HAVE_LIBPNG
     FILE *fp = fopen(atlas->path, "rb");
     if (!fp) return -1;
 
@@ -661,22 +626,7 @@ static int glyph_atlas_decode_glyph(glyph_atlas_t *atlas, int glyph_id, glyph_ca
         fclose(fp);
         return -1;
     }
-#else
-    uint32_t glyph_size = glyph_w * glyph_h * 4;
-    glyph_data = lv_malloc(glyph_size);
-    if (!glyph_data) {
-        return -1;
-    }
 
-    for (uint32_t y = 0; y < glyph_h; y++) {
-        uint32_t src_y = region_y + y;
-        uint32_t src_offset = (src_y * atlas->width + region_x) * 4;
-        uint8_t *dst = glyph_data + y * glyph_w * 4;
-        memcpy(dst, atlas->image_data + src_offset, glyph_w * 4);
-    }
-#endif
-
-#if HAVE_LIBPNG
     uint32_t glyph_size = glyph_w * glyph_h * 4;
     glyph_data = lv_malloc(glyph_size);
     if (!glyph_data) {
@@ -701,7 +651,6 @@ static int glyph_atlas_decode_glyph(glyph_atlas_t *atlas, int glyph_id, glyph_ca
     png_read_end(png_ptr, info_ptr);
     png_destroy_read_struct(&png_ptr, &info_ptr, NULL);
     fclose(fp);
-#endif
 
     entry->glyph_id = glyph_id;
     entry->data = glyph_data;
@@ -1764,8 +1713,8 @@ void init_lvgl(void)
 #if LV_USE_FS_STDIO
     lv_fs_stdio_init();
 #endif
-#if LV_USE_LODEPNG
-    lv_lodepng_init();
+#if LV_USE_LIBPNG
+    lv_libpng_init();
 #endif
 
     size_t buf_size = (size_t)osd_width * BUF_ROWS * sizeof(lv_color32_t);
