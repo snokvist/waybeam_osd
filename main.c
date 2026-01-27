@@ -1556,6 +1556,7 @@ static lv_obj_t *create_text_asset(asset_t *asset)
 
 static lv_obj_t *create_image_asset(asset_t *asset)
 {
+    printf("DEBUG: create_image_asset id=%d\n", asset->cfg.id);
     if (!asset) return NULL;
     if (asset->cfg.image_path[0] == '\0') {
         fprintf(stderr, "Image asset %d has no image_path\n", asset->cfg.id);
@@ -1589,6 +1590,7 @@ static lv_obj_t *create_image_asset(asset_t *asset)
     }
     lv_obj_move_foreground(img);
     lv_obj_update_layout(img);
+    printf("DEBUG: create_glyph_asset success. img=%p\n", img);
     return img;
 }
 
@@ -1625,6 +1627,7 @@ static lv_image_decoder_dsc_t *get_cached_atlas(const char *path)
 
 static lv_obj_t *create_glyph_asset(asset_t *asset)
 {
+    printf("DEBUG: create_glyph_asset id=%d path=%s\n", asset->cfg.id, asset->cfg.image_path);
     if (!asset || asset->cfg.image_path[0] == '\0') return NULL;
     if (asset->cfg.image_path_resolved[0] == '\0') {
         const char *src = asset->cfg.image_path;
@@ -1638,6 +1641,8 @@ static lv_obj_t *create_glyph_asset(asset_t *asset)
     }
 
     lv_image_decoder_dsc_t *atlas = get_cached_atlas(asset->cfg.image_path_resolved);
+    if(!atlas) printf("DEBUG: get_cached_atlas failed\n");
+    if(atlas && !atlas->decoded) printf("DEBUG: atlas->decoded is NULL\n");
     if (!atlas || !atlas->decoded) return NULL;
 
     const lv_draw_buf_t *decoded = atlas->decoded;
@@ -1678,6 +1683,7 @@ static lv_obj_t *create_glyph_asset(asset_t *asset)
         lv_obj_set_size(img, target_w, target_h);
     }
     lv_obj_move_foreground(img);
+    printf("DEBUG: create_glyph_asset success. img=%p\n", img);
     return img;
 }
 static void create_asset_visual(asset_t *asset)

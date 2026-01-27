@@ -1,3 +1,4 @@
+#include <stdio.h>
 #define LODEPNG_MALLOC lv_malloc
 #define LODEPNG_REALLOC lv_realloc
 #define LODEPNG_FREE lv_free
@@ -9959,6 +9960,7 @@ static lv_result_t decoder_info(lv_image_decoder_t * decoder, lv_image_decoder_d
  */
 static lv_result_t decoder_open(lv_image_decoder_t * decoder, lv_image_decoder_dsc_t * dsc)
 {
+    printf("DEBUG: decoder_open called for src_type=%d\n", dsc->src_type);
     LV_UNUSED(decoder);
     LV_PROFILER_DECODER_BEGIN_TAG("lv_lodepng_decoder_open");
 
@@ -9969,6 +9971,7 @@ static lv_result_t decoder_open(lv_image_decoder_t * decoder, lv_image_decoder_d
 
         /*Load the file*/
         unsigned error = lodepng_load_file((void *)&png_data, &png_data_size, fn);
+        if(error) printf("DEBUG: lodepng_load_file failed: %u\n", error); else printf("DEBUG: lodepng_load_file success size=%zu\n", png_data_size);
         if(error) {
             if(png_data != NULL) {
                 lv_free((void *)png_data);
@@ -9989,6 +9992,7 @@ static lv_result_t decoder_open(lv_image_decoder_t * decoder, lv_image_decoder_d
     }
 
     lv_draw_buf_t * decoded = decode_png_data(png_data, png_data_size);
+    if(!decoded) printf("DEBUG: decode_png_data failed\n"); else printf("DEBUG: decode_png_data success: %p, w=%u, h=%u, stride=%u, cf=%d\n", decoded, decoded->header.w, decoded->header.h, decoded->header.stride, decoded->header.cf);
 
     if(dsc->src_type == LV_IMAGE_SRC_FILE) lv_free((void *)png_data);
 
