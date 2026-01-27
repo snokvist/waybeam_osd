@@ -7919,12 +7919,28 @@ static void decodeGeneric(unsigned char ** out, unsigned * w, unsigned * h,
                 state->error = 83; /*alloc fail*/
             }
         }
-
-        if(!state->error) {
-            state->error = zlib_decompress(&scanlines, &scanlines_size, expected_size, idat, idatsize,
-                                           &state->decoder.zlibsettings);
         }
-    }
+        if(!state->error) {
+            if(state->info_png.interlace_method == 0 && *out) {
+                /* Optimized path: use pre-allocated buffer without realloc */
+                lv_draw_buf_t * decoded = (lv_draw_buf_t *)*out;
+                ucvector v;
+                v.data = decoded->data;
+                v.size = 0;
+                v.allocsize = outsize; /* Capacity passed from logic above */
+
+                /* Ensure capacity is sufficient to avoid realloc */
+                if(v.allocsize < expected_size) {
+                    state->error = 83; /* alloc fail - buffer too small */
+                } else {
+                    state->error = lodepng_zlib_decompressv(&v, idat, idatsize, &state->decoder.zlibsettings);
+                    scanlines = v.data;
+                    scanlines_size = v.size;
+                }
+            } else {
+                state->error = zlib_decompress(&scanlines, &scanlines_size, expected_size, idat, idatsize, &state->decoder.zlibsettings);
+            }
+        }
     if(!state->error && scanlines_size != expected_size) state->error = 91; /*decompressed size doesn't match prediction*/
     lodepng_free(idat);
 
@@ -7949,18 +7965,6 @@ static void decodeGeneric(unsigned char ** out, unsigned * w, unsigned * h,
             }
             else state->error = 83; /*alloc fail*/
             lodepng_free(scanlines);
-        }
-    }
-    else {
-        /* Error case */
-        if(state->info_png.interlace_method == 0 && *out) {
-             /* If we allocated decoded/scanlines but failed, *out is set (decoded),
-                and scanlines points to its data. lv_draw_buf_destroy will free it. */
-             lv_draw_buf_destroy((lv_draw_buf_t*)*out);
-             *out = NULL;
-        }
-        else {
-             lodepng_free(scanlines);
         }
     }
 }
