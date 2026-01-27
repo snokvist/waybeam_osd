@@ -2392,6 +2392,7 @@ typedef struct ucvector {
 /*returns 1 if success, 0 if failure ==> nothing done*/
 static unsigned ucvector_reserve(ucvector * p, size_t size)
 {
+    if (size > p->allocsize) printf("DEBUG: ucvector_reserve reallocating! size=%zu allocsize=%zu ptr=%p\n", size, p->allocsize, p->data);
     if(size > p->allocsize) {
         size_t newsize = size + (p->allocsize >> 1u);
         void * data = lodepng_realloc(p->data, newsize);
