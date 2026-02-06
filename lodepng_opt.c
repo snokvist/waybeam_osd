@@ -1,4 +1,3 @@
-#include <stdio.h>
 #define LODEPNG_MALLOC lv_malloc
 #define LODEPNG_REALLOC lv_realloc
 #define LODEPNG_FREE lv_free
@@ -2350,12 +2349,10 @@ static void uivector_cleanup(void * p)
 /*returns 1 if success, 0 if failure ==> nothing done*/
 static unsigned uivector_resize(uivector * p, size_t size)
 {
-    if(size * sizeof(unsigned) > p->allocsize) printf("DEBUG: uivector_resize reallocating! size=%zu allocsize=%zu ptr=%p\n", size, p->allocsize, p->data);
     size_t allocsize = size * sizeof(unsigned);
     if(allocsize > p->allocsize) {
         size_t newsize = allocsize + (p->allocsize >> 1u);
         void * data = lodepng_realloc(p->data, newsize);
-        if(!data) printf("DEBUG: uivector realloc failed for size %zu\n", newsize);
         if(data) {
             p->allocsize = newsize;
             p->data = (unsigned *)data;
@@ -2394,11 +2391,9 @@ typedef struct ucvector {
 /*returns 1 if success, 0 if failure ==> nothing done*/
 static unsigned ucvector_reserve(ucvector * p, size_t size)
 {
-    if (size > p->allocsize) printf("DEBUG: ucvector_reserve reallocating! size=%zu allocsize=%zu ptr=%p\n", size, p->allocsize, p->data);
     if(size > p->allocsize) {
         size_t newsize = size + (p->allocsize >> 1u);
         void * data = lodepng_realloc(p->data, newsize);
-        if(!data) printf("DEBUG: uivector realloc failed for size %zu\n", newsize);
         if(data) {
             p->allocsize = newsize;
             p->data = (unsigned char *)data;
@@ -7930,7 +7925,6 @@ static void decodeGeneric(unsigned char ** out, unsigned * w, unsigned * h,
                 /* Optimized path: use pre-allocated buffer without realloc */
                 lv_draw_buf_t * decoded = (lv_draw_buf_t *)*out;
                 ucvector v;
-                printf("DEBUG: Optimized decode: expected=%zu, allocated=%zu\n", expected_size, outsize);
                 v.data = decoded->data;
                 v.size = 0;
                 v.allocsize = outsize; /* Capacity passed from logic above */
@@ -7940,16 +7934,13 @@ static void decodeGeneric(unsigned char ** out, unsigned * w, unsigned * h,
                     state->error = 83; /* alloc fail - buffer too small */
                 } else {
                     state->error = lodepng_zlib_decompressv(&v, idat, idatsize, &state->decoder.zlibsettings);
-                    if(state->error) printf("DEBUG: lodepng_zlib_decompressv failed: %u\n", state->error);
                     scanlines = v.data;
                     scanlines_size = v.size;
                 }
             } else {
-                printf("DEBUG: Fallback decode path taken. Interlace=%d out=%p\n", state->info_png.interlace_method, *out);
                 state->error = zlib_decompress(&scanlines, &scanlines_size, expected_size, idat, idatsize, &state->decoder.zlibsettings);
             }
         }
-    if(!state->error && scanlines_size != expected_size) printf("DEBUG: Size mismatch: scanlines=%zu expected=%zu\n", scanlines_size, expected_size);
     if(!state->error && scanlines_size != expected_size) state->error = 91; /*decompressed size doesn't match prediction*/
     lodepng_free(idat);
 
@@ -9968,7 +9959,6 @@ static lv_result_t decoder_info(lv_image_decoder_t * decoder, lv_image_decoder_d
  */
 static lv_result_t decoder_open(lv_image_decoder_t * decoder, lv_image_decoder_dsc_t * dsc)
 {
-    printf("DEBUG: decoder_open called for src_type=%d\n", dsc->src_type);
     LV_UNUSED(decoder);
     LV_PROFILER_DECODER_BEGIN_TAG("lv_lodepng_decoder_open");
 
@@ -9979,7 +9969,6 @@ static lv_result_t decoder_open(lv_image_decoder_t * decoder, lv_image_decoder_d
 
         /*Load the file*/
         unsigned error = lodepng_load_file((void *)&png_data, &png_data_size, fn);
-        if(error) printf("DEBUG: lodepng_load_file failed: %u\n", error); else printf("DEBUG: lodepng_load_file success size=%zu\n", png_data_size);
         if(error) {
             if(png_data != NULL) {
                 lv_free((void *)png_data);
@@ -10000,7 +9989,6 @@ static lv_result_t decoder_open(lv_image_decoder_t * decoder, lv_image_decoder_d
     }
 
     lv_draw_buf_t * decoded = decode_png_data(png_data, png_data_size);
-    if(!decoded) printf("DEBUG: decode_png_data failed\n"); else printf("DEBUG: decode_png_data success: %p, w=%u, h=%u, stride=%u, cf=%d\n", decoded, decoded->header.w, decoded->header.h, decoded->header.stride, decoded->header.cf);
 
     if(dsc->src_type == LV_IMAGE_SRC_FILE) lv_free((void *)png_data);
 
@@ -10076,7 +10064,6 @@ static lv_draw_buf_t * decode_png_data(const void * png_data, size_t png_data_si
 
     /*Decode the image in ARGB8888 */
     unsigned error = lodepng_decode32((unsigned char **)&decoded, &png_width, &png_height, png_data, png_data_size);
-    if(error) printf("DEBUG: lodepng_decode32 error code: %u\n", error);
     if(error) {
         if(decoded != NULL)  lv_draw_buf_destroy(decoded);
         return NULL;
