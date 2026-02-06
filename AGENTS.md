@@ -19,6 +19,7 @@ These guidelines apply to the entire repository.
 ## Documentation
 - Keep `README.md`, `CONTRACT.md`, and sample configs in sync with code behavior when making functional changes.
 - Prefer concise examples that match the default build (bar and lottie assets only).
+- Access Sigmastar documentation here: https://wx.comake.online/doc/doc/SigmaStarDocs-Pudding-0120/
 
 ## PR / Final response
 - Summaries should mention user-visible behavior changes first, then refactors.
