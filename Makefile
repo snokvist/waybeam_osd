@@ -19,7 +19,7 @@ CFLAGS += -Wno-address-of-packed-member -D__SIGMASTAR__ -D__INFINITY6__ -D__INFI
 CFLAGS += -Os -ffunction-sections -fdata-sections -fno-unwind-tables -fno-asynchronous-unwind-tables
 LDFLAGS += --sysroot=$(SYSROOT) -Wl,--gc-sections -s -L$(SYSROOT)/usr/lib -L$(SYSROOT)/lib
 
-SRCS := main.c lodepng_opt.c
+SRCS := main.c
 OSD_SEND_SRC := osd_send.c
 
 OUTPUT_NAME := lvgltest

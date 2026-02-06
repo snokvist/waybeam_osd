@@ -34,7 +34,7 @@ extern "C" {
 #endif
 
 #include "lvgl/lvgl.h"
-// #if LV_USE_LODEPNG
+#if LV_USE_LODEPNG
 #include LV_STDDEF_INCLUDE /*for size_t*/
 LV_ATTRIBUTE_EXTERN_DATA extern const char * LODEPNG_VERSION_STRING;
 
@@ -1201,7 +1201,7 @@ TODO:
 [X] provide alternatives for C library functions not present on some platforms (memcpy, ...)
 */
 
-// #endif /*LV_USE_LODEPNG*/
+#endif /*LV_USE_LODEPNG*/
 
 #ifdef __cplusplus
 } /* extern "C" */
@@ -1837,7 +1837,6 @@ external method to handle such files and encode or decode in-memory
 10.1. decoder C++ example
 -------------------------
 
-// #include "lodepng.h"
 #include <iostream>
 
 int main(int argc, char *argv[]) {
@@ -1857,7 +1856,6 @@ int main(int argc, char *argv[]) {
 10.2. decoder C example
 -----------------------
 
-// #include "lodepng.h"
 
 int main(int argc, char *argv[]) {
   unsigned error;
@@ -2136,8 +2134,7 @@ The manual and changelog are in the header file "lodepng.h"
 Rename this file to lodepng.cpp to use it for C++, or to lodepng.c to use it for C.
 */
 
-// #include "lodepng.h"
-// #if LV_USE_LODEPNG
+#if LV_USE_LODEPNG
 #include "lvgl/src/core/lv_global.h"
 
 #define image_cache_draw_buf_handlers &(LV_GLOBAL_DEFAULT()->image_cache_draw_buf_handlers)
@@ -7896,77 +7893,26 @@ static void decodeGeneric(unsigned char ** out, unsigned * w, unsigned * h,
             expected_size += lodepng_get_raw_size_idat((*w + 0), (*h + 0) >> 1, bpp);
         }
 
-        /*Optimization: decode directly to output buffer for non-interlaced images*/
-        if(state->info_png.interlace_method == 0) {
-            /* Alloc output buffer first */
-            uint32_t stride = 4 * *w;
-            /* Calculate required rows to fit expected_size (which includes filter bytes) */
-            uint32_t needed_h = (uint32_t)((expected_size + stride - 1) / stride);
-            if(needed_h < *h) needed_h = *h;
-
-            lv_draw_buf_t * decoded = lv_draw_buf_create_ex(image_cache_draw_buf_handlers, *w, needed_h, LV_COLOR_FORMAT_ARGB8888, stride);
-            if(decoded) {
-                *out = (unsigned char*)decoded;
-                outsize = decoded->data_size;
-                decoded->header.h = *h; /* restore correct height */
-                decoded->data_size = stride * *h; /* restore correct data size */
-
-                /* use decoded buffer as scanlines buffer */
-                scanlines = decoded->data;
-                scanlines_size = outsize; /* note: create_ex might align up, so we have at least expected_size space */
-            }
-            else {
-                state->error = 83; /*alloc fail*/
-            }
-        }
-        }
-        if(!state->error) {
-            if(state->info_png.interlace_method == 0 && *out) {
-                /* Optimized path: use pre-allocated buffer without realloc */
-                lv_draw_buf_t * decoded = (lv_draw_buf_t *)*out;
-                ucvector v;
-                v.data = decoded->data;
-                v.size = 0;
-                v.allocsize = outsize; /* Capacity passed from logic above */
-
-                /* Ensure capacity is sufficient to avoid realloc */
-                if(v.allocsize < expected_size) {
-                    state->error = 83; /* alloc fail - buffer too small */
-                } else {
-                    state->error = lodepng_zlib_decompressv(&v, idat, idatsize, &state->decoder.zlibsettings);
-                    scanlines = v.data;
-                    scanlines_size = v.size;
-                }
-            } else {
-                state->error = zlib_decompress(&scanlines, &scanlines_size, expected_size, idat, idatsize, &state->decoder.zlibsettings);
-            }
-        }
+        state->error = zlib_decompress(&scanlines, &scanlines_size, expected_size, idat, idatsize,
+                                       &state->decoder.zlibsettings);
+    }
     if(!state->error && scanlines_size != expected_size) state->error = 91; /*decompressed size doesn't match prediction*/
     lodepng_free(idat);
 
     if(!state->error) {
-        if(state->info_png.interlace_method == 0) {
-            /* In-place post-processing */
-            lv_draw_buf_t * decoded = (lv_draw_buf_t *)*out;
-            /* Update data pointer in case zlib_decompress realloc'd it (though it shouldn't if size was sufficient) */
-            decoded->data = scanlines;
-            /* postProcessScanlines works in-place safely for non-interlaced */
-            state->error = postProcessScanlines(decoded->data, decoded->data, *w, *h, &state->info_png);
-            /* Do NOT free scanlines here, it belongs to decoded */
+        lv_draw_buf_t * decoded = lv_draw_buf_create_ex(image_cache_draw_buf_handlers, *w, *h, LV_COLOR_FORMAT_ARGB8888, 4 * *w);
+        if(decoded) {
+            *out = (unsigned char*)decoded;
+            outsize = decoded->data_size;
         }
-        else {
-            /* Legacy path for interlaced images or fallback */
-            lv_draw_buf_t * decoded = lv_draw_buf_create_ex(image_cache_draw_buf_handlers, *w, *h, LV_COLOR_FORMAT_ARGB8888, 4 * *w);
-            if(decoded) {
-                *out = (unsigned char*)decoded;
-                outsize = decoded->data_size;
-                lodepng_memset(decoded->data, 0, outsize);
-                state->error = postProcessScanlines(decoded->data, scanlines, *w, *h, &state->info_png);
-            }
-            else state->error = 83; /*alloc fail*/
-            lodepng_free(scanlines);
-        }
+        else state->error = 83; /*alloc fail*/
     }
+    if(!state->error) {
+        lv_draw_buf_t * decoded = (lv_draw_buf_t *)*out;
+        lodepng_memset(decoded->data, 0, outsize);
+        state->error = postProcessScanlines(decoded->data, scanlines, *w, *h, &state->info_png);
+    }
+    lodepng_free(scanlines);
 }
 
 unsigned lodepng_decode(unsigned char ** out, unsigned * w, unsigned * h,
@@ -9818,7 +9764,7 @@ unsigned encode(const std::string & filename,
 } /* namespace lodepng */
 #endif /*LODEPNG_COMPILE_CPP*/
 
-// #endif /*LV_USE_LODEPNG*/
+#endif /*LV_USE_LODEPNG*/
 /**
  * @file lv_lodepng.c
  *
@@ -9830,10 +9776,10 @@ unsigned encode(const std::string & filename,
 #include "lvgl/src/draw/lv_image_decoder_private.h"
 #include "lvgl/lvgl.h"
 #include "lvgl/src/core/lv_global.h"
-// #if LV_USE_LODEPNG
+#if LV_USE_LODEPNG
 
-// #include "lv_lodepng.h"
-// #include "lodepng.h"
+
+
 #include <stdlib.h>
 
 /*********************
@@ -10091,4 +10037,4 @@ static void convert_color_depth(uint8_t * img_p, uint32_t px_cnt)
     }
 }
 
-// #endif /*LV_USE_LODEPNG*/
+#endif /*LV_USE_LODEPNG*/
