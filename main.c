@@ -45,7 +45,9 @@ void lv_lodepng_init(void);
 #else
 void lv_lodepng_opt_init(void);
 #endif
-#endif
+typedef struct {
+    uint8_t *data;
+    size_t size;
 } anim_frame_t;
 typedef enum {
     ASSET_BAR = 0,
