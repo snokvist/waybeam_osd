@@ -499,9 +499,6 @@ static void apply_asset_styles(asset_t *asset)
                 apply_background_style(asset->obj, cfg->bg_style, cfg->bg_opacity_pct, 0);
                 lv_obj_set_style_img_opa(asset->obj, LV_OPA_COVER, 0);
             }
-                lv_obj_set_style_img_opa(asset->obj, LV_OPA_COVER, 0);
-            }
-            break;
             break;
         default:
             break;
@@ -1065,10 +1062,6 @@ static void parse_udp_asset_updates(const char *buf)
             text_change = 1;
         }
         if (json_get_string_range(obj_start, obj_end, "image_path", asset->cfg.image_path, sizeof(asset->cfg.image_path)) == 0) {
-        if (json_get_int_range(obj_start, obj_end, "glyph_index", &v) == 0) asset->cfg.glyph_index = v;
-        if (json_get_int_range(obj_start, obj_end, "glyph_width", &v) == 0) asset->cfg.glyph_width = v;
-        if (json_get_int_range(obj_start, obj_end, "glyph_height", &v) == 0) asset->cfg.glyph_height = v;
-        if (json_get_int_range(obj_start, obj_end, "glyph_cols", &v) == 0) asset->cfg.glyph_cols = v;
             recreate = asset->cfg.type == ASSET_IMAGE ? 1 : recreate;
             asset->cfg.image_path_resolved[0] = '\0';
         }
@@ -1655,23 +1648,6 @@ static void update_assets_from_udp(void)
         int pct = clamp_int((int)(pct_f * 100.0f), 0, 100);
 
         switch (cfg->type) {
-                    if (assets[i].obj && assets[i].cfg.glyph_index != raw_val) {
-                        assets[i].cfg.glyph_index = raw_val;
-                        lv_image_decoder_dsc_t *atlas = get_cached_atlas(assets[i].cfg.image_path_resolved);
-                        if (atlas && atlas->decoded) {
-                            int cols = assets[i].cfg.glyph_cols > 0 ? assets[i].cfg.glyph_cols : 16;
-                            int gw = assets[i].glyph_dsc.header.w;
-                            int gh = assets[i].glyph_dsc.header.h;
-                            int stride = assets[i].glyph_dsc.header.stride;
-                            int tile_x = (raw_val % cols) * gw;
-                            int tile_y = (raw_val / cols) * gh;
-                            uint32_t px_size = lv_color_format_get_bpp(atlas->decoded->header.cf) / 8;
-                            assets[i].glyph_dsc.data = atlas->decoded->data + (tile_y * stride) + (tile_x * px_size);
-                            lv_obj_invalidate(assets[i].obj);
-                        }
-                    }
-                }
-                break;
             case ASSET_BAR:
                 if (assets[i].obj && assets[i].last_pct != pct) {
                     lv_bar_set_value(assets[i].obj, pct, LV_ANIM_OFF);
