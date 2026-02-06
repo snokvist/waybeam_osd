@@ -42,6 +42,8 @@ void lv_fs_stdio_init(void);
 
 #if LV_USE_LODEPNG
 void lv_lodepng_init(void);
+#else
+void lv_lodepng_opt_init(void);
 #endif
 
 typedef struct {
@@ -1459,9 +1461,11 @@ void init_lvgl(void)
 #if LV_USE_FS_STDIO
     lv_fs_stdio_init();
 #endif
-#if LV_USE_LODEPNG
+    #if LV_USE_LODEPNG
     lv_lodepng_init();
-#endif
+    #else
+    lv_lodepng_opt_init();
+    #endif
 
     size_t buf_size = (size_t)osd_width * BUF_ROWS * sizeof(lv_color32_t);
     buf1 = (lv_color32_t *)malloc(buf_size);
