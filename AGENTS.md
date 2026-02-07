@@ -20,6 +20,7 @@ These guidelines apply to the entire repository.
 - Keep `README.md`, `CONTRACT.md`, and sample configs in sync with code behavior when making functional changes.
 - Prefer concise examples that match the default build (bar and lottie assets only).
 - Access Sigmastar documentation here: https://wx.comake.online/doc/doc/SigmaStarDocs-Pudding-0120/
+- access LVGL documentation here: https://docs.lvgl.io/master/
 
 ## PR / Final response
 - Summaries should mention user-visible behavior changes first, then refactors.
