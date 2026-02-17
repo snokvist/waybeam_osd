@@ -70,6 +70,7 @@ The UDP socket is **drained fully** on every poll cycle, meaning every packet in
   - `show_stats` (bool): show/hide the top-left stats overlay. Default `true`.
   - `udp_stats` (bool): when `true`, the stats overlay also lists the latest UDP and system numeric/text banks on the same lines. Default `true`.
   - `idle_ms` (int): maximum idle wait between UDP polls and screen refreshes in milliseconds (clamped 10–1000); default 100 ms. Legacy configs may still specify `refresh_ms`, which is treated the same way for compatibility.
+  - `realtime_flip` (bool, optional): when `true`, startup writes SigmaStar `setRealtimeFlip ... 1` for the active OSD channel binding and prints a confirmation on success. Default `false`; failures are warning-only so OSD init can continue.
   - `system_refresh_ms` (int, optional): cadence for polling system metrics (temperature, CPU load, encoder FPS/bitrate). Clamped 100–60000; default 1000.
   - `assets` (array, max 8): list of objects defining what to render and which UDP value to consume.
   - Asset fields:

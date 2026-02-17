@@ -30,6 +30,9 @@
 #define UDP_MAX_PACKET 1280
 #define MAX_ASSETS 8
 #define UDP_TEXT_LEN 96
+#define MI_RGN_PROC_PATH "/proc/mi_modules/mi_rgn/mi_rgn0"
+#define MI_RGN_PROC_BUF_SZ (256 * 1024)
+#define MI_RGN_MAX_PATHS 64
 // LVGL buffers - allocated at runtime for ARGB8888 (32-bit per pixel)
 static lv_color32_t *buf1 = NULL;
 static lv_color32_t *buf2 = NULL;
@@ -50,7 +53,15 @@ typedef struct {
     int show_stats;
     int idle_ms;
     int udp_stats;
+    int realtime_flip;
 } app_config_t;
+
+typedef struct {
+    int mod;
+    int dev;
+    int chn;
+    int port;
+} mi_rgn_path_t;
 
 typedef enum {
     ASSET_BAR = 0,
@@ -154,6 +165,154 @@ static int udp_sock = -1;
 static double udp_values[MAX_ASSETS] = {0};
 static char udp_texts[MAX_ASSETS][UDP_TEXT_LEN] = {{0}};
 static int idle_cap_ms = 100;
+
+static int write_mi_rgn_proc_cmd(const char *cmd)
+{
+    int fd = open(MI_RGN_PROC_PATH, O_WRONLY);
+    if (fd < 0) {
+        return -1;
+    }
+
+    size_t len = strlen(cmd);
+    ssize_t written = write(fd, cmd, len);
+    close(fd);
+    if (written < 0 || (size_t)written != len) {
+        return -1;
+    }
+    return 0;
+}
+
+static int trigger_mi_rgn_dump(void)
+{
+    return write_mi_rgn_proc_cmd("dumprgn\n");
+}
+
+static int read_mi_rgn_proc_dump(char *buf, size_t cap)
+{
+    int fd = open(MI_RGN_PROC_PATH, O_RDONLY);
+    if (fd < 0) {
+        return -1;
+    }
+
+    ssize_t r = read(fd, buf, cap - 1);
+    close(fd);
+    if (r < 0) {
+        return -1;
+    }
+
+    buf[r] = '\0';
+    return (int)r;
+}
+
+static int parse_mi_rgn_paths(const char *text, mi_rgn_path_t *paths, int max_paths)
+{
+    const char *p = text;
+    int count = 0;
+
+    while (*p && count < max_paths) {
+        const char *line_end = strchr(p, '\n');
+        if (!line_end) {
+            line_end = p + strlen(p);
+        }
+
+        size_t line_len = (size_t)(line_end - p);
+        if (line_len > 0 && line_len < 512) {
+            char line[512];
+            memcpy(line, p, line_len);
+            line[line_len] = '\0';
+
+            mi_rgn_path_t tuple = {0};
+            int matched = 0;
+            matched = sscanf(line, " %*[^M]Mod %d Dev %d Channel %d port %d",
+                             &tuple.mod, &tuple.dev, &tuple.chn, &tuple.port);
+            if (matched != 4) {
+                matched = sscanf(line, " Mod %d Dev %d Channel %d port %d",
+                                 &tuple.mod, &tuple.dev, &tuple.chn, &tuple.port);
+            }
+
+            if (matched == 4) {
+                int duplicate = 0;
+                for (int i = 0; i < count; i++) {
+                    if (paths[i].mod == tuple.mod && paths[i].dev == tuple.dev &&
+                        paths[i].chn == tuple.chn && paths[i].port == tuple.port) {
+                        duplicate = 1;
+                        break;
+                    }
+                }
+                if (!duplicate) {
+                    paths[count++] = tuple;
+                }
+            }
+        }
+
+        p = (*line_end == '\n') ? (line_end + 1) : line_end;
+    }
+
+    return count;
+}
+
+static int set_realtime_flip_path(const mi_rgn_path_t *path, int enable)
+{
+    char cmd[160];
+    int len = snprintf(cmd, sizeof(cmd), "setRealtimeFlip %d %d %d %d %d\n",
+                       path->mod, path->dev, path->chn, path->port, enable ? 1 : 0);
+    if (len < 0 || (size_t)len >= sizeof(cmd)) {
+        return -1;
+    }
+    return write_mi_rgn_proc_cmd(cmd);
+}
+
+static int enable_realtime_flip(void)
+{
+    char *dump = (char *)malloc(MI_RGN_PROC_BUF_SZ);
+    if (!dump) {
+        return -1;
+    }
+
+    if (trigger_mi_rgn_dump() != 0 || read_mi_rgn_proc_dump(dump, MI_RGN_PROC_BUF_SZ) < 0) {
+        free(dump);
+        return -1;
+    }
+
+    mi_rgn_path_t paths[MI_RGN_MAX_PATHS];
+    int path_count = parse_mi_rgn_paths(dump, paths, MI_RGN_MAX_PATHS);
+    int applied = 0;
+    int failures = 0;
+
+    mi_rgn_path_t desired = {
+        .mod = stVpeChnPort.eModId,
+        .dev = stVpeChnPort.s32DevId,
+        .chn = stVpeChnPort.s32ChnId,
+        .port = stVpeChnPort.s32OutputPortId,
+    };
+
+    for (int i = 0; i < path_count; i++) {
+        if (paths[i].mod != desired.mod || paths[i].dev != desired.dev ||
+            paths[i].chn != desired.chn || paths[i].port != desired.port) {
+            continue;
+        }
+
+        if (set_realtime_flip_path(&paths[i], 1) == 0) {
+            applied++;
+        } else {
+            failures++;
+        }
+    }
+
+    if (applied == 0 && failures == 0) {
+        if (set_realtime_flip_path(&desired, 1) == 0) {
+            applied = 1;
+        } else {
+            failures = 1;
+        }
+    }
+
+    free(dump);
+    if (applied > 0 && failures == 0) {
+        return applied;
+    }
+    return -1;
+}
 // -------------------------
 // Utility helpers
 // -------------------------
@@ -718,6 +877,7 @@ static void set_defaults(void)
     g_cfg.show_stats = 1;
     g_cfg.idle_ms = 100;
     g_cfg.udp_stats = 0;
+    g_cfg.realtime_flip = 0;
 
     memset(assets, 0, sizeof(assets));
     asset_count = 1;
@@ -839,6 +999,7 @@ static void load_config(void)
     if (json_get_int(json, "osd_y", &v) == 0) g_cfg.osd_y = v;
     if (json_get_bool(json, "show_stats", &v) == 0) g_cfg.show_stats = v;
     if (json_get_bool(json, "udp_stats", &v) == 0) g_cfg.udp_stats = v;
+    if (json_get_bool(json, "realtime_flip", &v) == 0) g_cfg.realtime_flip = v;
     if (json_get_int(json, "idle_ms", &v) == 0) {
         g_cfg.idle_ms = clamp_int(v, 10, 1000);
     } else if (json_get_int(json, "refresh_ms", &v) == 0) {
@@ -1826,6 +1987,15 @@ int main(void)
     if (mi_region_init() != 0) {
         fprintf(stderr, "OSD region init failed\n");
         return 1;
+    }
+
+    if (g_cfg.realtime_flip) {
+        int rf_paths = enable_realtime_flip();
+        if (rf_paths > 0) {
+            printf("RealtimeFlip enabled for OSD path(s): %d\n", rf_paths);
+        } else {
+            fprintf(stderr, "Warning: failed to enable RealtimeFlip for OSD path\n");
+        }
     }
 
     printf("Initializing LVGL...\n");
