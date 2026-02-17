@@ -7,7 +7,6 @@
   "udp_stats": false,
   "idle_ms": 100,
   "realtime_flip": true,
-  "system_refresh_ms": 1000,
   "assets": [
     {
       "type": "bar",
@@ -123,32 +122,25 @@
       "bar_color": 65280,
       "text_color": 0
     },
-    { 
-     "type": "image", 
-     "id": 6, 
-     "enabled": true, 
-     "image_path": "/usr/share/fonts/solid.png", 
-     "x": 200, 
-     "y": 200,
-     "scale_pct": 125
+    {
+      "type": "image",
+      "id": 6,
+      "enabled": true,
+      "image_path": "/usr/share/fonts/solid.png",
+      "x": 200,
+      "y": 200,
+      "scale_pct": 125
     },
     {
       "type": "text",
       "enabled": true,
       "id": 7,
       "text_indices": [
-        9,
-        10,
-        8,
-        11
+        0,
+        1,
+        2,
+        3
       ],
-      "value_indices": [
-        9,
-        10,
-        8,
-        11
-      ],
-      "inline_separator": "|",
       "text_inline": true,
       "orientation": "center",
       "label": "Fallback text",
