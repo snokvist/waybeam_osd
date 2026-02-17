@@ -7,7 +7,7 @@
 - Single stats widget in the top-left (gated by `show_stats`) shows OSD/display resolution, asset count, FPS, timing, and live system value/text banks. When `udp_stats` is true (default), the UDP numeric/text banks are shown alongside their system counterparts on the same lines to save space. (`main.c`, `config.json`)
 - MI_RGN canvas info is cached and the driver is only updated once per LVGL frame to avoid per-chunk overhead when LVGL renders in partial buffers. (`main.c`)
 - Size-first build: `-Os`, section folding, no unwind tables, linker GC/strip, LVGL demos/examples excluded by default. (`Makefile`, `lvgl/lvgl.mk`, `lv_conf.h`, `build.sh`)
-- Clean signal handling: SIGINT shuts down cleanly (timers, UDP socket, LVGL buffers, and RGN), and SIGHUP reloads `config.json` at runtime to rebuild assets, toggle stats, and apply the new idle wait without restarting. (`main.c`)
+- Clean signal handling: SIGINT/SIGTERM shut down cleanly (timers, UDP socket, LVGL buffers, and RGN), and SIGHUP reloads `config.json` at runtime to rebuild assets, toggle stats, and apply the new idle wait without restarting. (`main.c`)
 
 ## Build
 ```

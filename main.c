@@ -1875,7 +1875,7 @@ static void update_assets_from_udp(void)
 
 }
 
-static void handle_sigint(int sig)
+static void handle_stop_signal(int sig)
 {
     (void)sig;
     stop_requested = 1;
@@ -2014,8 +2014,9 @@ int main(void)
 
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
-    sa.sa_handler = handle_sigint;
+    sa.sa_handler = handle_stop_signal;
     sigaction(SIGINT, &sa, NULL);
+    sigaction(SIGTERM, &sa, NULL);
     sa.sa_handler = handle_sighup;
     sigaction(SIGHUP, &sa, NULL);
 
