@@ -549,6 +549,8 @@ static void place_scaled_obj(const asset_cfg_t *cfg, lv_obj_t *obj)
     } else if (cfg->orientation == ORIENTATION_CENTER) {
         if (obj_w > 0) x -= obj_w / 2;
     }
+
+    lv_obj_set_style_align(obj, LV_ALIGN_TOP_LEFT, 0);
     lv_obj_set_pos(obj, x, y);
 }
 
@@ -1726,6 +1728,7 @@ static lv_obj_t *create_image_asset(asset_t *asset)
     lv_fs_close(&file);
 
     lv_obj_t *img = lv_image_create(lv_scr_act());
+    lv_obj_align(img, LV_ALIGN_TOP_LEFT, 0, 0);
     lv_image_set_src(img, asset->cfg.image_path_resolved);
     if (asset->cfg.image_size_override && (asset->cfg.width > 0 || asset->cfg.height > 0)) {
         int width = asset->cfg.width > 0 ? asset->cfg.width : LV_SIZE_CONTENT;
