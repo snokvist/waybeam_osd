@@ -66,6 +66,7 @@ typedef enum {
 typedef enum {
     ORIENTATION_RIGHT = 0,
     ORIENTATION_LEFT,
+    ORIENTATION_CENTER,
 } asset_orientation_t;
 
 typedef struct {
@@ -94,6 +95,7 @@ typedef struct {
     char image_path[256];
     char image_path_resolved[260];
     int image_size_override;
+    int scale_pct;
 } asset_cfg_t;
 
 typedef struct {
@@ -289,6 +291,7 @@ static asset_orientation_t parse_orientation_string(const char *str, asset_orien
     if (!str) return def;
     if (strcmp(str, "left") == 0) return ORIENTATION_LEFT;
     if (strcmp(str, "right") == 0) return ORIENTATION_RIGHT;
+    if (strcmp(str, "center") == 0) return ORIENTATION_CENTER;
     return def;
 }
 
@@ -509,6 +512,54 @@ static void destroy_asset_visual(asset_t *asset);
 static void create_asset_visual(asset_t *asset);
 static void maybe_attach_asset_label(asset_t *asset);
 
+static uint16_t asset_scale_to_zoom(int scale_pct)
+{
+    int clamped = clamp_int(scale_pct, 25, 400);
+    return (uint16_t)((clamped * 256) / 100);
+}
+
+static void apply_asset_scale(asset_t *asset)
+{
+    if (!asset || !asset->obj) return;
+    if (asset->cfg.type != ASSET_TEXT && asset->cfg.type != ASSET_IMAGE) return;
+
+    lv_obj_update_layout(asset->obj);
+    int obj_w = lv_obj_get_width(asset->obj);
+    if (obj_w < 0) obj_w = 0;
+
+    uint16_t zoom = asset_scale_to_zoom(asset->cfg.scale_pct);
+    int pivot_x = 0;
+    if (asset->cfg.orientation == ORIENTATION_LEFT) pivot_x = obj_w;
+    else if (asset->cfg.orientation == ORIENTATION_CENTER) pivot_x = obj_w / 2;
+    lv_obj_set_style_transform_zoom(asset->obj, zoom, LV_PART_MAIN);
+    lv_obj_set_style_transform_pivot_x(asset->obj, pivot_x, LV_PART_MAIN);
+    lv_obj_set_style_transform_pivot_y(asset->obj, 0, LV_PART_MAIN);
+}
+
+static void place_scaled_obj(const asset_cfg_t *cfg, lv_obj_t *obj)
+{
+    if (!cfg || !obj) return;
+
+    lv_obj_update_layout(obj);
+    int x = to_canvas_x(cfg->x);
+    int y = to_canvas_y(cfg->y);
+    int obj_w = lv_obj_get_width(obj);
+    if (cfg->orientation == ORIENTATION_LEFT) {
+        if (obj_w > 0) x -= obj_w;
+    } else if (cfg->orientation == ORIENTATION_CENTER) {
+        if (obj_w > 0) x -= obj_w / 2;
+    }
+    lv_obj_set_pos(obj, x, y);
+}
+
+static void place_scaled_asset(asset_t *asset)
+{
+    if (!asset || !asset->obj) return;
+    if (asset->cfg.type != ASSET_TEXT && asset->cfg.type != ASSET_IMAGE) return;
+
+    place_scaled_obj(&asset->cfg, asset->obj);
+}
+
 static asset_t *find_asset_by_id(int id)
 {
     for (int i = 0; i < asset_count; i++) {
@@ -545,6 +596,7 @@ static void init_asset_defaults(asset_t *a, int id)
     a->cfg.image_path[0] = '\0';
     a->cfg.image_path_resolved[0] = '\0';
     a->cfg.image_size_override = 0;
+    a->cfg.scale_pct = 100;
     a->last_pct = -1;
     a->last_label_text[0] = '\0';
 }
@@ -589,15 +641,21 @@ static void apply_asset_styles(asset_t *asset)
         }
         case ASSET_TEXT:
             if (asset->obj) {
+                lv_text_align_t align = LV_TEXT_ALIGN_LEFT;
+                if (cfg->orientation == ORIENTATION_LEFT) align = LV_TEXT_ALIGN_RIGHT;
+                else if (cfg->orientation == ORIENTATION_CENTER) align = LV_TEXT_ALIGN_CENTER;
                 apply_background_style(asset->obj, cfg->bg_style, cfg->bg_opacity_pct, 0);
+                lv_obj_set_style_text_align(asset->obj, align, 0);
                 lv_obj_set_style_text_color(asset->obj, lv_color_hex(cfg->text_color), 0);
                 lv_obj_set_style_text_opa(asset->obj, LV_OPA_COVER, 0);
+                apply_asset_scale(asset);
             }
             break;
         case ASSET_IMAGE:
             if (asset->obj) {
                 apply_background_style(asset->obj, cfg->bg_style, cfg->bg_opacity_pct, 0);
                 lv_obj_set_style_img_opa(asset->obj, LV_OPA_COVER, 0);
+                apply_asset_scale(asset);
             }
             break;
         default:
@@ -908,6 +966,11 @@ static void parse_assets_array(const char *json)
                 a.cfg.width = 0;
                 a.cfg.height = 0;
             }
+        }
+
+        if ((a.cfg.type == ASSET_TEXT || a.cfg.type == ASSET_IMAGE) &&
+            json_get_int_range(obj_start, obj_end, "scale_pct", &v) == 0) {
+            a.cfg.scale_pct = clamp_int(v, 25, 400);
         }
 
         if (a.cfg.type == ASSET_IMAGE && a.cfg.image_path[0] == '\0') {
@@ -1243,6 +1306,14 @@ static void parse_udp_asset_updates(const char *buf)
                 if (asset->cfg.type == ASSET_IMAGE) asset->cfg.image_size_override = 1;
             }
         }
+        if (json_get_int_range(obj_start, obj_end, "scale_pct", &v) == 0 &&
+            (asset->cfg.type == ASSET_TEXT || asset->cfg.type == ASSET_IMAGE)) {
+            int scale = clamp_int(v, 25, 400);
+            if (asset->cfg.scale_pct != scale) {
+                asset->cfg.scale_pct = scale;
+                restyle = 1;
+            }
+        }
         if (json_get_float_range(obj_start, obj_end, "min", &fv) == 0) {
             if (asset->cfg.min != fv) {
                 asset->cfg.min = fv;
@@ -1276,14 +1347,14 @@ static void parse_udp_asset_updates(const char *buf)
                     int width = asset->cfg.width > 0 ? asset->cfg.width : LV_SIZE_CONTENT;
                     int height = asset->cfg.height > 0 ? asset->cfg.height : LV_SIZE_CONTENT;
                     lv_obj_set_size(asset->obj, width, height);
-                    lv_obj_set_pos(asset->obj, asset->cfg.x, asset->cfg.y);
+                    place_scaled_asset(asset);
                 } else if (asset->cfg.type == ASSET_IMAGE) {
                     if (asset->cfg.width > 0 || asset->cfg.height > 0) {
                         int width = asset->cfg.width > 0 ? asset->cfg.width : LV_SIZE_CONTENT;
                         int height = asset->cfg.height > 0 ? asset->cfg.height : LV_SIZE_CONTENT;
                         lv_obj_set_size(asset->obj, width, height);
                     }
-                    lv_obj_set_pos(asset->obj, asset->cfg.x, asset->cfg.y);
+                    place_scaled_asset(asset);
                 } else {
                     layout_bar_asset(asset);
                 }
@@ -1614,7 +1685,7 @@ static lv_obj_t *create_text_asset(asset_t *asset)
     int width = asset->cfg.width > 0 ? asset->cfg.width : LV_SIZE_CONTENT;
     int height = asset->cfg.height > 0 ? asset->cfg.height : LV_SIZE_CONTENT;
     lv_obj_set_size(label, width, height);
-    lv_obj_align(label, LV_ALIGN_TOP_LEFT, to_canvas_x(asset->cfg.x), to_canvas_y(asset->cfg.y));
+    lv_obj_align(label, LV_ALIGN_TOP_LEFT, 0, 0);
     lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
     apply_background_style(label, asset->cfg.bg_style, asset->cfg.bg_opacity_pct, 0);
     lv_obj_set_style_text_color(label, lv_color_hex(asset->cfg.text_color), 0);
@@ -1625,6 +1696,7 @@ static lv_obj_t *create_text_asset(asset_t *asset)
     lv_label_set_text(label, text_buf);
     strncpy(asset->last_label_text, text_buf, sizeof(asset->last_label_text) - 1);
     asset->last_label_text[sizeof(asset->last_label_text) - 1] = '\0';
+    place_scaled_obj(&asset->cfg, label);
     return label;
 }
 
@@ -1655,7 +1727,6 @@ static lv_obj_t *create_image_asset(asset_t *asset)
 
     lv_obj_t *img = lv_image_create(lv_scr_act());
     lv_image_set_src(img, asset->cfg.image_path_resolved);
-    lv_obj_set_pos(img, to_canvas_x(asset->cfg.x), to_canvas_y(asset->cfg.y));
     if (asset->cfg.image_size_override && (asset->cfg.width > 0 || asset->cfg.height > 0)) {
         int width = asset->cfg.width > 0 ? asset->cfg.width : LV_SIZE_CONTENT;
         int height = asset->cfg.height > 0 ? asset->cfg.height : LV_SIZE_CONTENT;
@@ -1663,6 +1734,8 @@ static lv_obj_t *create_image_asset(asset_t *asset)
     }
     lv_obj_move_foreground(img);
     lv_obj_update_layout(img);
+    place_scaled_asset(asset);
+    apply_asset_scale(asset);
     return img;
 }
 

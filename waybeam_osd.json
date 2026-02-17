@@ -123,13 +123,14 @@
       "bar_color": 65280,
       "text_color": 0
     },
-    {
-      "type": "image",
-      "id": 6,
-      "enabled": true,
-      "image_path": "/usr/share/fonts/solid.png",
-      "x": 200,
-      "y": 200
+    { 
+     "type": "image", 
+     "id": 6, 
+     "enabled": true, 
+     "image_path": "/usr/share/fonts/solid.png", 
+     "x": 200, 
+     "y": 200,
+     "scale_pct": 125
     },
     {
       "type": "text",
@@ -155,6 +156,7 @@
       "y": 120,
       "width": 420,
       "height": 20,
+      "scale_pct": 150,
       "background": 0,
       "background_opacity": 20,
       "text_color": 16777215
