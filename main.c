@@ -14,7 +14,9 @@
 #include <ctype.h>
 #include <time.h>
 #include <limits.h>
+#include <errno.h>
 #include <stdbool.h>
+#include <stdint.h>
 
 #include "lvgl/lvgl.h"
 #include "lvgl/src/draw/lv_draw_private.h"
@@ -30,6 +32,7 @@
 #define UDP_MAX_PACKET 1280
 #define MAX_ASSETS 8
 #define UDP_TEXT_LEN 96
+#define MI_RGN_PROC_PATH "/proc/mi_modules/mi_rgn/mi_rgn0"
 // LVGL buffers - allocated at runtime for ARGB8888 (32-bit per pixel)
 static lv_color32_t *buf1 = NULL;
 static lv_color32_t *buf2 = NULL;
@@ -50,7 +53,9 @@ typedef struct {
     int show_stats;
     int idle_ms;
     int udp_stats;
+    int realtime_flip;
 } app_config_t;
+
 
 typedef enum {
     ASSET_BAR = 0,
@@ -154,6 +159,106 @@ static int udp_sock = -1;
 static double udp_values[MAX_ASSETS] = {0};
 static char udp_texts[MAX_ASSETS][UDP_TEXT_LEN] = {{0}};
 static int idle_cap_ms = 100;
+static int g_realtime_flip_enabled = 0;
+static const MI_RGN_CanvasInfo_t *get_cached_canvas(void);
+
+static int write_proc_cmd(const char *cmd)
+{
+    if (!cmd || cmd[0] == '\0') {
+        return -1;
+    }
+
+    int fd = open(MI_RGN_PROC_PATH, O_WRONLY);
+    if (fd < 0) {
+        fprintf(stderr, "open(%s) failed: %s\n", MI_RGN_PROC_PATH, strerror(errno));
+        return -1;
+    }
+
+    size_t len = strlen(cmd);
+    size_t off = 0;
+    while (off < len) {
+        ssize_t written = write(fd, cmd + off, len - off);
+        if (written < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            fprintf(stderr, "write(%s) failed: %s\n", MI_RGN_PROC_PATH, strerror(errno));
+            close(fd);
+            return -1;
+        }
+        if (written == 0) {
+            fprintf(stderr, "write(%s) wrote 0 bytes unexpectedly\n", MI_RGN_PROC_PATH);
+            close(fd);
+            return -1;
+        }
+        off += (size_t)written;
+    }
+
+    close(fd);
+    return 0;
+}
+
+static int set_realtime_flip(int enable)
+{
+    char cmd[128];
+    int len = snprintf(cmd, sizeof(cmd), "setRealtimeFlip %d %d %d %d %d\n",
+                       stVpeChnPort.eModId,
+                       stVpeChnPort.s32DevId,
+                       stVpeChnPort.s32ChnId,
+                       stVpeChnPort.s32OutputPortId,
+                       enable ? 1 : 0);
+    if (len < 0 || (size_t)len >= sizeof(cmd)) {
+        return -1;
+    }
+
+    return write_proc_cmd(cmd);
+}
+
+static int enable_realtime_flip(void)
+{
+    if (set_realtime_flip(1) != 0) {
+        g_realtime_flip_enabled = 0;
+        return -1;
+    }
+
+    g_realtime_flip_enabled = 1;
+    return 0;
+}
+
+static void disable_realtime_flip(void)
+{
+    if (!g_realtime_flip_enabled) {
+        return;
+    }
+
+    if (set_realtime_flip(0) != 0) {
+        fprintf(stderr, "Warning: failed to disable RealtimeFlip during shutdown\n");
+    }
+
+    g_realtime_flip_enabled = 0;
+}
+
+static void clear_rgn_canvas(void)
+{
+    const MI_RGN_CanvasInfo_t *info = get_cached_canvas();
+    if (!info || !info->virtAddr) {
+        return;
+    }
+
+    MI_U32 rows = info->stSize.u32Height;
+    unsigned char *canvas = (unsigned char *)(uintptr_t)info->virtAddr;
+    for (MI_U32 y = 0; y < rows; y++) {
+        memset(canvas + y * info->u32Stride, 0x00, info->u32Stride);
+    }
+
+    MI_S32 ret = MI_RGN_UpdateCanvas(hRgnHandle);
+    if (ret != MI_RGN_OK) {
+        fprintf(stderr, "Warning: MI_RGN_UpdateCanvas during clear failed: %d\n", ret);
+    }
+    g_canvas_info_valid = 0;
+    memset(&g_cached_canvas_info, 0, sizeof(g_cached_canvas_info));
+}
+
 // -------------------------
 // Utility helpers
 // -------------------------
@@ -718,6 +823,7 @@ static void set_defaults(void)
     g_cfg.show_stats = 1;
     g_cfg.idle_ms = 100;
     g_cfg.udp_stats = 0;
+    g_cfg.realtime_flip = 0;
 
     memset(assets, 0, sizeof(assets));
     asset_count = 1;
@@ -839,6 +945,7 @@ static void load_config(void)
     if (json_get_int(json, "osd_y", &v) == 0) g_cfg.osd_y = v;
     if (json_get_bool(json, "show_stats", &v) == 0) g_cfg.show_stats = v;
     if (json_get_bool(json, "udp_stats", &v) == 0) g_cfg.udp_stats = v;
+    if (json_get_bool(json, "realtime_flip", &v) == 0) g_cfg.realtime_flip = v;
     if (json_get_int(json, "idle_ms", &v) == 0) {
         g_cfg.idle_ms = clamp_int(v, 10, 1000);
     } else if (json_get_int(json, "refresh_ms", &v) == 0) {
@@ -1682,7 +1789,7 @@ static void update_assets_from_udp(void)
 
 }
 
-static void handle_sigint(int sig)
+static void handle_stop_signal(int sig)
 {
     (void)sig;
     stop_requested = 1;
@@ -1728,9 +1835,22 @@ static void cleanup_resources(void)
         stats_timer = NULL;
     }
 
+    disable_realtime_flip();
+    clear_rgn_canvas();
+
     // Tear down OSD region cleanly
-    MI_RGN_DetachFromChn(hRgnHandle, &stVpeChnPort);
-    MI_RGN_Destroy(hRgnHandle);
+    MI_S32 ret = MI_RGN_DetachFromChn(hRgnHandle, &stVpeChnPort);
+    if (ret != MI_RGN_OK) {
+        fprintf(stderr, "Warning: MI_RGN_DetachFromChn failed: %d\n", ret);
+    }
+    ret = MI_RGN_Destroy(hRgnHandle);
+    if (ret != MI_RGN_OK) {
+        fprintf(stderr, "Warning: MI_RGN_Destroy failed: %d\n", ret);
+    }
+    ret = MI_RGN_DeInit();
+    if (ret != MI_RGN_OK) {
+        fprintf(stderr, "Warning: MI_RGN_DeInit failed: %d\n", ret);
+    }
 
     if (udp_sock >= 0) {
         close(udp_sock);
@@ -1739,6 +1859,8 @@ static void cleanup_resources(void)
 
     free(buf1);
     free(buf2);
+    buf1 = NULL;
+    buf2 = NULL;
 }
 
 static void stats_timer_cb(lv_timer_t *timer)
@@ -1815,8 +1937,9 @@ int main(void)
 
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
-    sa.sa_handler = handle_sigint;
+    sa.sa_handler = handle_stop_signal;
     sigaction(SIGINT, &sa, NULL);
+    sigaction(SIGTERM, &sa, NULL);
     sa.sa_handler = handle_sighup;
     sigaction(SIGHUP, &sa, NULL);
 
@@ -1826,6 +1949,18 @@ int main(void)
     if (mi_region_init() != 0) {
         fprintf(stderr, "OSD region init failed\n");
         return 1;
+    }
+
+    if (g_cfg.realtime_flip) {
+        if (enable_realtime_flip() == 0) {
+            printf("RealtimeFlip enabled for OSD path %d/%d/%d/%d\n",
+                   stVpeChnPort.eModId,
+                   stVpeChnPort.s32DevId,
+                   stVpeChnPort.s32ChnId,
+                   stVpeChnPort.s32OutputPortId);
+        } else {
+            fprintf(stderr, "Warning: failed to enable RealtimeFlip for OSD path\n");
+        }
     }
 
     printf("Initializing LVGL...\n");
