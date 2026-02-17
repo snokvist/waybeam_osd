@@ -1735,6 +1735,8 @@ static lv_obj_t *create_image_asset(asset_t *asset)
         int height = asset->cfg.height > 0 ? asset->cfg.height : LV_SIZE_CONTENT;
         lv_obj_set_size(img, width, height);
     }
+
+    asset->obj = img;
     lv_obj_move_foreground(img);
     lv_obj_update_layout(img);
     place_scaled_asset(asset);
