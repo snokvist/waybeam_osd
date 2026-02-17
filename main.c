@@ -1726,6 +1726,7 @@ static lv_obj_t *create_image_asset(asset_t *asset)
     lv_fs_close(&file);
 
     lv_obj_t *img = lv_image_create(lv_scr_act());
+    lv_obj_align(img, LV_ALIGN_TOP_LEFT, 0, 0);
     lv_image_set_src(img, asset->cfg.image_path_resolved);
     if (asset->cfg.image_size_override && (asset->cfg.width > 0 || asset->cfg.height > 0)) {
         int width = asset->cfg.width > 0 ? asset->cfg.width : LV_SIZE_CONTENT;
