@@ -165,6 +165,9 @@ static int udp_sock = -1;
 static double udp_values[MAX_ASSETS] = {0};
 static char udp_texts[MAX_ASSETS][UDP_TEXT_LEN] = {{0}};
 static int idle_cap_ms = 100;
+static int g_realtime_flip_enabled = 0;
+static mi_rgn_path_t g_realtime_flip_path = {0};
+static const MI_RGN_CanvasInfo_t *get_cached_canvas(void);
 
 static int write_mi_rgn_proc_cmd(const char *cmd)
 {
@@ -276,8 +279,6 @@ static int enable_realtime_flip(void)
 
     mi_rgn_path_t paths[MI_RGN_MAX_PATHS];
     int path_count = parse_mi_rgn_paths(dump, paths, MI_RGN_MAX_PATHS);
-    int applied = 0;
-    int failures = 0;
 
     mi_rgn_path_t desired = {
         .mod = stVpeChnPort.eModId,
@@ -286,6 +287,9 @@ static int enable_realtime_flip(void)
         .port = stVpeChnPort.s32OutputPortId,
     };
 
+    g_realtime_flip_enabled = 0;
+    memset(&g_realtime_flip_path, 0, sizeof(g_realtime_flip_path));
+
     for (int i = 0; i < path_count; i++) {
         if (paths[i].mod != desired.mod || paths[i].dev != desired.dev ||
             paths[i].chn != desired.chn || paths[i].port != desired.port) {
@@ -293,26 +297,54 @@ static int enable_realtime_flip(void)
         }
 
         if (set_realtime_flip_path(&paths[i], 1) == 0) {
-            applied++;
-        } else {
-            failures++;
+            g_realtime_flip_enabled = 1;
+            g_realtime_flip_path = paths[i];
+            free(dump);
+            return 0;
         }
     }
 
-    if (applied == 0 && failures == 0) {
-        if (set_realtime_flip_path(&desired, 1) == 0) {
-            applied = 1;
-        } else {
-            failures = 1;
-        }
+    if (set_realtime_flip_path(&desired, 1) == 0) {
+        g_realtime_flip_enabled = 1;
+        g_realtime_flip_path = desired;
+        free(dump);
+        return 0;
     }
 
     free(dump);
-    if (applied > 0 && failures == 0) {
-        return applied;
-    }
     return -1;
 }
+
+static void disable_realtime_flip(void)
+{
+    if (!g_realtime_flip_enabled) {
+        return;
+    }
+
+    if (set_realtime_flip_path(&g_realtime_flip_path, 0) != 0) {
+        fprintf(stderr, "Warning: failed to disable RealtimeFlip during shutdown\n");
+    }
+
+    g_realtime_flip_enabled = 0;
+    memset(&g_realtime_flip_path, 0, sizeof(g_realtime_flip_path));
+}
+
+static void clear_rgn_canvas(void)
+{
+    const MI_RGN_CanvasInfo_t *info = get_cached_canvas();
+    if (!info || !info->virtAddr) {
+        return;
+    }
+
+    for (int y = 0; y < osd_height; y++) {
+        memset(info->virtAddr + y * info->u32Stride, 0x00, info->u32Stride);
+    }
+
+    MI_RGN_UpdateCanvas(hRgnHandle);
+    g_canvas_info_valid = 0;
+    memset(&g_cached_canvas_info, 0, sizeof(g_cached_canvas_info));
+}
+
 // -------------------------
 // Utility helpers
 // -------------------------
@@ -1889,9 +1921,13 @@ static void cleanup_resources(void)
         stats_timer = NULL;
     }
 
+    disable_realtime_flip();
+    clear_rgn_canvas();
+
     // Tear down OSD region cleanly
     MI_RGN_DetachFromChn(hRgnHandle, &stVpeChnPort);
     MI_RGN_Destroy(hRgnHandle);
+    MI_RGN_DeInit();
 
     if (udp_sock >= 0) {
         close(udp_sock);
@@ -1900,6 +1936,8 @@ static void cleanup_resources(void)
 
     free(buf1);
     free(buf2);
+    buf1 = NULL;
+    buf2 = NULL;
 }
 
 static void stats_timer_cb(lv_timer_t *timer)
@@ -1990,9 +2028,12 @@ int main(void)
     }
 
     if (g_cfg.realtime_flip) {
-        int rf_paths = enable_realtime_flip();
-        if (rf_paths > 0) {
-            printf("RealtimeFlip enabled for OSD path(s): %d\n", rf_paths);
+        if (enable_realtime_flip() == 0) {
+            printf("RealtimeFlip enabled for OSD path %d/%d/%d/%d\n",
+                   g_realtime_flip_path.mod,
+                   g_realtime_flip_path.dev,
+                   g_realtime_flip_path.chn,
+                   g_realtime_flip_path.port);
         } else {
             fprintf(stderr, "Warning: failed to enable RealtimeFlip for OSD path\n");
         }
