@@ -14,7 +14,9 @@
 #include <ctype.h>
 #include <time.h>
 #include <limits.h>
+#include <errno.h>
 #include <stdbool.h>
+#include <stdint.h>
 
 #include "lvgl/lvgl.h"
 #include "lvgl/src/draw/lv_draw_private.h"
@@ -244,8 +246,9 @@ static void clear_rgn_canvas(void)
     }
 
     MI_U32 rows = info->stSize.u32Height;
+    unsigned char *canvas = (unsigned char *)(uintptr_t)info->virtAddr;
     for (MI_U32 y = 0; y < rows; y++) {
-        memset(info->virtAddr + y * info->u32Stride, 0x00, info->u32Stride);
+        memset(canvas + y * info->u32Stride, 0x00, info->u32Stride);
     }
 
     MI_S32 ret = MI_RGN_UpdateCanvas(hRgnHandle);
