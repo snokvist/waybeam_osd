@@ -61,6 +61,7 @@ typedef enum {
 typedef enum {
     ORIENTATION_RIGHT = 0,
     ORIENTATION_LEFT,
+    ORIENTATION_CENTER,
 } asset_orientation_t;
 
 typedef struct {
@@ -185,6 +186,7 @@ static asset_orientation_t parse_orientation_string(const char *str, asset_orien
     if (!str) return def;
     if (strcmp(str, "left") == 0) return ORIENTATION_LEFT;
     if (strcmp(str, "right") == 0) return ORIENTATION_RIGHT;
+    if (strcmp(str, "center") == 0) return ORIENTATION_CENTER;
     return def;
 }
 
@@ -421,7 +423,9 @@ static void apply_asset_scale(asset_t *asset)
     if (obj_w < 0) obj_w = 0;
 
     uint16_t zoom = asset_scale_to_zoom(asset->cfg.scale_pct);
-    int pivot_x = asset->cfg.orientation == ORIENTATION_LEFT ? obj_w : 0;
+    int pivot_x = 0;
+    if (asset->cfg.orientation == ORIENTATION_LEFT) pivot_x = obj_w;
+    else if (asset->cfg.orientation == ORIENTATION_CENTER) pivot_x = obj_w / 2;
     lv_obj_set_style_transform_zoom(asset->obj, zoom, LV_PART_MAIN);
     lv_obj_set_style_transform_pivot_x(asset->obj, pivot_x, LV_PART_MAIN);
     lv_obj_set_style_transform_pivot_y(asset->obj, 0, LV_PART_MAIN);
@@ -434,9 +438,11 @@ static void place_scaled_obj(const asset_cfg_t *cfg, lv_obj_t *obj)
     lv_obj_update_layout(obj);
     int x = to_canvas_x(cfg->x);
     int y = to_canvas_y(cfg->y);
+    int obj_w = lv_obj_get_width(obj);
     if (cfg->orientation == ORIENTATION_LEFT) {
-        int obj_w = lv_obj_get_width(obj);
         if (obj_w > 0) x -= obj_w;
+    } else if (cfg->orientation == ORIENTATION_CENTER) {
+        if (obj_w > 0) x -= obj_w / 2;
     }
     lv_obj_set_pos(obj, x, y);
 }
@@ -530,7 +536,11 @@ static void apply_asset_styles(asset_t *asset)
         }
         case ASSET_TEXT:
             if (asset->obj) {
+                lv_text_align_t align = LV_TEXT_ALIGN_LEFT;
+                if (cfg->orientation == ORIENTATION_LEFT) align = LV_TEXT_ALIGN_RIGHT;
+                else if (cfg->orientation == ORIENTATION_CENTER) align = LV_TEXT_ALIGN_CENTER;
                 apply_background_style(asset->obj, cfg->bg_style, cfg->bg_opacity_pct, 0);
+                lv_obj_set_style_text_align(asset->obj, align, 0);
                 lv_obj_set_style_text_color(asset->obj, lv_color_hex(cfg->text_color), 0);
                 lv_obj_set_style_text_opa(asset->obj, LV_OPA_COVER, 0);
                 apply_asset_scale(asset);
