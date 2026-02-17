@@ -427,19 +427,26 @@ static void apply_asset_scale(asset_t *asset)
     lv_obj_set_style_transform_pivot_y(asset->obj, 0, LV_PART_MAIN);
 }
 
+static void place_scaled_obj(const asset_cfg_t *cfg, lv_obj_t *obj)
+{
+    if (!cfg || !obj) return;
+
+    lv_obj_update_layout(obj);
+    int x = to_canvas_x(cfg->x);
+    int y = to_canvas_y(cfg->y);
+    if (cfg->orientation == ORIENTATION_LEFT) {
+        int obj_w = lv_obj_get_width(obj);
+        if (obj_w > 0) x -= obj_w;
+    }
+    lv_obj_set_pos(obj, x, y);
+}
+
 static void place_scaled_asset(asset_t *asset)
 {
     if (!asset || !asset->obj) return;
     if (asset->cfg.type != ASSET_TEXT && asset->cfg.type != ASSET_IMAGE) return;
 
-    lv_obj_update_layout(asset->obj);
-    int x = to_canvas_x(asset->cfg.x);
-    int y = to_canvas_y(asset->cfg.y);
-    if (asset->cfg.orientation == ORIENTATION_LEFT) {
-        int obj_w = lv_obj_get_width(asset->obj);
-        if (obj_w > 0) x -= obj_w;
-    }
-    lv_obj_set_pos(asset->obj, x, y);
+    place_scaled_obj(&asset->cfg, asset->obj);
 }
 
 static asset_t *find_asset_by_id(int id)
@@ -1572,8 +1579,7 @@ static lv_obj_t *create_text_asset(asset_t *asset)
     lv_label_set_text(label, text_buf);
     strncpy(asset->last_label_text, text_buf, sizeof(asset->last_label_text) - 1);
     asset->last_label_text[sizeof(asset->last_label_text) - 1] = '\0';
-    place_scaled_asset(asset);
-    apply_asset_scale(asset);
+    place_scaled_obj(&asset->cfg, label);
     return label;
 }
 
