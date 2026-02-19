@@ -562,6 +562,17 @@ static void place_scaled_asset(asset_t *asset)
     place_scaled_obj(&asset->cfg, asset->obj);
 }
 
+static void reflow_scaled_asset(asset_t *asset)
+{
+    if (!asset || !asset->obj) return;
+    if (asset->cfg.type != ASSET_TEXT && asset->cfg.type != ASSET_IMAGE) return;
+
+    lv_obj_update_layout(asset->obj);
+    apply_asset_scale(asset);
+    lv_obj_update_layout(asset->obj);
+    place_scaled_asset(asset);
+}
+
 static asset_t *find_asset_by_id(int id)
 {
     for (int i = 0; i < asset_count; i++) {
@@ -1389,6 +1400,10 @@ static void parse_udp_asset_updates(const char *buf)
             if (label_created) {
                 apply_asset_styles(asset);
             }
+
+            if (asset->cfg.type == ASSET_TEXT || asset->cfg.type == ASSET_IMAGE) {
+                reflow_scaled_asset(asset);
+            }
         }
     }
 }
@@ -1698,7 +1713,6 @@ static lv_obj_t *create_text_asset(asset_t *asset)
     lv_label_set_text(label, text_buf);
     strncpy(asset->last_label_text, text_buf, sizeof(asset->last_label_text) - 1);
     asset->last_label_text[sizeof(asset->last_label_text) - 1] = '\0';
-    place_scaled_obj(&asset->cfg, label);
     return label;
 }
 
@@ -1739,8 +1753,6 @@ static lv_obj_t *create_image_asset(asset_t *asset)
     asset->obj = img;
     lv_obj_move_foreground(img);
     lv_obj_update_layout(img);
-    place_scaled_asset(asset);
-    apply_asset_scale(asset);
     return img;
 }
 
@@ -1770,6 +1782,7 @@ static void create_asset_visual(asset_t *asset)
     }
 
     apply_asset_styles(asset);
+    reflow_scaled_asset(asset);
 }
 
 static void maybe_attach_asset_label(asset_t *asset)
@@ -1840,6 +1853,7 @@ static void update_assets_from_udp(void)
                     compose_asset_text(&assets[i], text_buf, sizeof(text_buf));
                     if (strncmp(text_buf, assets[i].last_label_text, sizeof(assets[i].last_label_text) - 1) != 0) {
                         lv_label_set_text(assets[i].obj, text_buf);
+                        reflow_scaled_asset(&assets[i]);
                         strncpy(assets[i].last_label_text, text_buf, sizeof(assets[i].last_label_text) - 1);
                         assets[i].last_label_text[sizeof(assets[i].last_label_text) - 1] = '\0';
                     }
