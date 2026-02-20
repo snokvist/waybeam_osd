@@ -134,7 +134,7 @@
     },
     {
       "type": "text",
-      "enabled": true,
+      "enabled": false,
       "id": 7,
       "text_indices": [
         5,
@@ -143,7 +143,6 @@
       ],
       "orientation": "center",
       "label": "MenuText",
-      "enabled": false,
       "x": 725,
       "y": 200,
       "width": 220,
