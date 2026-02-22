@@ -58,9 +58,101 @@ The UDP socket is **drained fully** on every poll cycle, meaning every packet in
 **Conclusion:** Multiple independent senders **can** share the display if they use sparse arrays (`null` for unowned indices) or target mutually exclusive asset IDs.
 
 ## CLI sender/watch helper
-- The `waybeam` helper (`osd_send.c`) can build and send/watch UDP payloads using `--values`/`--texts` maps that point to literals or `@key` references from one or more `--ini` files. Extra sources can be pulled from local radios over their control sockets or proc files: `--hostapd <[iface,]sta-mac>` sends `STA <mac>` against `/run|/var/run/hostapd` (auto-selects an interface when omitted), `--wpa-cli <iface>` sends `SIGNAL_POLL` against `/run|/var/run/wpa_supplicant/<iface>`, and `--8812eu <iface>` reads `/proc/net/rtl88x2eu/<iface>/rssi_a`/`rssi_b`. Parsed fields (e.g., `signal`, `rx_packets`, `tx_packets`, `RSSI`, `LINKSPEED`, `rssi_a`, `rssi_b`) are merged on top of INI entries so CLI-derived values take precedence for the same key.
-- In `watch` mode, INI files and control-socket/proc outputs are refreshed every interval. If a query fails or a field disappears, the key resolves to `null` (ignored) rather than reusing stale data, so downstream `@key` lookups track the live radio state.
-- `watch` can run without an `--ini` file when at least one control-socket/proc source is provided.
+- The `osd_send` helper (`osd_send.c`) is config-driven. It reads `osd_send.json` by default (or `--config <file>`) for both `send` and `watch`.
+- Config fields:
+  - `network.dest` and `network.port` (`port` can be number/string or `@key`).
+  - `runtime.verbose` and `runtime.print_json`.
+  - `watch.interval_ms` and `watch.retry_ms`.
+  - `sources.ini`, `sources.hostapd`, `sources.wpa_cli`, `sources.rtl8812eu`, `sources.cpu` (each with `enabled` plus source-specific fields).
+  - `payload.values` and `payload.texts` arrays (0-8 entries).
+- Parsing is strict: unknown keys at root or in nested config objects are treated as errors.
+- Source behavior:
+  - `sources.ini.paths` loads one or more key/value files.
+  - `sources.hostapd` reads `STA <mac>` from `/run|/var/run/hostapd`.
+  - `sources.wpa_cli` reads `SIGNAL_POLL` from `/run|/var/run/wpa_supplicant/<iface>`.
+  - `sources.rtl8812eu` reads `/proc/net/rtl88x2eu/<iface>/rssi_a` and `rssi_b`.
+  - `sources.cpu` reads `/proc/stat` and exposes `cpu_total`, `cpu0..cpuN`, `cpu_cores`.
+- `watch` refreshes enabled sources every interval. Endpoint keys (`network.dest` / `network.port` when `@key`) are re-resolved on each send attempt. On endpoint/serialize/send failure, the unsent delta is retained and retried every `watch.retry_ms` until send succeeds.
+
+### `osd_send` usage
+```bash
+./osd_send send  [--config osd_send.json]
+./osd_send watch [--config osd_send.json]
+```
+
+- `send`: one-shot resolve+send.
+- `watch`: continuous polling of enabled sources, sending only changed slots.
+- Build helper only: `make osd_send`.
+
+### `osd_send.json` examples
+
+Example 1: INI + CPU metrics (common default)
+```json
+{
+  "network": { "dest": "127.0.0.1", "port": 7777 },
+  "runtime": { "verbose": false, "print_json": false },
+  "watch": { "interval_ms": 64, "retry_ms": 5000 },
+  "sources": {
+    "ini": { "enabled": true, "paths": ["/tmp/aalink_ext.msg"] },
+    "hostapd": { "enabled": false, "iface": "wlan0", "sta": "aa:bb:cc:dd:ee:ff" },
+    "wpa_cli": { "enabled": false, "iface": "wlan0" },
+    "rtl8812eu": { "enabled": false, "iface": "wlan0" },
+    "cpu": { "enabled": true }
+  },
+  "payload": {
+    "values": ["@used_rssi", "@mcs", "@cpu_total", "@cpu0", null, null, null, null],
+    "texts": ["@used_source", "@gs_string", "@cpu_cores", null, null, null, null, null]
+  }
+}
+```
+
+Example 2: hostapd + wpa_cli + rtl8812eu watch
+```json
+{
+  "network": { "dest": "127.0.0.1", "port": 7777 },
+  "runtime": { "verbose": true, "print_json": false },
+  "watch": { "interval_ms": 100, "retry_ms": 5000 },
+  "sources": {
+    "ini": { "enabled": false, "paths": [] },
+    "hostapd": { "enabled": true, "iface": "wlan0", "sta": "aa:bb:cc:dd:ee:ff" },
+    "wpa_cli": { "enabled": true, "iface": "wlan0" },
+    "rtl8812eu": { "enabled": true, "iface": "wlan0" },
+    "cpu": { "enabled": false }
+  },
+  "payload": {
+    "values": ["@signal", "@RSSI", "@rssi_a", "@rssi_b", null, null, null, null],
+    "texts": ["@tx_packets", "@rx_packets", null, null, null, null, null, null]
+  }
+}
+```
+
+Example 3: static/literal sender packet
+```json
+{
+  "network": { "dest": "127.0.0.1", "port": 7777 },
+  "runtime": { "verbose": false, "print_json": true },
+  "watch": { "interval_ms": 64, "retry_ms": 5000 },
+  "sources": {
+    "ini": { "enabled": false, "paths": [] },
+    "hostapd": { "enabled": false, "iface": "wlan0", "sta": "aa:bb:cc:dd:ee:ff" },
+    "wpa_cli": { "enabled": false, "iface": "wlan0" },
+    "rtl8812eu": { "enabled": false, "iface": "wlan0" },
+    "cpu": { "enabled": false }
+  },
+  "payload": {
+    "values": [0.25, 0.8, "", "null", null, null, null, null],
+    "texts": ["HELLO", "", "null", null, null, null, null, null]
+  }
+}
+```
+
+Notes:
+- Supported top-level keys: `network`, `runtime`, `watch`, `sources`, `payload`.
+- Unknown keys are rejected (strict parser).
+- In `payload` arrays:
+  - `null` disables the slot in config.
+  - `"null"` emits JSON `null` for that slot.
+  - `""` clears the slot (`values` clear to zero on backend; `texts` clear text).
 
 ## Local config file (`config.json`)
 - JSON file read at startup; missing keys fall back to defaults. Send `SIGHUP` to the running process to reload the file without restarting (asset layout, stats toggle, and `idle_ms` update in-place; resolution still follows the startup config).
