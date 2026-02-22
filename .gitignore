@@ -3,3 +3,4 @@ build/
 toolchain/
 toolchain.*
 lvgltest
+osd_send

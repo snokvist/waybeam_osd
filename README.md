@@ -27,9 +27,96 @@
 The generator emits both `values[]` and sample 96-char-capable `texts[]` for all 8 channels, retints asset 0 live, and enables IDs 6 and 7 with bar/text payloads to demonstrate on-demand assets.
 
 ### UDP sender/watch helper
-- The lightweight `waybeam` helper (`osd_send.c`) offers `send` (one-shot) and `watch` (polling) subcommands that build the UDP JSON payload from explicit `--values`/`--texts` maps and one or more `--ini` files.
-- Radio stats can be pulled directly from local control sockets/files without invoking external tools: `--hostapd <[iface,]sta-mac>` issues a `STA <mac>` command against `/run|/var/run/hostapd` sockets (auto-picks an interface when omitted), `--wpa-cli <iface>` issues `SIGNAL_POLL` against `/run|/var/run/wpa_supplicant/<iface>`, and `--8812eu <iface>` reads `/proc/net/rtl88x2eu/<iface>/rssi_a`/`rssi_b`. Parsed keys (e.g., `signal`, `rx_packets`, `tx_packets`, `RSSI`, `LINKSPEED`, `rssi_a`, `rssi_b`) are merged on top of loaded INI data so `@key` references resolve to the freshest command output; missing or failed commands collapse to `null` placeholders instead of reusing stale values.
-- `watch` refreshes both INI files and command outputs each interval so changing RSSI or packet counters propagate automatically. You can omit `--ini` entirely when only control-socket/proc sources are needed. Example: `./waybeam send --ini /tmp/radio.ini --hostapd wlan0,aa:bb:cc:dd:ee:ff --wpa-cli wlan0 --values "0=@signal,1=@RSSI" --texts "0=@tx_packets,1=@rx_packets"`.
+- The lightweight `osd_send` helper (`osd_send.c`) now uses a JSON config file instead of source/payload CLI flags. By default it reads `osd_send.json`; override with `--config <file>`.
+- `sources` blocks in config include explicit `enabled` toggles for `ini`, `hostapd`, `wpa_cli`, `rtl8812eu`, and `cpu`. CPU keys are `cpu_total` (overall), `cpu0..cpuN` (per-core), and `cpu_cores`.
+- `payload.values` / `payload.texts` are positional arrays (up to 8) with expressions like `"@key"`, numeric literals, `""` (clear), `"null"` (emit JSON null), or `null` (slot disabled in sender config).
+- Config parsing is strict: unknown keys in any object fail fast with an error.
+- In `watch`, unsent updates are retained and retried every `watch.retry_ms` until a send succeeds, even if no new source changes arrive.
+- Build `osd_send` only: `make osd_send`
+- Run examples:
+  - `./osd_send send --config osd_send.json`
+  - `./osd_send watch --config osd_send.json`
+
+#### `osd_send` usage
+```bash
+./osd_send send  [--config osd_send.json]
+./osd_send watch [--config osd_send.json]
+```
+
+- `send`: one-shot resolve+send.
+- `watch`: continuous polling of enabled sources, sending only changed slots.
+- `network.dest` and `network.port` can be literal values or `@key` references.
+- If a watched send fails, the unsent delta is retried every `watch.retry_ms`.
+
+#### `osd_send.json` examples
+
+Example 1: INI + CPU metrics (common default)
+```json
+{
+  "network": { "dest": "127.0.0.1", "port": 7777 },
+  "runtime": { "verbose": false, "print_json": false },
+  "watch": { "interval_ms": 64, "retry_ms": 5000 },
+  "sources": {
+    "ini": { "enabled": true, "paths": ["/tmp/aalink_ext.msg"] },
+    "hostapd": { "enabled": false, "iface": "wlan0", "sta": "aa:bb:cc:dd:ee:ff" },
+    "wpa_cli": { "enabled": false, "iface": "wlan0" },
+    "rtl8812eu": { "enabled": false, "iface": "wlan0" },
+    "cpu": { "enabled": true }
+  },
+  "payload": {
+    "values": ["@used_rssi", "@mcs", "@cpu_total", "@cpu0", null, null, null, null],
+    "texts": ["@used_source", "@gs_string", "@cpu_cores", null, null, null, null, null]
+  }
+}
+```
+
+Example 2: hostapd + wpa_cli + rtl8812eu watch
+```json
+{
+  "network": { "dest": "127.0.0.1", "port": 7777 },
+  "runtime": { "verbose": true, "print_json": false },
+  "watch": { "interval_ms": 100, "retry_ms": 5000 },
+  "sources": {
+    "ini": { "enabled": false, "paths": [] },
+    "hostapd": { "enabled": true, "iface": "wlan0", "sta": "aa:bb:cc:dd:ee:ff" },
+    "wpa_cli": { "enabled": true, "iface": "wlan0" },
+    "rtl8812eu": { "enabled": true, "iface": "wlan0" },
+    "cpu": { "enabled": false }
+  },
+  "payload": {
+    "values": ["@signal", "@RSSI", "@rssi_a", "@rssi_b", null, null, null, null],
+    "texts": ["@tx_packets", "@rx_packets", null, null, null, null, null, null]
+  }
+}
+```
+
+Example 3: static/literal sender packet
+```json
+{
+  "network": { "dest": "127.0.0.1", "port": 7777 },
+  "runtime": { "verbose": false, "print_json": true },
+  "watch": { "interval_ms": 64, "retry_ms": 5000 },
+  "sources": {
+    "ini": { "enabled": false, "paths": [] },
+    "hostapd": { "enabled": false, "iface": "wlan0", "sta": "aa:bb:cc:dd:ee:ff" },
+    "wpa_cli": { "enabled": false, "iface": "wlan0" },
+    "rtl8812eu": { "enabled": false, "iface": "wlan0" },
+    "cpu": { "enabled": false }
+  },
+  "payload": {
+    "values": [0.25, 0.8, "", "null", null, null, null, null],
+    "texts": ["HELLO", "", "null", null, null, null, null, null]
+  }
+}
+```
+
+Notes:
+- Keep only supported top-level keys: `network`, `runtime`, `watch`, `sources`, `payload`.
+- Unknown keys are treated as errors (strict parser).
+- In `payload` arrays:
+  - `null` disables the slot in config.
+  - `"null"` emits JSON `null` for that slot.
+  - `""` clears the slot (`values` clear to zero on backend; `texts` clear text).
 
 ## Config & contract
 - `config.json` defines screen size, idle wait, stats toggle, UDP stats toggle, and up to 8 assets with positions, sizes, ranges, background palette slot (11 options including a fully transparent swatch and semi-transparent tints), an optional `background_opacity` percent override, an `enabled` switch, and colors for bar/text/image assets. Bars can choose an `orientation` of `right` (default) or `left` to flip label placement; `left` also reverses the bar fill so it grows from right-to-left and anchors the container’s right edge at `x` so left/right bars can share the same coordinate. Each asset can also carry an `id` used by UDP-side `asset_updates` to retint backgrounds, bar colors, text colors, move/resize, or swap types live. See `CONTRACT.md` for the full schema and UDP payload format. Background palette indices: 0 transparent, 1 black, 2 white, 3 charcoal, 4 charcoal dark, 5 blue, 6 teal, 7 green, 8 orange, 9 pink, 10 purple. Default palette opacities mirror the per-index list (0%, 50%, 50%, 70%, 90%, 60%, 60%, 60%, 70%, 60%, 70%), and `background_opacity` lets you pick any 0–100%.

@@ -6,7 +6,9 @@ LVGL_DIR ?= ${shell pwd}
 # Toolchain setup (defaults to bundled Sigmastar toolchain)
 TOOLCHAIN ?= $(PWD)/toolchain/sigmastar-infinity6e
 SYSROOT ?= $(TOOLCHAIN)/arm-openipc-linux-gnueabihf/sysroot
-CC ?= $(TOOLCHAIN)/bin/arm-openipc-linux-gnueabihf-gcc
+ifeq ($(origin CC), default)
+CC := $(TOOLCHAIN)/bin/arm-openipc-linux-gnueabihf-gcc
+endif
 
 include $(LVGL_DIR)/$(LVGL_DIR_NAME)/lvgl.mk
 
@@ -21,6 +23,9 @@ LDFLAGS += --sysroot=$(SYSROOT) -Wl,--gc-sections -s -L$(SYSROOT)/usr/lib -L$(SY
 
 SRCS := main.c
 OSD_SEND_SRC := osd_send.c
+OSD_SEND_CC ?= cc
+OSD_SEND_CFLAGS ?= -D_GNU_SOURCE -std=c11 -O2 -Wall -Wextra
+OSD_SEND_LDFLAGS ?=
 
 OUTPUT_NAME := lvgltest
 OUTPUT ?= $(abspath $(OUTPUT_NAME))
@@ -34,7 +39,6 @@ LVGL_OBJS := $(addprefix $(BUILD_DIR)/, $(CSRCS:.c=.o))
 
 # Convert your own sources into objects
 APP_OBJS := $(addprefix $(BUILD_DIR)/, $(SRCS:.c=.o))
-OSD_SEND_OBJ := $(addprefix $(BUILD_DIR)/, $(OSD_SEND_SRC:.c=.o))
 
 # Include paths
 INCLUDES := -I$(SDK)/include \
@@ -46,14 +50,15 @@ LIBS := -lcam_os_wrapper -lmi_rgn -lmi_sys -ldl
 
 # Target
 all: $(OUTPUT) $(OSD_SEND_OUTPUT)
+$(OSD_SEND_OUTPUT_NAME): $(OSD_SEND_OUTPUT)
 
 $(OUTPUT): $(APP_OBJS) $(LVGL_OBJS)
 	@mkdir -p $(@D)
 	$(CC) $(APP_OBJS) $(LVGL_OBJS) $(INCLUDES) $(CFLAGS) $(LDFLAGS) -L$(DRV) $(LIBS) -o $@
 
-$(OSD_SEND_OUTPUT): $(OSD_SEND_OBJ)
+$(OSD_SEND_OUTPUT): $(OSD_SEND_SRC)
 	@mkdir -p $(@D)
-	$(CC) $(OSD_SEND_OBJ) $(CFLAGS) $(LDFLAGS) -o $@
+	$(OSD_SEND_CC) $(OSD_SEND_CFLAGS) $< $(OSD_SEND_LDFLAGS) -o $@
 
 # Build rule for all .c files (app + LVGL)
 $(BUILD_DIR)/%.o: %.c
@@ -63,4 +68,4 @@ $(BUILD_DIR)/%.o: %.c
 clean:
 	rm -rf $(BUILD_DIR) $(OUTPUT) $(OSD_SEND_OUTPUT)
 
-.PHONY: all clean
+.PHONY: all clean $(OSD_SEND_OUTPUT_NAME)

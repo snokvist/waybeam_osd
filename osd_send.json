@@ -1,0 +1,60 @@
+{
+  "network": {
+    "dest": "127.0.0.1",
+    "port": 7777
+  },
+  "runtime": {
+    "verbose": false,
+    "print_json": false
+  },
+  "watch": {
+    "interval_ms": 64,
+    "retry_ms": 5000
+  },
+  "sources": {
+    "ini": {
+      "enabled": true,
+      "paths": [
+        "/tmp/aalink_ext.msg"
+      ]
+    },
+    "hostapd": {
+      "enabled": false,
+      "iface": "wlan0",
+      "sta": "aa:bb:cc:dd:ee:ff"
+    },
+    "wpa_cli": {
+      "enabled": false,
+      "iface": "wlan0"
+    },
+    "rtl8812eu": {
+      "enabled": false,
+      "iface": "wlan0"
+    },
+    "cpu": {
+      "enabled": true
+    }
+  },
+  "payload": {
+    "values": [
+      "@used_rssi",
+      "@mcs",
+      "@cpu_total",
+      "@cpu0",
+      null,
+      null,
+      null,
+      null
+    ],
+    "texts": [
+      "@used_source",
+      "@gs_string",
+      "@cpu_cores",
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  }
+}
