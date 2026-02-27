@@ -28,11 +28,12 @@ The generator emits both `values[]` and sample 96-char-capable `texts[]` for all
 
 ### UDP sender/watch helper
 - The lightweight `osd_send` helper (`osd_send.c`) now uses a JSON config file instead of source/payload CLI flags. By default it reads `osd_send.json`; override with `--config <file>`.
-- `sources` blocks in config include explicit `enabled` toggles for `ini`, `hostapd`, `wpa_cli`, `rtl8812eu`, and `cpu`. CPU keys are `cpu_total` (overall), `cpu0..cpuN` (per-core), and `cpu_cores`.
+- `sources` blocks in config include explicit `enabled` toggles for `ini`, `hostapd`, `wpa_cli`, `rtl8812eu`, `cpu`, and `venc`. CPU keys are `cpu_total` (overall), `cpu0..cpuN` (per-core), and `cpu_cores`. VENC keys (fetched passively from majestic HTTP `/metrics`) are `venc_bitrate` (kbps, computed from byte counter delta), `venc_bytes` (raw counter), `isp_fps`, `isp_exposure`, `isp_again`, `isp_dgain`, `soc_temp` (celsius), `load_1m`, `mem_used_pct`.
 - `payload.values` / `payload.texts` are positional arrays (up to 8) with expressions like `"@key"`, numeric literals, `""` (clear), `"null"` (emit JSON null), or `null` (slot disabled in sender config).
 - Config parsing is strict: unknown keys in any object fail fast with an error.
 - In `watch`, unsent updates are retained and retried every `watch.retry_ms` until a send succeeds, even if no new source changes arrive.
 - Build `osd_send` only: `make osd_send`
+- Build `osd_send_arm` (cross-compiled for board): `make osd_send_arm`
 - Run examples:
   - `./osd_send send --config osd_send.json`
   - `./osd_send watch --config osd_send.json`
@@ -106,6 +107,27 @@ Example 3: static/literal sender packet
   "payload": {
     "values": [0.25, 0.8, "", "null", null, null, null, null],
     "texts": ["HELLO", "", "null", null, null, null, null, null]
+  }
+}
+```
+
+Example 4: majestic metrics (venc/ISP/system via HTTP)
+```json
+{
+  "network": { "dest": "127.0.0.1", "port": 7777 },
+  "runtime": { "verbose": true, "print_json": false },
+  "watch": { "interval_ms": 100, "retry_ms": 5000 },
+  "sources": {
+    "ini": { "enabled": false, "paths": [] },
+    "hostapd": { "enabled": false, "iface": "wlan0", "sta": "aa:bb:cc:dd:ee:ff" },
+    "wpa_cli": { "enabled": false, "iface": "wlan0" },
+    "rtl8812eu": { "enabled": false, "iface": "wlan0" },
+    "cpu": { "enabled": false },
+    "venc": { "enabled": true, "url": "http://127.0.0.1/metrics" }
+  },
+  "payload": {
+    "values": ["@venc_bitrate", "@isp_fps", "@soc_temp", "@mem_used_pct", null, null, null, null],
+    "texts": [null, null, null, null, null, null, null, null]
   }
 }
 ```

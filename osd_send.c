@@ -75,6 +75,7 @@
 #include <time.h>
 #include <unistd.h>
 
+
 #define MAX_PAYLOAD      1280
 #define BUILD_BUF        1900
 
@@ -138,6 +139,11 @@ typedef struct {
 } CpuSourceConfig;
 
 typedef struct {
+    int enabled;
+    char url[256];
+} VencSourceConfig;
+
+typedef struct {
     char dest[64];
     char port[64];
 } NetworkConfig;
@@ -168,6 +174,7 @@ typedef struct {
     IfaceSourceConfig wpa;
     IfaceSourceConfig rtl8812eu;
     CpuSourceConfig cpu;
+    VencSourceConfig venc;
     PayloadConfig payload;
 } OsdSendConfig;
 
@@ -681,6 +688,7 @@ static int json_get_string_array_range_cfg(const char *start, const char *end, c
     return 0;
 }
 
+
 static int json_get_payload_rhs_array(const char *start, const char *end, const char *key,
     int used[8], char rhs[8][INI_VAL_MAX], int *found)
 {
@@ -741,6 +749,8 @@ static void cfg_defaults(OsdSendConfig *cfg)
 
     cfg->runtime.verbose = 0;
     cfg->runtime.print_json = 0;
+
+    copy_cstr(cfg->venc.url, sizeof(cfg->venc.url), "http://127.0.0.1/metrics");
 }
 
 static int cfg_parse_file(const char *path, OsdSendConfig *cfg)
@@ -862,8 +872,8 @@ static int cfg_parse_file(const char *path, OsdSendConfig *cfg)
 
     const char *sources_s = NULL, *sources_e = NULL;
     if (json_get_object_range(root_s, root_e, "sources", &sources_s, &sources_e) == 0) {
-        static const char *const sources_allowed[] = { "ini", "hostapd", "wpa_cli", "rtl8812eu", "cpu" };
-        if (!json_validate_object_keys(sources_s, sources_e, "sources", sources_allowed, 5)) {
+        static const char *const sources_allowed[] = { "ini", "hostapd", "wpa_cli", "rtl8812eu", "cpu", "venc" };
+        if (!json_validate_object_keys(sources_s, sources_e, "sources", sources_allowed, (int)(sizeof(sources_allowed) / sizeof(sources_allowed[0])))) {
             free(json);
             return 0;
         }
@@ -989,6 +999,30 @@ static int cfg_parse_file(const char *path, OsdSendConfig *cfg)
                 return 0;
             }
         }
+
+        const char *venc_s = NULL, *venc_e = NULL;
+        if (json_get_object_range(sources_s, sources_e, "venc", &venc_s, &venc_e) == 0) {
+            static const char *const venc_allowed[] = { "enabled", "url" };
+            if (!json_validate_object_keys(venc_s, venc_e, "sources.venc", venc_allowed, 2)) {
+                free(json);
+                return 0;
+            }
+            int found = 0;
+            int b = 0;
+            if (json_get_bool_range(venc_s, venc_e, "enabled", &b, &found) == 0 && found) cfg->venc.enabled = b;
+            else if (found) {
+                fprintf(stderr, "Error: invalid sources.venc.enabled\n");
+                free(json);
+                return 0;
+            }
+
+            found = 0;
+            if (json_get_string_range_cfg(venc_s, venc_e, "url", cfg->venc.url, sizeof(cfg->venc.url), &found) != 0 && found) {
+                fprintf(stderr, "Error: invalid sources.venc.url\n");
+                free(json);
+                return 0;
+            }
+        }
     }
 
     const char *payload_s = NULL, *payload_e = NULL;
@@ -1041,6 +1075,11 @@ static int cfg_parse_file(const char *path, OsdSendConfig *cfg)
     }
     if (cfg->ini.enabled && cfg->ini.paths_count <= 0) {
         fprintf(stderr, "Error: sources.ini.enabled requires sources.ini.paths\n");
+        free(json);
+        return 0;
+    }
+    if (cfg->venc.enabled && !cfg->venc.url[0]) {
+        fprintf(stderr, "Error: sources.venc.enabled requires sources.venc.url\n");
         free(json);
         return 0;
     }
@@ -1545,7 +1584,7 @@ static int load_cpu_metrics(IniStore *out, CpuStatsState *state, int verbose)
     char vbuf[64];
     double pct = 0.0;
     if (!cpu_usage_percent(&state->total_prev, &total_now, &pct)) pct = 0.0;
-    snprintf(vbuf, sizeof(vbuf), "%.3f", pct);
+    snprintf(vbuf, sizeof(vbuf), "%.1f", pct);
     (void)ini_set(out, "cpu_total", vbuf);
 
     snprintf(vbuf, sizeof(vbuf), "%d", core_count_now);
@@ -1564,7 +1603,7 @@ static int load_cpu_metrics(IniStore *out, CpuStatsState *state, int verbose)
         } else {
             pct = 0.0;
         }
-        snprintf(vbuf, sizeof(vbuf), "%.3f", pct);
+        snprintf(vbuf, sizeof(vbuf), "%.1f", pct);
 
         char key[32];
         snprintf(key, sizeof(key), "cpu%d", i);
@@ -1581,8 +1620,247 @@ static int load_cpu_metrics(IniStore *out, CpuStatsState *state, int verbose)
     return out->loaded;
 }
 
+/* Cherry-picked metrics from majestic /metrics (Prometheus format).
+ * Purely passive HTTP fetch - never touches MI API or encoder state.
+ *
+ * Exposed keys:
+ *   venc_bitrate  - video encoder bitrate (kbps, computed from byte counter delta)
+ *   venc_bytes    - raw venc0 received bytes counter
+ *   isp_fps       - sensor framerate
+ *   isp_exposure  - ISP exposure value
+ *   isp_again     - analog gain
+ *   isp_dgain     - digital gain
+ *   soc_temp      - SoC temperature (celsius)
+ *   load_1m       - 1-minute load average
+ *   mem_used_pct  - memory used percent (derived from MemTotal/MemAvailable)
+ */
+
+/* State for computing bitrate from byte counter deltas + fetch cache */
+static struct {
+    int valid;
+    double prev_bytes;
+    uint64_t prev_ms;
+    uint64_t last_fetch_ms;
+    IniStore cache;
+    int cache_valid;
+} venc_rate_state;
+
+#define VENC_FETCH_INTERVAL_MS 1000
+
+static int load_venc_metrics(IniStore *out, const char *url, int verbose)
+{
+    if (!out) return 0;
+    ini_init(out);
+    if (!url || !*url) return 0;
+
+    /* Rate-limit HTTP fetches to once per second; return cached results otherwise */
+    uint64_t now_fetch = now_mono_ms();
+    if (venc_rate_state.cache_valid &&
+        (now_fetch - venc_rate_state.last_fetch_ms) < VENC_FETCH_INTERVAL_MS) {
+        memcpy(out, &venc_rate_state.cache, sizeof(*out));
+        return out->loaded;
+    }
+
+    /* Minimal HTTP GET via TCP socket */
+    char host[64] = "127.0.0.1";
+    int port = 80;
+    const char *path = "/metrics";
+
+    /* Parse http://host:port/path */
+    const char *p = url;
+    if (!strncmp(p, "http://", 7)) p += 7;
+    const char *slash = strchr(p, '/');
+    const char *colon = strchr(p, ':');
+    if (colon && (!slash || colon < slash)) {
+        size_t hlen = (size_t)(colon - p);
+        if (hlen >= sizeof(host)) hlen = sizeof(host) - 1;
+        memcpy(host, p, hlen);
+        host[hlen] = '\0';
+        const char *pstart = colon + 1;
+        const char *pend = slash ? slash : pstart + strlen(pstart);
+        size_t plen = (size_t)(pend - pstart);
+        if (plen > 0 && plen < 8) {
+            char pbuf[8];
+            memcpy(pbuf, pstart, plen);
+            pbuf[plen] = '\0';
+            int pv = 0;
+            if (parse_int(pbuf, &pv) && pv > 0 && pv <= 65535) port = pv;
+        }
+    } else if (slash) {
+        size_t hlen = (size_t)(slash - p);
+        if (hlen >= sizeof(host)) hlen = sizeof(host) - 1;
+        memcpy(host, p, hlen);
+        host[hlen] = '\0';
+    }
+    if (slash) path = slash;
+
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) {
+        if (verbose) perror("[venc] socket");
+        return 0;
+    }
+
+    struct timeval tv = { .tv_sec = 2, .tv_usec = 0 };
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons((uint16_t)port);
+    if (inet_pton(AF_INET, host, &addr.sin_addr) != 1) {
+        if (verbose) fprintf(stderr, "[venc] invalid host: %s\n", host);
+        close(fd);
+        return 0;
+    }
+
+    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        if (verbose) perror("[venc] connect");
+        close(fd);
+        return 0;
+    }
+
+    char req[256];
+    int rlen = snprintf(req, sizeof(req),
+        "GET %s HTTP/1.0\r\nHost: %s\r\nConnection: close\r\n\r\n", path, host);
+    if (send(fd, req, (size_t)rlen, 0) != rlen) {
+        if (verbose) perror("[venc] send");
+        close(fd);
+        return 0;
+    }
+
+    static char buf[12288];
+    int total = 0;
+    for (;;) {
+        ssize_t n = recv(fd, buf + total, sizeof(buf) - 1 - (size_t)total, 0);
+        if (n <= 0) break;
+        total += (int)n;
+        if (total >= (int)sizeof(buf) - 1) break;
+    }
+    close(fd);
+    buf[total] = '\0';
+
+    char *body = strstr(buf, "\r\n\r\n");
+    if (!body) {
+        if (verbose) fprintf(stderr, "[venc] no HTTP body in response\n");
+        return 0;
+    }
+    body += 4;
+
+    /* Whitelist: prometheus_name -> output key.  Only these are extracted. */
+    static const struct { const char *prom; int plen; const char *key; } wanted[] = {
+        { "venc0_rcvd_bytes",              17, "venc_bytes"    },
+        { "isp_fps",                        7, "isp_fps"       },
+        { "isp_exposure",                  12, "isp_exposure"  },
+        { "isp_again",                      9, "isp_again"     },
+        { "isp_dgain",                      9, "isp_dgain"     },
+        { "node_hwmon_temp_celsius",       24, "soc_temp"      },
+        { "node_load1",                    10, "load_1m"       },
+        { "node_memory_MemTotal_bytes",    27, "_mem_total"    },
+        { "node_memory_MemAvailable_bytes",31, "_mem_avail"    },
+    };
+    static const int nwanted = (int)(sizeof(wanted) / sizeof(wanted[0]));
+
+    double mem_total = 0, mem_avail = 0;
+    double venc_bytes = 0;
+    int got_venc_bytes = 0;
+    int any = 0;
+    char *line = body;
+
+    while (*line) {
+        char *eol = strchr(line, '\n');
+        if (eol) *eol = '\0';
+
+        if (line[0] == '#' || line[0] == '\0' || line[0] == '\r') {
+            if (eol) { line = eol + 1; continue; }
+            break;
+        }
+
+        /* Extract metric name (before space or '{') */
+        char *sp = line;
+        while (*sp && *sp != ' ' && *sp != '{') sp++;
+        size_t klen = (size_t)(sp - line);
+
+        /* Skip labels if present */
+        char *val_start = sp;
+        if (*sp == '{') {
+            val_start = strchr(sp, '}');
+            if (!val_start) { if (eol) { line = eol + 1; continue; } break; }
+            val_start++;
+        }
+        while (*val_start == ' ') val_start++;
+
+        /* Trim trailing whitespace from value */
+        char *vend = val_start + strlen(val_start);
+        while (vend > val_start && (vend[-1] == '\r' || vend[-1] == '\n' || vend[-1] == ' ')) vend--;
+        *vend = '\0';
+
+        /* Check against whitelist */
+        for (int i = 0; i < nwanted && klen > 0 && *val_start; i++) {
+            if ((int)klen == wanted[i].plen && !memcmp(line, wanted[i].prom, klen)) {
+                /* Store raw value for internal keys prefixed with _ */
+                if (wanted[i].key[0] == '_') {
+                    double v = strtod(val_start, NULL);
+                    if (!strcmp(wanted[i].key, "_mem_total")) mem_total = v;
+                    else if (!strcmp(wanted[i].key, "_mem_avail")) mem_avail = v;
+                } else {
+                    (void)ini_set(out, wanted[i].key, val_start);
+                    any = 1;
+                    if (!strcmp(wanted[i].key, "venc_bytes")) {
+                        venc_bytes = strtod(val_start, NULL);
+                        got_venc_bytes = 1;
+                    }
+                }
+                break;
+            }
+        }
+
+        if (eol) line = eol + 1;
+        else break;
+    }
+
+    /* Derived: venc_bitrate (kbps) from byte counter delta */
+    if (got_venc_bytes) {
+        if (venc_rate_state.valid && now_fetch > venc_rate_state.prev_ms) {
+            double dt_s = (double)(now_fetch - venc_rate_state.prev_ms) / 1000.0;
+            double delta = venc_bytes - venc_rate_state.prev_bytes;
+            if (delta >= 0 && dt_s > 0) {
+                double kbps = (delta * 8.0) / (dt_s * 1000.0);
+                char vbuf[32];
+                snprintf(vbuf, sizeof(vbuf), "%.1f", kbps);
+                (void)ini_set(out, "venc_bitrate", vbuf);
+                any = 1;
+            }
+        }
+        venc_rate_state.prev_bytes = venc_bytes;
+        venc_rate_state.prev_ms = now_fetch;
+        venc_rate_state.valid = 1;
+    }
+
+    /* Derived: mem_used_pct from MemTotal and MemAvailable */
+    if (mem_total > 0) {
+        double pct = ((mem_total - mem_avail) / mem_total) * 100.0;
+        if (pct < 0) pct = 0;
+        if (pct > 100) pct = 100;
+        char vbuf[32];
+        snprintf(vbuf, sizeof(vbuf), "%.1f", pct);
+        (void)ini_set(out, "mem_used_pct", vbuf);
+        any = 1;
+    }
+
+    out->loaded = any;
+    /* Cache result and timestamp */
+    memcpy(&venc_rate_state.cache, out, sizeof(*out));
+    venc_rate_state.cache_valid = 1;
+    venc_rate_state.last_fetch_ms = now_fetch;
+
+    if (verbose) fprintf(stderr, "[venc] fetched %d metrics from %s:%d%s\n", out->count, host, port, path);
+    return any;
+}
+
 static void refresh_cli_store(IniStore *cli, const char *hostapd_iface, const char *hostapd_sta,
-    const char *wpa_iface, const char *rtl8812_iface, int cpu_enable, CpuStatsState *cpu_state, int verbose)
+    const char *wpa_iface, const char *rtl8812_iface, int cpu_enable, CpuStatsState *cpu_state,
+    const char *venc_url, int verbose)
 {
     if (!cli) return;
     ini_init(cli);
@@ -1613,6 +1891,13 @@ static void refresh_cli_store(IniStore *cli, const char *hostapd_iface, const ch
 
     if (cpu_enable) {
         if (load_cpu_metrics(&tmp, cpu_state, verbose)) {
+            ini_merge(cli, &tmp);
+            any = 1;
+        }
+    }
+
+    if (venc_url && *venc_url) {
+        if (load_venc_metrics(&tmp, venc_url, verbose)) {
             ini_merge(cli, &tmp);
             any = 1;
         }
@@ -1695,7 +1980,7 @@ static int serialize_payload(const Payload *p, char *out, size_t out_cap)
         for (int i = 0; i <= max_idx; i++) {
             const char *sep = (i == 0) ? "" : ",";
             if (p->values_state[i] == VS_NUM) {
-                if (!appendf(out, out_cap, &len, "%s%.3f", sep, p->values[i])) return -1;
+                if (!appendf(out, out_cap, &len, "%s%.1f", sep, p->values[i])) return -1;
             } else if (p->values_state[i] == VS_EMPTY) {
                 if (!appendf(out, out_cap, &len, "%s\"\"", sep)) return -1;
             } else {
@@ -2038,7 +2323,7 @@ static int cfg_apply_values_send(Payload *p, const IniStore *ini, const OsdSendC
             continue;
         }
 
-        if (verbose) fprintf(stderr, "[send] values[%d]=%.3f (from %s)\n", idx, dv, rhs);
+        if (verbose) fprintf(stderr, "[send] values[%d]=%.1f (from %s)\n", idx, dv, rhs);
         set_value_num(p, idx, dv);
     }
     return 1;
@@ -2127,6 +2412,7 @@ static int cmd_send(int argc, char **argv, const char *prog)
         cfg.rtl8812eu.enabled ? cfg.rtl8812eu.iface : NULL,
         cfg.cpu.enabled,
         &cpu_state,
+        cfg.venc.enabled ? cfg.venc.url : NULL,
         verbose);
     ini_merge(&ini, &cli_store);
 
@@ -2253,11 +2539,13 @@ static int cmd_watch(int argc, char **argv, const char *prog)
     const char *wpa_iface = cfg.wpa.enabled ? cfg.wpa.iface : NULL;
     const char *rtl8812_iface = cfg.rtl8812eu.enabled ? cfg.rtl8812eu.iface : NULL;
     int cpu_enable = cfg.cpu.enabled;
+    const char *venc_url = cfg.venc.enabled ? cfg.venc.url : NULL;
 
     int has_cli_source = (hostapd_sta && *hostapd_sta) || (wpa_iface && *wpa_iface) ||
-        (rtl8812_iface && *rtl8812_iface) || cpu_enable;
+        (rtl8812_iface && *rtl8812_iface) || cpu_enable ||
+        (venc_url && *venc_url);
     if (ini_count == 0 && !has_cli_source) {
-        fprintf(stderr, "Error: config needs at least one enabled source (ini/hostapd/wpa_cli/rtl8812eu/cpu) for watch mode\n");
+        fprintf(stderr, "Error: config needs at least one enabled source (ini/hostapd/wpa_cli/rtl8812eu/cpu/venc) for watch mode\n");
         watchspec_free(&w);
         return 1;
     }
@@ -2300,7 +2588,8 @@ static int cmd_watch(int argc, char **argv, const char *prog)
         }
     }
 
-    refresh_cli_store(&cli_store, hostapd_iface, hostapd_sta, wpa_iface, rtl8812_iface, cpu_enable, &cpu_state, verbose);
+    refresh_cli_store(&cli_store, hostapd_iface, hostapd_sta, wpa_iface, rtl8812_iface, cpu_enable, &cpu_state,
+        venc_url, verbose);
 
     char dest[64];
     int port = DEFAULT_PORT;
@@ -2454,7 +2743,8 @@ static int cmd_watch(int argc, char **argv, const char *prog)
             }
         }
 
-        refresh_cli_store(&cli_store, hostapd_iface, hostapd_sta, wpa_iface, rtl8812_iface, cpu_enable, &cpu_state, verbose);
+        refresh_cli_store(&cli_store, hostapd_iface, hostapd_sta, wpa_iface, rtl8812_iface, cpu_enable, &cpu_state,
+            venc_url, verbose);
 
         uint64_t now_ms = now_mono_ms();
         int retry_due = (retry_delta.active && next_retry_at_ms != 0 && now_ms >= next_retry_at_ms);
@@ -2481,7 +2771,7 @@ static int cmd_watch(int argc, char **argv, const char *prog)
 
                 if (changed) {
                     if (verbose) {
-                        if (st == VS_NUM) fprintf(stderr, "[watch] change values[%d]=%.3f\n", i, dv);
+                        if (st == VS_NUM) fprintf(stderr, "[watch] change values[%d]=%.1f\n", i, dv);
                         else if (st == VS_EMPTY) fprintf(stderr, "[watch] change values[%d]=\"\" (clear)\n", i);
                         else fprintf(stderr, "[watch] change values[%d]=null (ignore)\n", i);
                     }
