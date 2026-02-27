@@ -60,12 +60,22 @@ $(OSD_SEND_OUTPUT): $(OSD_SEND_SRC)
 	@mkdir -p $(@D)
 	$(OSD_SEND_CC) $(OSD_SEND_CFLAGS) $< $(OSD_SEND_LDFLAGS) -o $@
 
+OSD_SEND_ARM_OUTPUT_NAME := osd_send_arm
+OSD_SEND_ARM_OUTPUT ?= $(abspath $(OSD_SEND_ARM_OUTPUT_NAME))
+
+$(OSD_SEND_ARM_OUTPUT_NAME): $(OSD_SEND_ARM_OUTPUT)
+
+$(OSD_SEND_ARM_OUTPUT): $(OSD_SEND_SRC)
+	@mkdir -p $(@D)
+	$(CC) -D_GNU_SOURCE -std=c11 -O2 -Wall -Wextra $< \
+		$(LDFLAGS) -o $@
+
 # Build rule for all .c files (app + LVGL)
 $(BUILD_DIR)/%.o: %.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) $(INCLUDES) -c $< -o $@
 
 clean:
-	rm -rf $(BUILD_DIR) $(OUTPUT) $(OSD_SEND_OUTPUT)
+	rm -rf $(BUILD_DIR) $(OUTPUT) $(OSD_SEND_OUTPUT) $(OSD_SEND_ARM_OUTPUT)
 
-.PHONY: all clean $(OSD_SEND_OUTPUT_NAME)
+.PHONY: all clean $(OSD_SEND_OUTPUT_NAME) $(OSD_SEND_ARM_OUTPUT_NAME)

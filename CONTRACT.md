@@ -63,7 +63,7 @@ The UDP socket is **drained fully** on every poll cycle, meaning every packet in
   - `network.dest` and `network.port` (`port` can be number/string or `@key`).
   - `runtime.verbose` and `runtime.print_json`.
   - `watch.interval_ms` and `watch.retry_ms`.
-  - `sources.ini`, `sources.hostapd`, `sources.wpa_cli`, `sources.rtl8812eu`, `sources.cpu` (each with `enabled` plus source-specific fields).
+  - `sources.ini`, `sources.hostapd`, `sources.wpa_cli`, `sources.rtl8812eu`, `sources.cpu`, `sources.venc` (each with `enabled` plus source-specific fields).
   - `payload.values` and `payload.texts` arrays (0-8 entries).
 - Parsing is strict: unknown keys at root or in nested config objects are treated as errors.
 - Source behavior:
@@ -72,6 +72,7 @@ The UDP socket is **drained fully** on every poll cycle, meaning every packet in
   - `sources.wpa_cli` reads `SIGNAL_POLL` from `/run|/var/run/wpa_supplicant/<iface>`.
   - `sources.rtl8812eu` reads `/proc/net/rtl88x2eu/<iface>/rssi_a` and `rssi_b`.
   - `sources.cpu` reads `/proc/stat` and exposes `cpu_total`, `cpu0..cpuN`, `cpu_cores`.
+  - `sources.venc` fetches Prometheus metrics from majestic's HTTP `/metrics` endpoint (passive, never touches the encoder). `url` defaults to `http://127.0.0.1/metrics`. Exposed keys: `venc_bitrate` (kbps, computed from byte counter delta), `venc_bytes` (raw counter), `isp_fps`, `isp_exposure`, `isp_again`, `isp_dgain`, `soc_temp` (celsius), `load_1m`, `mem_used_pct`.
 - `watch` refreshes enabled sources every interval. Endpoint keys (`network.dest` / `network.port` when `@key`) are re-resolved on each send attempt. On endpoint/serialize/send failure, the unsent delta is retained and retried every `watch.retry_ms` until send succeeds.
 
 ### `osd_send` usage
@@ -82,7 +83,7 @@ The UDP socket is **drained fully** on every poll cycle, meaning every packet in
 
 - `send`: one-shot resolve+send.
 - `watch`: continuous polling of enabled sources, sending only changed slots.
-- Build helper only: `make osd_send`.
+- Build helper only: `make osd_send`. Cross-compile for board: `make osd_send_arm`.
 
 ### `osd_send.json` examples
 
@@ -142,6 +143,27 @@ Example 3: static/literal sender packet
   "payload": {
     "values": [0.25, 0.8, "", "null", null, null, null, null],
     "texts": ["HELLO", "", "null", null, null, null, null, null]
+  }
+}
+```
+
+Example 4: majestic metrics (venc/ISP/system via HTTP)
+```json
+{
+  "network": { "dest": "127.0.0.1", "port": 7777 },
+  "runtime": { "verbose": true, "print_json": false },
+  "watch": { "interval_ms": 100, "retry_ms": 5000 },
+  "sources": {
+    "ini": { "enabled": false, "paths": [] },
+    "hostapd": { "enabled": false, "iface": "wlan0", "sta": "aa:bb:cc:dd:ee:ff" },
+    "wpa_cli": { "enabled": false, "iface": "wlan0" },
+    "rtl8812eu": { "enabled": false, "iface": "wlan0" },
+    "cpu": { "enabled": false },
+    "venc": { "enabled": true, "url": "http://127.0.0.1/metrics" }
+  },
+  "payload": {
+    "values": ["@venc_bitrate", "@isp_fps", "@soc_temp", "@mem_used_pct", null, null, null, null],
+    "texts": [null, null, null, null, null, null, null, null]
   }
 }
 ```
