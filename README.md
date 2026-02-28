@@ -29,6 +29,7 @@ The generator emits both `values[]` and sample 96-char-capable `texts[]` for all
 ### UDP sender/watch helper
 - The lightweight `osd_send` helper (`osd_send.c`) now uses a JSON config file instead of source/payload CLI flags. By default it reads `osd_send.json`; override with `--config <file>`.
 - `sources` blocks in config include explicit `enabled` toggles for `ini`, `hostapd`, `wpa_cli`, `rtl8812eu`, `cpu`, and `venc`. CPU keys are `cpu_total` (overall), `cpu0..cpuN` (per-core), and `cpu_cores`. VENC keys (fetched passively from majestic HTTP `/metrics`) are `venc_bitrate` (kbps, computed from byte counter delta), `venc_bytes` (raw counter), `isp_fps`, `isp_exposure`, `isp_again`, `isp_dgain`, `soc_temp` (celsius), `load_1m`, `mem_used_pct`.
+- When `sources.venc` is enabled but majestic `/metrics` is unavailable or missing the expected counters, `osd_send` degrades to missing keys/JSON `null` output for those mapped slots without aborting `send` or `watch`. Failed fetches are internally throttled to about once per second to avoid hammering unsupported targets.
 - `payload.values` / `payload.texts` are positional arrays (up to 8) with expressions like `"@key"`, numeric literals, `""` (clear), `"null"` (emit JSON null), or `null` (slot disabled in sender config).
 - Config parsing is strict: unknown keys in any object fail fast with an error.
 - In `watch`, unsent updates are retained and retried every `watch.retry_ms` until a send succeeds, even if no new source changes arrive.
