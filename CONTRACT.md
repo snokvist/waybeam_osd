@@ -73,6 +73,7 @@ The UDP socket is **drained fully** on every poll cycle, meaning every packet in
   - `sources.rtl8812eu` reads `/proc/net/rtl88x2eu/<iface>/rssi_a` and `rssi_b`.
   - `sources.cpu` reads `/proc/stat` and exposes `cpu_total`, `cpu0..cpuN`, `cpu_cores`.
   - `sources.venc` fetches Prometheus metrics from majestic's HTTP `/metrics` endpoint (passive, never touches the encoder). `url` defaults to `http://127.0.0.1/metrics`. Exposed keys: `venc_bitrate` (kbps, computed from byte counter delta), `venc_bytes` (raw counter), `isp_fps`, `isp_exposure`, `isp_again`, `isp_dgain`, `soc_temp` (celsius), `load_1m`, `mem_used_pct`.
+- If `sources.venc` is enabled on a target without majestic `/metrics` (or without the expected counters), the source resolves as missing keys and mapped payload slots emit JSON `null` when requested. Fetch attempts are throttled to about once per second so unsupported targets are not polled at the full watch interval.
 - `watch` refreshes enabled sources every interval. Endpoint keys (`network.dest` / `network.port` when `@key`) are re-resolved on each send attempt. On endpoint/serialize/send failure, the unsent delta is retained and retried every `watch.retry_ms` until send succeeds.
 
 ### `osd_send` usage

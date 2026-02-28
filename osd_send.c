@@ -1647,6 +1647,23 @@ static struct {
 
 #define VENC_FETCH_INTERVAL_MS 1000
 
+static int cache_venc_result(const IniStore *src, uint64_t now_fetch)
+{
+    if (!src) return 0;
+    memcpy(&venc_rate_state.cache, src, sizeof(venc_rate_state.cache));
+    venc_rate_state.cache_valid = 1;
+    venc_rate_state.last_fetch_ms = now_fetch;
+    return src->loaded;
+}
+
+static int cache_empty_venc_result(uint64_t now_fetch)
+{
+    IniStore empty;
+    ini_init(&empty);
+    empty.loaded = 0;
+    return cache_venc_result(&empty, now_fetch);
+}
+
 static int load_venc_metrics(IniStore *out, const char *url, int verbose)
 {
     if (!out) return 0;
@@ -1697,7 +1714,7 @@ static int load_venc_metrics(IniStore *out, const char *url, int verbose)
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) {
         if (verbose) perror("[venc] socket");
-        return 0;
+        return cache_empty_venc_result(now_fetch);
     }
 
     struct timeval tv = { .tv_sec = 2, .tv_usec = 0 };
@@ -1711,13 +1728,13 @@ static int load_venc_metrics(IniStore *out, const char *url, int verbose)
     if (inet_pton(AF_INET, host, &addr.sin_addr) != 1) {
         if (verbose) fprintf(stderr, "[venc] invalid host: %s\n", host);
         close(fd);
-        return 0;
+        return cache_empty_venc_result(now_fetch);
     }
 
     if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         if (verbose) perror("[venc] connect");
         close(fd);
-        return 0;
+        return cache_empty_venc_result(now_fetch);
     }
 
     char req[256];
@@ -1726,7 +1743,7 @@ static int load_venc_metrics(IniStore *out, const char *url, int verbose)
     if (send(fd, req, (size_t)rlen, 0) != rlen) {
         if (verbose) perror("[venc] send");
         close(fd);
-        return 0;
+        return cache_empty_venc_result(now_fetch);
     }
 
     static char buf[12288];
@@ -1743,7 +1760,7 @@ static int load_venc_metrics(IniStore *out, const char *url, int verbose)
     char *body = strstr(buf, "\r\n\r\n");
     if (!body) {
         if (verbose) fprintf(stderr, "[venc] no HTTP body in response\n");
-        return 0;
+        return cache_empty_venc_result(now_fetch);
     }
     body += 4;
 
@@ -1849,10 +1866,8 @@ static int load_venc_metrics(IniStore *out, const char *url, int verbose)
     }
 
     out->loaded = any;
-    /* Cache result and timestamp */
-    memcpy(&venc_rate_state.cache, out, sizeof(*out));
-    venc_rate_state.cache_valid = 1;
-    venc_rate_state.last_fetch_ms = now_fetch;
+    /* Cache result and timestamp, including empty parses. */
+    cache_venc_result(out, now_fetch);
 
     if (verbose) fprintf(stderr, "[venc] fetched %d metrics from %s:%d%s\n", out->count, host, port, path);
     return any;
