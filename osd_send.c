@@ -1765,17 +1765,19 @@ static int load_venc_metrics(IniStore *out, const char *url, int verbose)
     body += 4;
 
     /* Whitelist: prometheus_name -> output key.  Only these are extracted. */
+#define PROM(name, key) { name, (int)(sizeof(name) - 1), key }
     static const struct { const char *prom; int plen; const char *key; } wanted[] = {
-        { "venc0_rcvd_bytes",              17, "venc_bytes"    },
-        { "isp_fps",                        7, "isp_fps"       },
-        { "isp_exposure",                  12, "isp_exposure"  },
-        { "isp_again",                      9, "isp_again"     },
-        { "isp_dgain",                      9, "isp_dgain"     },
-        { "node_hwmon_temp_celsius",       24, "soc_temp"      },
-        { "node_load1",                    10, "load_1m"       },
-        { "node_memory_MemTotal_bytes",    27, "_mem_total"    },
-        { "node_memory_MemAvailable_bytes",31, "_mem_avail"    },
+        PROM("venc0_rcvd_bytes",              "venc_bytes"),
+        PROM("isp_fps",                       "isp_fps"),
+        PROM("isp_exposure",                  "isp_exposure"),
+        PROM("isp_again",                     "isp_again"),
+        PROM("isp_dgain",                     "isp_dgain"),
+        PROM("node_hwmon_temp_celsius",       "soc_temp"),
+        PROM("node_load1",                    "load_1m"),
+        PROM("node_memory_MemTotal_bytes",    "_mem_total"),
+        PROM("node_memory_MemAvailable_bytes","_mem_avail"),
     };
+#undef PROM
     static const int nwanted = (int)(sizeof(wanted) / sizeof(wanted[0]));
 
     double mem_total = 0, mem_avail = 0;
