@@ -1407,15 +1407,56 @@ static int load_wpa_metrics(IniStore *out, const char *iface, int verbose)
 
     static const char *dirs[] = { "/run/wpa_supplicant", "/var/run/wpa_supplicant", NULL };
     char buf[2048];
-    if (!ctrl_request_with_dirs(dirs, iface, "SIGNAL_POLL", buf, sizeof(buf), 1000, verbose)) {
-        if (verbose) fprintf(stderr, "[wpa] control request failed\n");
-        return 0;
+    int any = 0;
+
+    /* STATUS works in both AP and station mode */
+    if (ctrl_request_with_dirs(dirs, iface, "STATUS", buf, sizeof(buf), 1000, verbose)) {
+        any += ini_parse_kv_buffer(out, buf);
     }
 
-    out->loaded = 1;
-    (void)ini_parse_kv_buffer(out, buf);
+    /* SIGNAL_POLL adds RSSI/linkspeed/noise in station mode; returns FAIL in AP mode */
+    if (ctrl_request_with_dirs(dirs, iface, "SIGNAL_POLL", buf, sizeof(buf), 1000, verbose)) {
+        any += ini_parse_kv_buffer(out, buf);
+    }
+
+    /* STA-FIRST/STA-NEXT iterates connected clients in AP mode (signal, rx/tx, etc.) */
+    if (ctrl_request_with_dirs(dirs, iface, "STA-FIRST", buf, sizeof(buf), 1000, verbose)) {
+        if (strncmp(buf, "FAIL", 4) != 0 && strncmp(buf, "UNKNOWN", 7) != 0) {
+            any += ini_parse_kv_buffer(out, buf);
+            /* Extract MAC from first line for STA-NEXT iteration */
+            char mac[32] = {0};
+            char *cr;
+            const char *nl = strchr(buf, '\n');
+            size_t mlen = nl ? (size_t)(nl - buf) : strlen(buf);
+            if (mlen > 0 && mlen < sizeof(mac)) {
+                memcpy(mac, buf, mlen);
+                mac[mlen] = '\0';
+                cr = strchr(mac, '\r');
+                if (cr) *cr = '\0';
+            }
+            /* Iterate remaining stations */
+            while (mac[0]) {
+                char cmd[64];
+                snprintf(cmd, sizeof(cmd), "STA-NEXT %s", mac);
+                if (!ctrl_request_with_dirs(dirs, iface, cmd, buf, sizeof(buf), 1000, verbose))
+                    break;
+                if (strncmp(buf, "FAIL", 4) == 0 || buf[0] == '\0')
+                    break;
+                any += ini_parse_kv_buffer(out, buf);
+                nl = strchr(buf, '\n');
+                mlen = nl ? (size_t)(nl - buf) : strlen(buf);
+                if (mlen == 0 || mlen >= sizeof(mac)) break;
+                memcpy(mac, buf, mlen);
+                mac[mlen] = '\0';
+                cr = strchr(mac, '\r');
+                if (cr) *cr = '\0';
+            }
+        }
+    }
+
+    out->loaded = (any > 0);
     if (verbose) fprintf(stderr, "[wpa] parsed %d fields\n", out->count);
-    return 1;
+    return out->loaded;
 }
 
 static int load_8812eu_metrics(IniStore *out, const char *iface, int verbose)
