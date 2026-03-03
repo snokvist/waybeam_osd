@@ -1419,38 +1419,10 @@ static int load_wpa_metrics(IniStore *out, const char *iface, int verbose)
         any += ini_parse_kv_buffer(out, buf);
     }
 
-    /* STA-FIRST/STA-NEXT iterates connected clients in AP mode (signal, rx/tx, etc.) */
+    /* STA-FIRST returns first connected client in AP mode (signal, rx/tx, etc.) */
     if (ctrl_request_with_dirs(dirs, iface, "STA-FIRST", buf, sizeof(buf), 1000, verbose)) {
         if (strncmp(buf, "FAIL", 4) != 0 && strncmp(buf, "UNKNOWN", 7) != 0) {
             any += ini_parse_kv_buffer(out, buf);
-            /* Extract MAC from first line for STA-NEXT iteration */
-            char mac[32] = {0};
-            char *cr;
-            const char *nl = strchr(buf, '\n');
-            size_t mlen = nl ? (size_t)(nl - buf) : strlen(buf);
-            if (mlen > 0 && mlen < sizeof(mac)) {
-                memcpy(mac, buf, mlen);
-                mac[mlen] = '\0';
-                cr = strchr(mac, '\r');
-                if (cr) *cr = '\0';
-            }
-            /* Iterate remaining stations */
-            while (mac[0]) {
-                char cmd[64];
-                snprintf(cmd, sizeof(cmd), "STA-NEXT %s", mac);
-                if (!ctrl_request_with_dirs(dirs, iface, cmd, buf, sizeof(buf), 1000, verbose))
-                    break;
-                if (strncmp(buf, "FAIL", 4) == 0 || buf[0] == '\0')
-                    break;
-                any += ini_parse_kv_buffer(out, buf);
-                nl = strchr(buf, '\n');
-                mlen = nl ? (size_t)(nl - buf) : strlen(buf);
-                if (mlen == 0 || mlen >= sizeof(mac)) break;
-                memcpy(mac, buf, mlen);
-                mac[mlen] = '\0';
-                cr = strchr(mac, '\r');
-                if (cr) *cr = '\0';
-            }
         }
     }
 
