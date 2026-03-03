@@ -28,7 +28,7 @@ The generator emits both `values[]` and sample 96-char-capable `texts[]` for all
 
 ### UDP sender/watch helper
 - The lightweight `osd_send` helper (`osd_send.c`) now uses a JSON config file instead of source/payload CLI flags. By default it reads `osd_send.json`; override with `--config <file>`.
-- `sources` blocks in config include explicit `enabled` toggles for `ini`, `hostapd`, `wpa_cli`, `rtl8812eu`, `cpu`, and `venc`. CPU keys are `cpu_total` (overall), `cpu0..cpuN` (per-core), and `cpu_cores`. VENC keys (fetched passively from majestic HTTP `/metrics`) are `venc_bitrate` (kbps, computed from byte counter delta), `venc_bytes` (raw counter), `isp_fps`, `isp_exposure`, `isp_again`, `isp_dgain`, `soc_temp` (celsius), `load_1m`, `mem_used_pct`.
+- `sources` blocks in config include explicit `enabled` toggles for `ini`, `hostapd`, `wpa_cli`, `rtl8812eu`, `cpu`, and `venc`. CPU keys are `cpu_total` (overall), `cpu0..cpuN` (per-core), and `cpu_cores`. WPA keys (whitelisted from STATUS/SIGNAL_POLL/STA-FIRST) work in both AP and station mode; see key reference below. VENC keys (fetched passively from majestic HTTP `/metrics`) are `venc_bitrate` (kbps, computed from byte counter delta), `venc_bytes` (raw counter), `isp_fps`, `isp_exposure`, `isp_again`, `isp_dgain`, `soc_temp` (celsius), `load_1m`, `mem_used_pct`.
 - When `sources.venc` is enabled but majestic `/metrics` is unavailable or missing the expected counters, `osd_send` degrades to missing keys/JSON `null` output for those mapped slots without aborting `send` or `watch`. Failed fetches are internally throttled to about once per second to avoid hammering unsupported targets.
 - `payload.values` / `payload.texts` are positional arrays (up to 8) with expressions like `"@key"`, numeric literals, `""` (clear), `"null"` (emit JSON null), or `null` (slot disabled in sender config).
 - Config parsing is strict: unknown keys in any object fail fast with an error.
@@ -41,12 +41,14 @@ The generator emits both `values[]` and sample 96-char-capable `texts[]` for all
 
 #### `osd_send` usage
 ```bash
-./osd_send send  [--config osd_send.json]
-./osd_send watch [--config osd_send.json]
+./osd_send send      [--config osd_send.json]
+./osd_send watch     [--config osd_send.json]
+./osd_send list-keys [--config osd_send.json]
 ```
 
 - `send`: one-shot resolve+send.
 - `watch`: continuous polling of enabled sources, sending only changed slots.
+- `list-keys`: one-shot discovery of all available `@key` names grouped by source with current values. Useful for finding which keys to wire into `payload.values`/`payload.texts`.
 - `network.dest` and `network.port` can be literal values or `@key` references.
 - If a watched send fails, the unsent delta is retried every `watch.retry_ms`.
 
@@ -72,7 +74,7 @@ Example 1: INI + CPU metrics (common default)
 }
 ```
 
-Example 2: hostapd + wpa_cli + rtl8812eu watch
+Example 2: wpa_cli AP mode + venc watch
 ```json
 {
   "network": { "dest": "127.0.0.1", "port": 7777 },
@@ -80,14 +82,15 @@ Example 2: hostapd + wpa_cli + rtl8812eu watch
   "watch": { "interval_ms": 100, "retry_ms": 5000 },
   "sources": {
     "ini": { "enabled": false, "paths": [] },
-    "hostapd": { "enabled": true, "iface": "wlan0", "sta": "aa:bb:cc:dd:ee:ff" },
+    "hostapd": { "enabled": false, "iface": "wlan0", "sta": "aa:bb:cc:dd:ee:ff" },
     "wpa_cli": { "enabled": true, "iface": "wlan0" },
-    "rtl8812eu": { "enabled": true, "iface": "wlan0" },
-    "cpu": { "enabled": false }
+    "rtl8812eu": { "enabled": false, "iface": "wlan0" },
+    "cpu": { "enabled": true },
+    "venc": { "enabled": true, "url": "http://127.0.0.1/metrics" }
   },
   "payload": {
-    "values": ["@signal", "@RSSI", "@rssi_a", "@rssi_b", null, null, null, null],
-    "texts": ["@tx_packets", "@rx_packets", null, null, null, null, null, null]
+    "values": ["@venc_bitrate", "@cpu_total", "@soc_temp", "@mem_used_pct", "@signal", null, null, null],
+    "texts": ["@ssid", "@freq", "@cpu_cores", null, null, null, null, null]
   }
 }
 ```
@@ -133,6 +136,49 @@ Example 4: majestic metrics (venc/ISP/system via HTTP)
 }
 ```
 
+#### `osd_send` source key reference
+
+Use `osd_send list-keys` to discover available keys on a live system. Below is the full reference of whitelisted keys per source.
+
+**wpa_cli** (works in both AP and station mode):
+| Key | Source command | Mode | Description |
+|---|---|---|---|
+| `@bssid` | STATUS | both | BSSID of the AP |
+| `@freq` | STATUS | both | Frequency in MHz |
+| `@ssid` | STATUS | both | Network name |
+| `@mode` | STATUS | both | `AP` or `station` |
+| `@ip_address` | STATUS | both | Interface IP |
+| `@wpa_state` | STATUS | both | e.g. `COMPLETED` |
+| `@RSSI` | SIGNAL_POLL | station | Signal strength (dBm) |
+| `@LINKSPEED` | SIGNAL_POLL | station | Link speed (Mbps) |
+| `@NOISE` | SIGNAL_POLL | station | Noise floor (dBm) |
+| `@FREQUENCY` | SIGNAL_POLL | station | Frequency (MHz) |
+| `@signal` | STA-FIRST | AP | First client RSSI (dBm) |
+| `@rx_packets` | STA-FIRST | AP | Client RX packets |
+| `@tx_packets` | STA-FIRST | AP | Client TX packets |
+| `@connected_time` | STA-FIRST | AP | Seconds since association |
+| `@inactive_msec` | STA-FIRST | AP | Client inactivity (ms) |
+
+**cpu**:
+| Key | Description |
+|---|---|
+| `@cpu_total` | Overall CPU usage (%) |
+| `@cpu0`..`@cpuN` | Per-core CPU usage (%) |
+| `@cpu_cores` | Number of CPU cores |
+
+**venc** (majestic `/metrics`):
+| Key | Description |
+|---|---|
+| `@venc_bitrate` | Video bitrate (kbps, derived from byte counter delta) |
+| `@venc_bytes` | Raw venc0 byte counter |
+| `@isp_fps` | Sensor framerate |
+| `@isp_exposure` | ISP exposure value |
+| `@isp_again` | Analog gain |
+| `@isp_dgain` | Digital gain |
+| `@soc_temp` | SoC temperature (celsius) |
+| `@load_1m` | 1-minute load average |
+| `@mem_used_pct` | Memory used (%, derived) |
+
 Notes:
 - Keep only supported top-level keys: `network`, `runtime`, `watch`, `sources`, `payload`.
 - Unknown keys are treated as errors (strict parser).
@@ -142,13 +188,13 @@ Notes:
   - `""` clears the slot (`values` clear to zero on backend; `texts` clear text).
 
 ## Config & contract
-- `config.json` defines screen size, idle wait, stats toggle, UDP stats toggle, and up to 8 assets with positions, sizes, ranges, background palette slot (11 options including a fully transparent swatch and semi-transparent tints), an optional `background_opacity` percent override, an `enabled` switch, and colors for bar/text/image assets. Bars can choose an `orientation` of `right` (default) or `left` to flip label placement; `left` also reverses the bar fill so it grows from right-to-left and anchors the container’s right edge at `x` so left/right bars can share the same coordinate. Each asset can also carry an `id` used by UDP-side `asset_updates` to retint backgrounds, bar colors, text colors, move/resize, or swap types live. See `CONTRACT.md` for the full schema and UDP payload format. Background palette indices: 0 transparent, 1 black, 2 white, 3 charcoal, 4 charcoal dark, 5 blue, 6 teal, 7 green, 8 orange, 9 pink, 10 purple. Default palette opacities mirror the per-index list (0%, 50%, 50%, 70%, 90%, 60%, 60%, 60%, 70%, 60%, 70%), and `background_opacity` lets you pick any 0–100%.
+- `config.json` defines screen size, idle wait, stats toggle, UDP stats toggle, and up to 8 assets with positions, sizes, ranges, background palette slot (11 options including a fully transparent swatch and semi-transparent tints), an optional `opacity` percent override, an `enabled` switch, and colors for bar/text/image assets. Bars can choose an `orientation` of `right` (default) or `left` to flip label placement; `left` also reverses the bar fill so it grows from right-to-left and anchors the container’s right edge at `x` so left/right bars can share the same coordinate. Each asset can also carry an `id` used by UDP-side `asset_updates` to retint backgrounds, bar colors, text colors, move/resize, or swap types live. See `CONTRACT.md` for the full schema and UDP payload format. Background palette indices: 0 transparent, 1 black, 2 white, 3 charcoal, 4 charcoal dark, 5 blue, 6 teal, 7 green, 8 orange, 9 pink, 10 purple. Default palette opacities mirror the per-index list (0%, 50%, 50%, 70%, 90%, 60%, 60%, 60%, 70%, 60%, 70%), and `opacity` lets you pick any 0–100%.
 - `width`/`height` define the LVGL/RGN canvas size, and `osd_x`/`osd_y` place that canvas within the video frame.
 - `realtime_flip` optionally enables SigmaStar `setRealtimeFlip` for the attached OSD VPE channel at startup (default `false`), prints the bound path on success, and attempts to disable it again during shutdown for safer teardown.
-- To show descriptors on bars, set `label` (static text) and/or `text_index` (binds to a `texts[]` entry from UDP). Bars accept `rounded_outline` to enable the outlined capsule style, `segments` to split the fill into evenly spaced blocks (e.g., for battery-style indicators where blocks extinguish one-by-one as the value falls), plus `text_color`, `bar_color`, `background`, and `background_opacity` to tint the bar and a shared rounded background that wraps its label.
-- Text assets (`type: "text"`) render one or more UDP text channels (`text_indices`) stacked on new lines or concatenated inline (`text_inline`). They honor `rounded_outline` for pill-like backgrounds with inner padding, and keep `label`/`text_index` as fallbacks alongside `background`, `background_opacity`, `text_color`, and `orientation` (`left`/`right`/`center`).
+- To show descriptors on bars, set `label` (static text) and/or `text_index` (binds to a `texts[]` entry from UDP). Bars accept `rounded_outline` to enable the outlined capsule style, `segments` to split the fill into evenly spaced blocks (e.g., for battery-style indicators where blocks extinguish one-by-one as the value falls), plus `text_color`, `bar_color`, `background`, and `opacity` to tint the bar and a shared rounded background that wraps its label.
+- Text assets (`type: "text"`) render one or more UDP text channels (`text_indices`) stacked on new lines or concatenated inline (`text_inline`). They honor `rounded_outline` for pill-like backgrounds with inner padding, and keep `label`/`text_index` as fallbacks alongside `background`, `opacity`, `text_color`, and `orientation` (`left`/`right`/`center`).
 - Text assets also support `scale_pct` (25–400, default 100) via LVGL transform zoom, which lets you enlarge text without bundling additional larger font files. For scaled text/image assets, `orientation: "left"` anchors the right edge (pivot + placement), `"right"` anchors the left edge, and `"center"` anchors the midpoint.
-- Image assets (`type: "image"`) render a local image file from `image_path` (LVGL fs driver prefixes like `"A:/path.png"` are accepted) at `x`/`y`; optional `width`/`height` set a size override, otherwise the native image size is used. `scale_pct` (25–400, default 100) can up/down-scale the rendered image at runtime. Image assets still honor `background` and `background_opacity` for tinting the image object, but ignore bar/text-only fields like `label` or `text_index`.
+- Image assets (`type: "image"`) render a local image file from `image_path` (LVGL fs driver prefixes like `"A:/path.png"` are accepted) at `x`/`y`; optional `width`/`height` set a size override, otherwise the native image size is used. `scale_pct` (25–400, default 100) can up/down-scale the rendered image at runtime. Image assets still honor `background` and `opacity` for tinting the image object, but ignore bar/text-only fields like `label` or `text_index`.
 - UDP payloads must include a top-level `values` array; missing entries default to 0. Packets up to 1280 bytes are accepted; oversized packets are dropped. Any queued packets are read in order and coalesced before the screen is refreshed, pushes are capped to once every 32 ms to avoid over-updating, and sparse updates are supported via `null` placeholders so multiple senders can avoid clobbering each other. Optional `asset_updates` with matching `id` fields can enable or disable assets, swap types, move/resize them, remap value/text indices, and retint colors/backgrounds on the fly (only valid, changed fields are applied). Unknown IDs are created up to 8 total assets.
 - Optional `texts` array (max 8 entries, 96 chars each) can feed asset descriptors when `text_index` is set.
 - `udp_stats` controls whether the stats widget also lists the latest 8 numeric values and text channels (on by default).

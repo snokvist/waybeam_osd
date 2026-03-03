@@ -82,8 +82,9 @@ typedef struct {
     float max;
     uint32_t color;
     uint32_t text_color;
-    int bg_style;
-    int bg_opacity_pct;
+    uint32_t bg_color;
+    int bg_color_set;
+    int opacity_pct;
     char label[64];
     int text_index;
     int text_indices[8];
@@ -108,23 +109,50 @@ typedef struct {
 } asset_t;
 
 typedef struct {
-    uint32_t color;
-    lv_opa_t opa;
-} bg_style_t;
+    const char *name;
+    uint32_t hex;
+} named_color_t;
 
-static const bg_style_t g_bg_styles[] = {
-    {0x000000, LV_OPA_TRANSP}, // fully transparent baseline
-    {0x000000, LV_OPA_50},
-    {0xFFFFFF, LV_OPA_50},
-    {0x111111, LV_OPA_70},
-    {0x222222, LV_OPA_90},
-    {0x2266CC, LV_OPA_60},
-    {0x009688, LV_OPA_60},
-    {0x4CAF50, LV_OPA_60},
-    {0xFF9800, LV_OPA_70},
-    {0xE91E63, LV_OPA_60},
-    {0x9C27B0, LV_OPA_70},
+static const named_color_t g_color_palette[] = {
+    {"black",      0x000000},
+    {"white",      0xFFFFFF},
+    {"dark_gray",  0x111111},
+    {"charcoal",   0x222222},
+    {"blue",       0x2266CC},
+    {"teal",       0x009688},
+    {"green",      0x00FF00},
+    {"forest",     0x4CAF50},
+    {"orange",     0xFF9800},
+    {"pink",       0xE91E63},
+    {"purple",     0x9C27B0},
+    {"red",        0xFF0000},
+    {"yellow",     0xFFFF00},
+    {"cyan",       0x00FFFF},
+    {"gray",       0x888888},
+    {"light_gray", 0xCCCCCC},
 };
+
+static int parse_color_string(const char *str, uint32_t *out)
+{
+    if (!str || !out) return -1;
+    /* Try named color lookup (case-insensitive) */
+    for (int i = 0; i < (int)(sizeof(g_color_palette) / sizeof(g_color_palette[0])); i++) {
+        if (strcasecmp(str, g_color_palette[i].name) == 0) {
+            *out = g_color_palette[i].hex;
+            return 0;
+        }
+    }
+    /* Try #RRGGBB or RRGGBB hex */
+    const char *hex = str;
+    if (*hex == '#') hex++;
+    size_t len = strlen(hex);
+    if (len != 6) return -1;
+    char *end = NULL;
+    unsigned long v = strtoul(hex, &end, 16);
+    if (!end || *end != '\0') return -1;
+    *out = (uint32_t)(v & 0xFFFFFF);
+    return 0;
+}
 
 static app_config_t g_cfg;
 static int osd_width = DEFAULT_SCREEN_WIDTH;
@@ -505,7 +533,7 @@ static lv_opa_t pct_to_opa(int pct)
     return (lv_opa_t)((clamped * 255) / 100);
 }
 
-static void apply_background_style(lv_obj_t *obj, int bg_style, int bg_opacity_pct, lv_part_t part);
+static void apply_background_style(lv_obj_t *obj, int bg_color_set, uint32_t bg_color, int opacity_pct, lv_part_t part);
 static void layout_bar_asset(asset_t *asset);
 static void bar_draw_event_cb(lv_event_t *e);
 static void destroy_asset_visual(asset_t *asset);
@@ -597,8 +625,9 @@ static void init_asset_defaults(asset_t *a, int id)
     a->cfg.max = 1.0f;
     a->cfg.color = 0x2266CC;
     a->cfg.text_color = 0xFFFFFF;
-    a->cfg.bg_style = -1;
-    a->cfg.bg_opacity_pct = -1;
+    a->cfg.bg_color = 0x000000;
+    a->cfg.bg_color_set = 0;
+    a->cfg.opacity_pct = -1;
     a->cfg.text_indices_count = 0;
     a->cfg.text_inline = 0;
     a->cfg.text_index = -1;
@@ -618,8 +647,8 @@ static void style_bar_container(asset_t *asset, lv_color_t fallback_color, lv_op
 {
     if (!asset || !asset->container_obj) return;
 
-    if (asset->cfg.bg_style >= 0) {
-        apply_background_style(asset->container_obj, asset->cfg.bg_style, asset->cfg.bg_opacity_pct, 0);
+    if (asset->cfg.bg_color_set) {
+        apply_background_style(asset->container_obj, asset->cfg.bg_color_set, asset->cfg.bg_color, asset->cfg.opacity_pct, 0);
     } else {
         lv_obj_set_style_bg_color(asset->container_obj, fallback_color, 0);
         lv_obj_set_style_bg_opa(asset->container_obj, fallback_opa, 0);
@@ -635,6 +664,8 @@ static void apply_asset_styles(asset_t *asset)
     if (!asset) return;
     if (!asset->cfg.enabled) return;
     const asset_cfg_t *cfg = &asset->cfg;
+
+    lv_opa_t content_opa = (cfg->opacity_pct >= 0) ? pct_to_opa(cfg->opacity_pct) : LV_OPA_COVER;
 
     switch (cfg->type) {
         case ASSET_BAR: {
@@ -657,17 +688,17 @@ static void apply_asset_styles(asset_t *asset)
                 lv_text_align_t align = LV_TEXT_ALIGN_LEFT;
                 if (cfg->orientation == ORIENTATION_LEFT) align = LV_TEXT_ALIGN_RIGHT;
                 else if (cfg->orientation == ORIENTATION_CENTER) align = LV_TEXT_ALIGN_CENTER;
-                apply_background_style(asset->obj, cfg->bg_style, cfg->bg_opacity_pct, 0);
+                apply_background_style(asset->obj, cfg->bg_color_set, cfg->bg_color, cfg->opacity_pct, 0);
                 lv_obj_set_style_text_align(asset->obj, align, 0);
                 lv_obj_set_style_text_color(asset->obj, lv_color_hex(cfg->text_color), 0);
-                lv_obj_set_style_text_opa(asset->obj, LV_OPA_COVER, 0);
+                lv_obj_set_style_text_opa(asset->obj, content_opa, 0);
                 apply_asset_scale(asset);
             }
             break;
         case ASSET_IMAGE:
             if (asset->obj) {
-                apply_background_style(asset->obj, cfg->bg_style, cfg->bg_opacity_pct, 0);
-                lv_obj_set_style_img_opa(asset->obj, LV_OPA_COVER, 0);
+                apply_background_style(asset->obj, cfg->bg_color_set, cfg->bg_color, cfg->opacity_pct, 0);
+                lv_obj_set_style_img_opa(asset->obj, content_opa, 0);
                 apply_asset_scale(asset);
             }
             break;
@@ -677,29 +708,25 @@ static void apply_asset_styles(asset_t *asset)
 
     if (asset->label_obj) {
         if (cfg->type == ASSET_TEXT) {
-            apply_background_style(asset->label_obj, cfg->bg_style, cfg->bg_opacity_pct, 0);
+            apply_background_style(asset->label_obj, cfg->bg_color_set, cfg->bg_color, cfg->opacity_pct, 0);
         } else {
             lv_obj_set_style_bg_opa(asset->label_obj, LV_OPA_TRANSP, 0);
         }
         lv_obj_set_style_text_color(asset->label_obj, lv_color_hex(cfg->text_color), 0);
-        lv_obj_set_style_text_opa(asset->label_obj, LV_OPA_COVER, 0);
+        lv_obj_set_style_text_opa(asset->label_obj, content_opa, 0);
     }
 }
 
-static void apply_background_style(lv_obj_t *obj, int bg_style, int bg_opacity_pct, lv_part_t part)
+static void apply_background_style(lv_obj_t *obj, int bg_color_set, uint32_t bg_color, int opacity_pct, lv_part_t part)
 {
     if (!obj) return;
-    if (bg_style < 0 || bg_style >= (int)(sizeof(g_bg_styles) / sizeof(g_bg_styles[0]))) {
+    if (!bg_color_set) {
         lv_obj_set_style_bg_opa(obj, LV_OPA_TRANSP, part);
         return;
     }
 
-    lv_color_t c = lv_color_hex(g_bg_styles[bg_style].color);
-    lv_obj_set_style_bg_color(obj, c, part);
-    lv_opa_t opa = g_bg_styles[bg_style].opa;
-    if (bg_opacity_pct >= 0) {
-        opa = pct_to_opa(bg_opacity_pct);
-    }
+    lv_obj_set_style_bg_color(obj, lv_color_hex(bg_color), part);
+    lv_opa_t opa = (opacity_pct >= 0) ? pct_to_opa(opacity_pct) : LV_OPA_50;
     lv_obj_set_style_bg_opa(obj, opa, part);
 }
 
@@ -880,6 +907,18 @@ static int json_get_string_range(const char *start, const char *end, const char 
     return 0;
 }
 
+static int json_get_color_range(const char *start, const char *end, const char *key, uint32_t *out)
+{
+    char buf[32];
+    if (json_get_string_range(start, end, key, buf, sizeof(buf)) != 0) return -1;
+    return parse_color_string(buf, out);
+}
+
+static int json_get_color(const char *json, const char *key, uint32_t *out)
+{
+    return json_get_color_range(json, json + strlen(json), key, out);
+}
+
 static int json_get_string(const char *json, const char *key, char *buf, size_t buf_sz)
 {
     return json_get_string_range(json, json + strlen(json), key, buf, buf_sz);
@@ -957,10 +996,10 @@ static void parse_assets_array(const char *json)
         }
         if (json_get_float_range(obj_start, obj_end, "min", &fv) == 0) a.cfg.min = fv;
         if (json_get_float_range(obj_start, obj_end, "max", &fv) == 0) a.cfg.max = fv;
-        if (json_get_int_range(obj_start, obj_end, "bar_color", &v) == 0) a.cfg.color = (uint32_t)v;
-        if (json_get_int_range(obj_start, obj_end, "text_color", &v) == 0) a.cfg.text_color = (uint32_t)v;
-        if (json_get_int_range(obj_start, obj_end, "background", &v) == 0) a.cfg.bg_style = clamp_int(v, -1, (int)(sizeof(g_bg_styles) / sizeof(g_bg_styles[0])) - 1);
-        if (json_get_int_range(obj_start, obj_end, "background_opacity", &v) == 0) a.cfg.bg_opacity_pct = clamp_int(v, 0, 100);
+        { uint32_t c; if (json_get_color_range(obj_start, obj_end, "bar_color", &c) == 0) a.cfg.color = c; }
+        { uint32_t c; if (json_get_color_range(obj_start, obj_end, "text_color", &c) == 0) a.cfg.text_color = c; }
+        { uint32_t c; if (json_get_color_range(obj_start, obj_end, "background", &c) == 0) { a.cfg.bg_color = c; a.cfg.bg_color_set = 1; } }
+        if (json_get_int_range(obj_start, obj_end, "opacity", &v) == 0) a.cfg.opacity_pct = clamp_int(v, 0, 100);
         if (json_get_int_range(obj_start, obj_end, "segments", &v) == 0) a.cfg.segments = clamp_int(v, 0, 64);
         if (json_get_int_range(obj_start, obj_end, "text_index", &v) == 0) a.cfg.text_index = clamp_int(v, -1, 7);
         json_get_int_array_range(obj_start, obj_end, "text_indices", a.cfg.text_indices, 8, &a.cfg.text_indices_count);
@@ -1036,7 +1075,7 @@ static void load_config(void)
     if (json_get_int(json, "bar_height", &v) == 0) assets[0].cfg.height = v;
     if (json_get_float(json, "bar_min", &fv) == 0) assets[0].cfg.min = fv;
     if (json_get_float(json, "bar_max", &fv) == 0) assets[0].cfg.max = fv;
-    if (json_get_int(json, "bar_color", &v) == 0) assets[0].cfg.color = (uint32_t)v;
+    { uint32_t c; if (json_get_color(json, "bar_color", &c) == 0) assets[0].cfg.color = c; }
 
     // Preferred structured assets list
     parse_assets_array(json);
@@ -1253,32 +1292,33 @@ static void parse_udp_asset_updates(const char *buf)
             }
         }
 
-        if (json_get_int_range(obj_start, obj_end, "bar_color", &v) == 0) {
-            uint32_t color = (uint32_t)v;
+        { uint32_t color;
+        if (json_get_color_range(obj_start, obj_end, "bar_color", &color) == 0) {
             if (asset->cfg.type == ASSET_BAR && asset->cfg.color != color) {
                 asset->cfg.color = color;
                 restyle = 1;
             }
-        }
-        if (json_get_int_range(obj_start, obj_end, "text_color", &v) == 0) {
-            uint32_t color = (uint32_t)v;
+        } }
+        { uint32_t color;
+        if (json_get_color_range(obj_start, obj_end, "text_color", &color) == 0) {
             if (asset->cfg.text_color != color) {
                 asset->cfg.text_color = color;
                 restyle = 1;
                 text_change = 1;
             }
-        }
-        if (json_get_int_range(obj_start, obj_end, "background", &v) == 0) {
-            int bg = clamp_int(v, -1, (int)(sizeof(g_bg_styles) / sizeof(g_bg_styles[0])) - 1);
-            if (asset->cfg.bg_style != bg) {
-                asset->cfg.bg_style = bg;
+        } }
+        { uint32_t color;
+        if (json_get_color_range(obj_start, obj_end, "background", &color) == 0) {
+            if (!asset->cfg.bg_color_set || asset->cfg.bg_color != color) {
+                asset->cfg.bg_color = color;
+                asset->cfg.bg_color_set = 1;
                 restyle = 1;
             }
-        }
-        if (json_get_int_range(obj_start, obj_end, "background_opacity", &v) == 0) {
+        } }
+        if (json_get_int_range(obj_start, obj_end, "opacity", &v) == 0) {
             int opa = clamp_int(v, 0, 100);
-            if (asset->cfg.bg_opacity_pct != opa) {
-                asset->cfg.bg_opacity_pct = opa;
+            if (asset->cfg.opacity_pct != opa) {
+                asset->cfg.opacity_pct = opa;
                 restyle = 1;
             }
         }
@@ -1704,9 +1744,10 @@ static lv_obj_t *create_text_asset(asset_t *asset)
     lv_obj_set_size(label, width, height);
     lv_obj_align(label, LV_ALIGN_TOP_LEFT, 0, 0);
     lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
-    apply_background_style(label, asset->cfg.bg_style, asset->cfg.bg_opacity_pct, 0);
+    apply_background_style(label, asset->cfg.bg_color_set, asset->cfg.bg_color, asset->cfg.opacity_pct, 0);
     lv_obj_set_style_text_color(label, lv_color_hex(asset->cfg.text_color), 0);
-    lv_obj_set_style_text_opa(label, LV_OPA_COVER, 0);
+    lv_opa_t text_opa = (asset->cfg.opacity_pct >= 0) ? pct_to_opa(asset->cfg.opacity_pct) : LV_OPA_COVER;
+    lv_obj_set_style_text_opa(label, text_opa, 0);
 
     char text_buf[1024];
     compose_asset_text(asset, text_buf, sizeof(text_buf));
