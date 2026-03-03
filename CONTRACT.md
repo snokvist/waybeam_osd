@@ -69,7 +69,7 @@ The UDP socket is **drained fully** on every poll cycle, meaning every packet in
 - Source behavior:
   - `sources.ini.paths` loads one or more key/value files.
   - `sources.hostapd` reads `STA <mac>` from `/run|/var/run/hostapd`.
-  - `sources.wpa_cli` reads `SIGNAL_POLL` from `/run|/var/run/wpa_supplicant/<iface>`.
+  - `sources.wpa_cli` queries wpa_supplicant via STATUS + SIGNAL_POLL + STA-FIRST from `/run|/var/run/wpa_supplicant/<iface>`. Works in both AP and station mode. Only whitelisted keys are exposed: STATUS gives `bssid`, `freq`, `ssid`, `mode`, `ip_address`, `wpa_state`; SIGNAL_POLL (station mode) gives `RSSI`, `LINKSPEED`, `NOISE`, `FREQUENCY`; STA-FIRST (AP mode) gives `signal`, `rx_packets`, `tx_packets`, `connected_time`, `inactive_msec`.
   - `sources.rtl8812eu` reads `/proc/net/rtl88x2eu/<iface>/rssi_a` and `rssi_b`.
   - `sources.cpu` reads `/proc/stat` and exposes `cpu_total`, `cpu0..cpuN`, `cpu_cores`.
   - `sources.venc` fetches Prometheus metrics from majestic's HTTP `/metrics` endpoint (passive, never touches the encoder). `url` defaults to `http://127.0.0.1/metrics`. Exposed keys: `venc_bitrate` (kbps, computed from byte counter delta), `venc_bytes` (raw counter), `isp_fps`, `isp_exposure`, `isp_again`, `isp_dgain`, `soc_temp` (celsius), `load_1m`, `mem_used_pct`.
@@ -78,12 +78,14 @@ The UDP socket is **drained fully** on every poll cycle, meaning every packet in
 
 ### `osd_send` usage
 ```bash
-./osd_send send  [--config osd_send.json]
-./osd_send watch [--config osd_send.json]
+./osd_send send      [--config osd_send.json]
+./osd_send watch     [--config osd_send.json]
+./osd_send list-keys [--config osd_send.json]
 ```
 
 - `send`: one-shot resolve+send.
 - `watch`: continuous polling of enabled sources, sending only changed slots.
+- `list-keys`: one-shot discovery of all available `@key` names grouped by source with current values. Useful for finding which keys to wire into `payload.values`/`payload.texts`.
 - Build helper only: `make osd_send`. Cross-compile for board: `make osd_send_arm`.
 
 ### `osd_send.json` examples
@@ -108,7 +110,7 @@ Example 1: INI + CPU metrics (common default)
 }
 ```
 
-Example 2: hostapd + wpa_cli + rtl8812eu watch
+Example 2: wpa_cli AP mode + venc watch
 ```json
 {
   "network": { "dest": "127.0.0.1", "port": 7777 },
@@ -116,14 +118,15 @@ Example 2: hostapd + wpa_cli + rtl8812eu watch
   "watch": { "interval_ms": 100, "retry_ms": 5000 },
   "sources": {
     "ini": { "enabled": false, "paths": [] },
-    "hostapd": { "enabled": true, "iface": "wlan0", "sta": "aa:bb:cc:dd:ee:ff" },
+    "hostapd": { "enabled": false, "iface": "wlan0", "sta": "aa:bb:cc:dd:ee:ff" },
     "wpa_cli": { "enabled": true, "iface": "wlan0" },
-    "rtl8812eu": { "enabled": true, "iface": "wlan0" },
-    "cpu": { "enabled": false }
+    "rtl8812eu": { "enabled": false, "iface": "wlan0" },
+    "cpu": { "enabled": true },
+    "venc": { "enabled": true, "url": "http://127.0.0.1/metrics" }
   },
   "payload": {
-    "values": ["@signal", "@RSSI", "@rssi_a", "@rssi_b", null, null, null, null],
-    "texts": ["@tx_packets", "@rx_packets", null, null, null, null, null, null]
+    "values": ["@venc_bitrate", "@cpu_total", "@soc_temp", "@mem_used_pct", "@signal", null, null, null],
+    "texts": ["@ssid", "@freq", "@cpu_cores", null, null, null, null, null]
   }
 }
 ```
