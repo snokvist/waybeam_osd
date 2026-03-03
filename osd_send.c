@@ -2076,8 +2076,9 @@ static void usage_main(const char *prog)
         "waybeam - bare UDP OSD sender + ini watcher\n"
         "\n"
         "Usage:\n"
-        "  %s send  [--config <file>]\n"
-        "  %s watch [--config <file>]\n"
+        "  %s send      [--config <file>]\n"
+        "  %s watch     [--config <file>]\n"
+        "  %s list-keys [--config <file>]\n"
         "\n"
         "Options:\n"
         "  --config <file>           JSON config file (default: %s)\n"
@@ -2088,10 +2089,11 @@ static void usage_main(const char *prog)
         "\n"
         "Examples:\n"
         "  %s send --config osd_send.json\n"
-        "  %s watch --config osd_send.json\n",
-        prog, prog,
+        "  %s watch --config osd_send.json\n"
+        "  %s list-keys --config osd_send.json\n",
+        prog, prog, prog,
         DEFAULT_CFG_PATH,
-        prog, prog);
+        prog, prog, prog);
 }
 
 /* ------------------------- watch spec ------------------------- */
@@ -2920,6 +2922,98 @@ static int cmd_watch(int argc, char **argv, const char *prog)
     return 0;
 }
 
+/* ------------------------- LIST-KEYS ------------------------- */
+
+static void print_ini_keys(const IniStore *ini, const char *label)
+{
+    if (!ini || ini->count == 0) {
+        printf("[%s] (no keys)\n", label);
+        return;
+    }
+    printf("[%s] %d key%s:\n", label, ini->count, ini->count == 1 ? "" : "s");
+    for (int i = 0; i < ini->count; i++) {
+        printf("  @%-24s = %s\n", ini->kv[i].key, ini->kv[i].val);
+    }
+}
+
+static int cmd_list_keys(int argc, char **argv, const char *prog)
+{
+    char cfg_path[INI_PATH_MAX];
+    int arg_ret = parse_config_arg(argc, argv, prog, cfg_path, sizeof(cfg_path));
+    if (arg_ret == 0) return 0;
+    if (arg_ret < 0) return 1;
+
+    OsdSendConfig cfg;
+    if (!cfg_parse_file(cfg_path, &cfg)) return 1;
+
+    IniStore tmp;
+
+    /* INI files */
+    if (cfg.ini.enabled && cfg.ini.paths_count > 0) {
+        for (int i = 0; i < cfg.ini.paths_count; i++) {
+            ini_init(&tmp);
+            if (ini_add_file(&tmp, cfg.ini.paths[i])) {
+                char label[280];
+                snprintf(label, sizeof(label), "ini: %s", cfg.ini.paths[i]);
+                print_ini_keys(&tmp, label);
+            } else {
+                printf("[ini: %s] not readable (%s)\n", cfg.ini.paths[i], strerror(errno));
+            }
+        }
+    } else {
+        printf("[ini] disabled\n");
+    }
+
+    /* hostapd */
+    if (cfg.hostapd.enabled) {
+        ini_init(&tmp);
+        load_hostapd_metrics(&tmp, cfg.hostapd.iface, cfg.hostapd.sta, 0);
+        print_ini_keys(&tmp, "hostapd");
+    } else {
+        printf("[hostapd] disabled\n");
+    }
+
+    /* wpa_cli */
+    if (cfg.wpa.enabled) {
+        ini_init(&tmp);
+        load_wpa_metrics(&tmp, cfg.wpa.iface, 0);
+        print_ini_keys(&tmp, "wpa_cli");
+    } else {
+        printf("[wpa_cli] disabled\n");
+    }
+
+    /* rtl8812eu */
+    if (cfg.rtl8812eu.enabled) {
+        ini_init(&tmp);
+        load_8812eu_metrics(&tmp, cfg.rtl8812eu.iface, 0);
+        print_ini_keys(&tmp, "rtl8812eu");
+    } else {
+        printf("[rtl8812eu] disabled\n");
+    }
+
+    /* cpu */
+    if (cfg.cpu.enabled) {
+        CpuStatsState cpu_state;
+        cpustats_init(&cpu_state);
+        ini_init(&tmp);
+        load_cpu_metrics(&tmp, &cpu_state, 0);
+        print_ini_keys(&tmp, "cpu");
+    } else {
+        printf("[cpu] disabled\n");
+    }
+
+    /* venc */
+    if (cfg.venc.enabled) {
+        ini_init(&tmp);
+        load_venc_metrics(&tmp, cfg.venc.url, 0);
+        print_ini_keys(&tmp, "venc");
+    } else {
+        printf("[venc] disabled\n");
+    }
+
+    return 0;
+}
+
 /* ------------------------- main ------------------------- */
 
 int main(int argc, char **argv)
@@ -2936,6 +3030,9 @@ int main(int argc, char **argv)
     }
     if (!strcmp(argv[1], "watch")) {
         return cmd_watch(argc - 1, argv + 1, prog);
+    }
+    if (!strcmp(argv[1], "list-keys")) {
+        return cmd_list_keys(argc - 1, argv + 1, prog);
     }
 
     if (!strcmp(argv[1], "-h") || !strcmp(argv[1], "--help") || !strcmp(argv[1], "help")) {
