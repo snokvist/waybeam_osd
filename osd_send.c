@@ -1,6 +1,12 @@
 /*
  * waybeam.c - bare-bones UDP OSD sender + ini file watcher
  *
+ * autod – Autod Personal Use License
+ * Copyright (c) 2025 Joakim Snökvist
+ * Licensed for personal, non-commercial use only.
+ * Redistribution or commercial use requires prior written approval from Joakim Snökvist.
+ * See LICENSE.md for full terms.
+ *
  * Contract (updated semantics):
  *   - UDP datagram containing JSON object:
  *       { "values":[...], "texts":[...] }
