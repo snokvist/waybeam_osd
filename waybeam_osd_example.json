@@ -23,7 +23,7 @@
       "max": -40,
       "orientation": "left",
       "background": "white",
-      "background_opacity": 30,
+      "opacity": 30,
       "bar_color": "black",
       "text_color": "black"
     },
@@ -41,7 +41,7 @@
       "min": 20,
       "max": 100,
       "background": "white",
-      "background_opacity": 30,
+      "opacity": 30,
       "bar_color": "black",
       "text_color": "green"
     },
@@ -60,7 +60,7 @@
       "max": 100,
       "orientation": "left",
       "background": "white",
-      "background_opacity": 30,
+      "opacity": 30,
       "bar_color": "black",
       "text_color": "black"
     },
@@ -78,7 +78,7 @@
       "min": 30,
       "max": 60,
       "background": "white",
-      "background_opacity": 15,
+      "opacity": 15,
       "bar_color": "black",
       "text_color": "black"
     },
@@ -95,7 +95,7 @@
       "height": 32,
       "background": "blue",
       "segments": 10,
-      "background_opacity": 0,
+      "opacity": 0,
       "rounded_outline": true,
       "min": 0,
       "max": 100,
@@ -115,7 +115,7 @@
       "height": 24,
       "background": "blue",
       "segments": 10,
-      "background_opacity": 0,
+      "opacity": 0,
       "rounded_outline": true,
       "min": 0.0,
       "max": 1.0,
@@ -149,7 +149,7 @@
       "height": 50,
       "scale_pct": 250,
       "background": "charcoal",
-      "background_opacity": 80,
+      "opacity": 80,
       "text_color": "white"
     }
   ]
