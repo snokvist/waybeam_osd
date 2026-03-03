@@ -1399,11 +1399,58 @@ static int load_hostapd_metrics(IniStore *out, const char *ifname, const char *s
     return 1;
 }
 
+static int ini_parse_kv_buffer_whitelist(IniStore *ini, const char *buf,
+    const char *const *whitelist, int whitelist_count)
+{
+    if (!ini || !buf) return 0;
+
+    int added = 0;
+    const char *p = buf;
+    while (*p) {
+        char line[512];
+        size_t n = 0;
+        while (p[n] != '\0' && p[n] != '\n' && p[n] != '\r' && n + 1 < sizeof(line)) {
+            line[n] = p[n];
+            n++;
+        }
+        line[n] = '\0';
+
+        while (p[n] == '\n' || p[n] == '\r') n++;
+        p += n;
+
+        char *t = trim(line);
+        if (!*t) continue;
+        char *eq = strchr(t, '=');
+        if (!eq) continue;
+        *eq = '\0';
+        char *k = trim(t);
+        char *v = trim(eq + 1);
+
+        int allowed = 0;
+        for (int i = 0; i < whitelist_count; i++) {
+            if (!strcmp(k, whitelist[i])) { allowed = 1; break; }
+        }
+        if (allowed && ini_set(ini, k, v)) added++;
+    }
+    return added;
+}
+
 static int load_wpa_metrics(IniStore *out, const char *iface, int verbose)
 {
     if (!out) return 0;
     ini_init(out);
     if (!iface || !*iface) return 0;
+
+    /* Keys worth exposing from each wpa command */
+    static const char *const status_keys[] = {
+        "bssid", "freq", "ssid", "mode", "ip_address", "wpa_state"
+    };
+    static const char *const signal_keys[] = {
+        "RSSI", "LINKSPEED", "NOISE", "FREQUENCY"
+    };
+    static const char *const sta_keys[] = {
+        "signal", "rx_packets", "tx_packets", "connected_time", "inactive_msec"
+    };
 
     static const char *dirs[] = { "/run/wpa_supplicant", "/var/run/wpa_supplicant", NULL };
     char buf[2048];
@@ -1411,18 +1458,21 @@ static int load_wpa_metrics(IniStore *out, const char *iface, int verbose)
 
     /* STATUS works in both AP and station mode */
     if (ctrl_request_with_dirs(dirs, iface, "STATUS", buf, sizeof(buf), 1000, verbose)) {
-        any += ini_parse_kv_buffer(out, buf);
+        any += ini_parse_kv_buffer_whitelist(out, buf, status_keys,
+            (int)(sizeof(status_keys) / sizeof(status_keys[0])));
     }
 
     /* SIGNAL_POLL adds RSSI/linkspeed/noise in station mode; returns FAIL in AP mode */
     if (ctrl_request_with_dirs(dirs, iface, "SIGNAL_POLL", buf, sizeof(buf), 1000, verbose)) {
-        any += ini_parse_kv_buffer(out, buf);
+        any += ini_parse_kv_buffer_whitelist(out, buf, signal_keys,
+            (int)(sizeof(signal_keys) / sizeof(signal_keys[0])));
     }
 
     /* STA-FIRST returns first connected client in AP mode (signal, rx/tx, etc.) */
     if (ctrl_request_with_dirs(dirs, iface, "STA-FIRST", buf, sizeof(buf), 1000, verbose)) {
         if (strncmp(buf, "FAIL", 4) != 0 && strncmp(buf, "UNKNOWN", 7) != 0) {
-            any += ini_parse_kv_buffer(out, buf);
+            any += ini_parse_kv_buffer_whitelist(out, buf, sta_keys,
+                (int)(sizeof(sta_keys) / sizeof(sta_keys[0])));
         }
     }
 
@@ -3002,8 +3052,12 @@ static int cmd_list_keys(int argc, char **argv, const char *prog)
         printf("[cpu] disabled\n");
     }
 
-    /* venc */
+    /* venc (two fetches 1s apart so venc_bitrate can be derived) */
     if (cfg.venc.enabled) {
+        ini_init(&tmp);
+        load_venc_metrics(&tmp, cfg.venc.url, 0);
+        venc_rate_state.cache_valid = 0; /* force second fetch */
+        usleep(1000000);
         ini_init(&tmp);
         load_venc_metrics(&tmp, cfg.venc.url, 0);
         print_ini_keys(&tmp, "venc");
