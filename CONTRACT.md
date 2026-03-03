@@ -7,7 +7,7 @@
 - Keep payloads under 1280 bytes (anything larger is dropped).
 - Incoming UDP packets are applied in arrival order; the socket is fully drained whenever it becomes readable so every queued packet is processed. The last packet for a given index/property wins, and on-screen pushes are throttled to ~30 fps (about every 32 ms). `idle_ms` only caps the sleep when no data arrives.
 - Optional `texts` array (up to 8 strings, max 96 chars each) can be sent alongside `values`. These map to `text_index` on bar/text assets and override a static `label` if present. `null` entries are ignored (keep existing text); an empty string clears the text and falls back to the asset’s `label`.
-- Optional `asset_updates` array lets senders retint, reposition, enable/disable, or fully reconfigure assets at runtime. Each object must contain an `id`; if the ID does not exist yet and there is room (max 8 assets), the asset slot is created on the fly. Valid keys include: `enabled` (bool), `type` (`"bar"`, `"text"`, or `"image"`), `value_index`, `text_index`, `text_indices` (array), `text_inline`, `label`, `orientation`, `x`, `y`, `width`, `height`, `scale_pct` (text/image only), `min`, `max`, `bar_color` (bars only), `text_color`, `background`, `background_opacity`, `segments` (bars only), and `rounded_outline` (bars and text backgrounds). Only valid values that differ from the current config are applied; disabled assets are removed from the screen immediately.
+- Optional `asset_updates` array lets senders retint, reposition, enable/disable, or fully reconfigure assets at runtime. Each object must contain an `id`; if the ID does not exist yet and there is room (max 8 assets), the asset slot is created on the fly. Valid keys include: `enabled` (bool), `type` (`"bar"`, `"text"`, or `"image"`), `value_index`, `text_index`, `text_indices` (array), `text_inline`, `label`, `orientation`, `x`, `y`, `width`, `height`, `scale_pct` (text/image only), `min`, `max`, `bar_color` (string, bars only), `text_color` (string), `background` (string), `background_opacity`, `segments` (bars only), and `rounded_outline` (bars and text backgrounds). Color fields (`bar_color`, `text_color`, `background`) accept a named color (e.g. `"green"`, `"blue"`) or a hex string (`"#RRGGBB"` or `"RRGGBB"`). Only valid values that differ from the current config are applied; disabled assets are removed from the screen immediately.
 
 Example:
 ```json
@@ -15,8 +15,8 @@ Example:
   "values":[0.12,0.5,1.0,0,0,0,0,0],
   "texts":["BAR CH0","BAR CH1","TEXT CH2","CH3","CH4","CH5","CH6","CH7"],
   "asset_updates":[
-    {"id":0,"bar_color":65280,"background":5,"background_opacity":80},
-    {"id":6,"enabled":true,"type":"bar","value_index":6,"label":"UDP BAR 6","x":10,"y":200,"width":300,"height":24,"bar_color":255},
+    {"id":0,"bar_color":"green","background":"blue","background_opacity":80},
+    {"id":6,"enabled":true,"type":"bar","value_index":6,"label":"UDP BAR 6","x":10,"y":200,"width":300,"height":24,"bar_color":"#0000FF"},
     {"id":7,"enabled":true,"type":"text","text_indices":[7],"text_inline":true,"label":"UDP TEXT 7","x":360,"y":200,"width":320,"height":60}
   ],
   "timestamp_ms":1712345678
@@ -205,24 +205,13 @@ Notes:
     - `scale_pct` (int, text/image only): object zoom percentage (25–400, default `100`). Text scaling uses LVGL transform zoom so larger text can be rendered without bundling extra font files.
     - `image_path` (string, image only): required path to a local image asset. LVGL filesystem prefixes (for example, `"A:/path/to/icon.png"`) are accepted and stripped before loading.
     - `min`, `max` (float): input range mapped to 0–100% for bars.
-    - `bar_color` (int): RGB hex value as a number; used by bar styles.
+    - `bar_color` (string): color name or `#RRGGBB` hex string; used by bar styles.
     - `rounded_outline` (bool, bars/text): enables the outlined capsule look on bars or rounded backgrounds with padded text for text assets. Defaults to `false`.
     - `segments` (int, bars only): when greater than 1, divides the bar fill into that many evenly spaced blocks that extinguish one-by-one as the value drops (useful for battery-style indicators). Defaults to `0`/unset for a continuous fill.
-    - `text_color` (int, optional): RGB hex value for labels/text content. Default white.
-    - `background` (int, optional): index of a predefined palette of 11 background swatches (including a fully transparent entry and tinted fills). `-1` or omission keeps the default transparent look. For bars, the background is applied to a rounded container that extends across the bar and its label for a unified pill.
-    - `background_opacity` (int, optional): percent opacity (0–100) to apply to the chosen background swatch. When omitted, the default palette opacity is used (0%, 50%, 50%, 70%, 90%, 60%, 60%, 60%, 70%, 60%, 70% by index as listed below).
-    - Background palette indices:
-      - `0`: transparent (0%)
-      - `1`: black (defaults to 50%)
-      - `2`: white (defaults to 50%)
-      - `3`: charcoal (defaults to 70%)
-      - `4`: charcoal dark (defaults to 90%)
-      - `5`: blue (defaults to 60%)
-      - `6`: teal (defaults to 60%)
-      - `7`: green (defaults to 60%)
-      - `8`: orange (defaults to 70%)
-      - `9`: pink (defaults to 60%)
-      - `10`: purple (defaults to 70%)
+    - `text_color` (string, optional): color name or `#RRGGBB` hex string for labels/text content. Default white.
+    - `background` (string, optional): color name or `#RRGGBB` hex string for the background fill. Omission keeps the default transparent look. For bars, the background is applied to a rounded container that extends across the bar and its label for a unified pill.
+    - `background_opacity` (int, optional): percent opacity (0–100) to apply to the background color. When omitted and a background color is set, defaults to 50%.
+    - Named colors: `black` (#000000), `white` (#FFFFFF), `dark_gray` (#111111), `charcoal` (#222222), `blue` (#2266CC), `teal` (#009688), `green` (#00FF00), `forest` (#4CAF50), `orange` (#FF9800), `pink` (#E91E63), `purple` (#9C27B0), `red` (#FF0000), `yellow` (#FFFF00), `cyan` (#00FFFF), `gray` (#888888), `light_gray` (#CCCCCC). Names are case-insensitive.
 
 Example:
 ```json
@@ -232,9 +221,9 @@ Example:
     "show_stats": true,
     "udp_stats": true,
   "assets": [
-    { "type": "bar", "value_index": 0, "text_index": 0, "label": "BAR CH0", "x": 40, "y": 200, "width": 320, "height": 32, "min": 0.0, "max": 1.0, "orientation": "right", "segments": 8, "bar_color": 2254540, "text_color": 16777215, "background": 4, "background_opacity": 70 },
-    { "type": "bar", "value_index": 1, "text_index": 1, "label": "BAR CH1", "x": 420, "y": 140, "width": 220, "height": 24, "min": 0.0, "max": 1.0, "orientation": "left", "bar_color": 2254540, "text_color": 0, "background": 2, "background_opacity": 60, "rounded_outline": true },
-    { "type": "text", "text_indices": [2, 3, 4], "text_inline": true, "label": "Status", "x": 40, "y": 260, "width": 360, "height": 60, "background": 1, "background_opacity": 50, "rounded_outline": true, "text_color": 16777215 }
+    { "type": "bar", "value_index": 0, "text_index": 0, "label": "BAR CH0", "x": 40, "y": 200, "width": 320, "height": 32, "min": 0.0, "max": 1.0, "orientation": "right", "segments": 8, "bar_color": "#2266CC", "text_color": "white", "background": "charcoal", "background_opacity": 70 },
+    { "type": "bar", "value_index": 1, "text_index": 1, "label": "BAR CH1", "x": 420, "y": 140, "width": 220, "height": 24, "min": 0.0, "max": 1.0, "orientation": "left", "bar_color": "#2266CC", "text_color": "black", "background": "white", "background_opacity": 60, "rounded_outline": true },
+    { "type": "text", "text_indices": [2, 3, 4], "text_inline": true, "label": "Status", "x": 40, "y": 260, "width": 360, "height": 60, "background": "black", "background_opacity": 50, "rounded_outline": true, "text_color": "white" }
   ]
 }
 ```

@@ -22,10 +22,10 @@
       "min": 20,
       "max": 70,
       "orientation": "left",
-      "background": 2,
+      "background": "white",
       "background_opacity": 30,
-      "bar_color": 65280,
-      "text_color": 65280
+      "bar_color": "green",
+      "text_color": "green"
     },
     {
       "type": "bar",
@@ -40,10 +40,10 @@
       "height": 12,
       "min": 20,
       "max": 70,
-      "background": 2,
+      "background": "white",
       "background_opacity": 30,
-      "bar_color": 65280,
-      "text_color": 65280
+      "bar_color": "green",
+      "text_color": "green"
     },
     {
       "type": "bar",
@@ -59,10 +59,10 @@
       "min": 0,
       "max": 100,
       "orientation": "left",
-      "background": 2,
+      "background": "white",
       "background_opacity": 30,
-      "bar_color": 65280,
-      "text_color": 652080
+      "bar_color": "green",
+      "text_color": "green"
     },
     {
       "type": "bar",
@@ -77,10 +77,10 @@
       "height": 12,
       "min": 0.0,
       "max": 100.0,
-      "background": 2,
+      "background": "white",
       "background_opacity": 15,
-      "bar_color": 0,
-      "text_color": 0
+      "bar_color": "black",
+      "text_color": "black"
     },
     {
       "type": "bar",
@@ -93,14 +93,14 @@
       "y": 78,
       "width": 400,
       "height": 32,
-      "background": 5,
+      "background": "blue",
       "segments": 10,
       "background_opacity": 0,
       "rounded_outline": true,
       "min": 0,
       "max": 100,
-      "bar_color": 65280,
-      "text_color": 65280
+      "bar_color": "green",
+      "text_color": "green"
     },
     {
       "type": "bar",
@@ -113,14 +113,14 @@
       "y": 108,
       "width": 400,
       "height": 24,
-      "background": 5,
+      "background": "blue",
       "segments": 10,
       "background_opacity": 0,
       "rounded_outline": true,
       "min": 0.0,
       "max": 1.0,
-      "bar_color": 65280,
-      "text_color": 0
+      "bar_color": "green",
+      "text_color": "black"
     },
     {
       "type": "image",
@@ -148,9 +148,9 @@
       "width": 220,
       "height": 50,
       "scale_pct": 250,
-      "background": 4,
+      "background": "charcoal",
       "background_opacity": 80,
-      "text_color": 16777215
+      "text_color": "white"
     }
   ]
 }
